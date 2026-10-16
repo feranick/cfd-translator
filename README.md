@@ -1,87 +1,177 @@
-# cfd-translator: context for a new session
+# cfd-translator
 
-Copy to `~/Desktop/cfd-translator/CLAUDE.md`, connect the folder, and start the chat with: "Read CLAUDE.md and start."
+Turns a **CFD study** (a geometry, a fluid, a turbulence model, boundary conditions on chosen faces) into an [OpenFOAM](https://openfoam.org) case and checked results, deterministically. It includes a command line (`cfdt`), a Python API and an MCP server (`cfdt-mcp`), so LLM-based tools can set up flows as studies and get the numbers back with their checks.
 
-## What this is
+It is the CFD counterpart of [build123d-translator](https://github.com/feranick/build123d-translator) and [fea-translator](https://github.com/feranick/fea-translator). An LLM writes the study (the flexible part). The translator computes everything else: the mesh and its polyMesh files, which faces form which patch, inlet profiles face by face, turbulence inlet values, the case dictionaries. A checker then confirms the result with closed-form and published benchmarks, mass and momentum balance on every run, solver convergence, and expected values. Geometries are build123d-translator goals or STEP files, so the same face selectors name CAD features, CFD boundary conditions and FEA loads. External-flow results include the wall forces as fea-translator loads.
 
-A deterministic **translator + checker** for LLMs: the LLM writes a structured spec (the flexible part), the translator computes everything else (no model, no guessing), an independent checker confirms the result, and errors go back to the LLM as fixable messages. Same design as:
+Scope (first version): **steady incompressible flow**, laminar or k-ω SST (wall functions), internal flow (the geometry is the fluid) or external flow (a domain box minus the part), 3D or 2D.
 
-- **build123d-translator** (`b3dt`; `~/Desktop/build123d-translator`; github.com/feranick/build123d-translator): goal (ordered CAD features) → build123d solid, STEP, standalone script. Checker: IoU vs FreeCAD (6,761/6,762 DeepCAD goals), exact volumes.
-- **fea-translator** (`feat`; `~/Desktop/fea-translator`; github.com/feranick/fea-translator): study (part, material, analysis, BCs on faces) → Gmsh mesh, CalculiX deck, results. Checker: 11 closed-form benchmarks, equilibrium/heat balance every run, `expect`, convergence; reference solver checks decks without CalculiX.
+## Install
 
-**This tool:**
+On the machine that runs OpenFOAM (carbonio, Ubuntu):
 
-- Name / CLI / MCP: `cfd-translator` / `cfdt` / `cfdt-mcp`; repo github.com/feranick/cfd-translator
-- Domain: steady incompressible CFD; target: **OpenFOAM .org** (current apt release; check whether `foamRun -solver incompressibleFluid` replaces `simpleFoam`), meshing with Gmsh (`gmshToFoam`) and `blockMesh`; runs on carbonio.
-- Typical requests:
-  - "Pressure drop through this manifold (b3dt goal) at 2 L/min water."
-  - "Drag and lift on this bracket in 10 m/s air."
-  - "Velocity profile and flow split between the two outlets of this tee."
-  - "Wall pressures on this plate in 30 m/s air, then stresses with feat."
-- Spec contents (first idea; challenge it):
-  - `geometry`: `{"goal": <b3dt goal>}` or `{"step": path}`. Set `domain: internal` (the part is the fluid) or `external` (a box around the part, with sizes in body lengths, minus the part).
-  - `fluid`: preset (`air`, `water`) or `rho` [kg/m3], `mu` [Pa·s].
-  - `analysis`: `steady`; `model: laminar | kOmegaSST`; iterations; residual target.
-  - `bcs`: `inlet` (`velocity` [m/s] or `flow_rate` [m3/s or L/min], turbulence intensity), `outlet` (`pressure` [Pa]), `wall` (no-slip), `slip`, `symmetry`. Faces use feat selectors.
-  - `mesh`: `size`, `boundary_layers` (n, first height, growth), `refine` near selected faces; `blockMesh` for box/channel cases.
-  - `outputs`: Δp between patches, flow per patch, forces/moments and Cd/Cl (reference area/velocity), max velocity, probes (points, lines), wall shear, y⁺.
-  - `expect`: as in feat (dotted result paths, value, tolerance).
-  - Units: mm for geometry (converted to m for OpenFOAM), m/s, Pa, N, kg/m3.
-- Independent checks:
-  - Every run: mass balance (Σ patch flux ≈ 0), control-volume momentum balance (wall forces vs. inlet/outlet momentum flux + pressure), residual drop, `checkMesh` quality, y⁺ and convergence warnings.
-  - Closed-form benchmarks: Hagen–Poiseuille pipe (Δp, centreline velocity), plane Poiseuille, Couette, developing-flow entrance length (loose).
-  - Reference data: lid-driven cavity vs. Ghia et al. 1982 (Re 100/400/1000), Schäfer–Turek cylinder 2D-1 (Cd ≈ 5.58, Cl ≈ 0.0106, Δp ≈ 0.1175), creeping-flow sphere (Stokes drag, with wall-effect correction), turbulent pipe friction factor vs. Blasius/Colebrook (loose, kOmegaSST).
-  - Reference implementation: a small numpy finite-volume solver (2D channel/cavity, laminar) to check case translation and results without OpenFOAM.
-- First version scope: steady incompressible, laminar + kOmegaSST, internal and external flow, Gmsh + blockMesh meshes, Δp/flow/force/probe outputs, the benchmarks above, b3dt goals inline, wall pressures exported to feat.
+```bash
+# OpenFOAM 14 (openfoam.org), once
+sudo sh -c "wget -O - https://dl.openfoam.org/gpg.key > /etc/apt/trusted.gpg.d/openfoam.asc"
+sudo add-apt-repository http://dl.openfoam.org/ubuntu
+sudo apt update && sudo apt -y install openfoam14
 
-## Interconnection
+# the package, in the shared venv (alias cad)
+cd ~/Software && git clone https://github.com/feranick/cfd-translator.git    # or: cd cfd-translator && git pull
+source ~/Software/build123d-translator/.venv/bin/activate
+pip install -e "$HOME/Software/cfd-translator[mesh,mcp,test]"
+```
 
-Works **together** with b3dt and feat:
+The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or `PATH` when the shell is already sourced). Without that variable, it uses `foamRun` on the PATH, or else the newest `/opt/openfoam*/etc/bashrc`. OpenFOAM .org 11 or later is needed (`foamRun`, `solver incompressibleFluid`), and 14 is the target. Without OpenFOAM, the package's reference solver runs the 2D box studies (`--solver ref`).
 
-- Accept b3dt specs inline, as feat accepts `{"part": {"goal": <b3dt goal>}}` or `{"step": path}`. Import b3dt optionally (warning in validation, tests skipped when missing).
-- **CFD → feat:** export wall pressures (and optionally shear) on the part's faces as feat surface loads (`pressure` per face set, or mapped nodal loads). Same geometry, same selectors. Chain benchmark: b3dt plate goal → cfdt flat plate in uniform flow → feat static; check that feat's reaction equals cfdt's force.
-- Same conventions: mm, N, MPa, °C; Z up, base on z = 0 centred in X/Y; face selectors `nx/ny/nz` (+ `at`), `pts`, `cyl_r`, `all`, lists = union; JSON in/out; dotted result paths.
-- Result fields another tool reads are an interface: keep them stable and list them in the README.
-- One environment on carbonio: shared venv `~/Software/build123d-translator/.venv` (alias `cad`), `pip install -e ~/Software/cfd-translator[mcp,test]`.
-- At least one chain benchmark (b3dt goal → cfdt → feat), skipped when a piece is missing.
-- MCP servers may sit on different machines (b3dt on the Mac, feat and cfdt on carbonio): pass specs between tools, not local paths; `get_file` returns files as base64.
+```bash
+cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
+pytest -q                   # 18 tests: 15 run anywhere, 3 need Gmsh or OpenFOAM
+cfdt bench                  # benchmarks, pass/fail against known answers
+cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
+```
 
-## Conventions
+## Use
 
-- Versions `YYYY.MM.DD.x` in every module docstring, `__init__.py`, `pyproject.toml`, and the README's version table; update the README with every change.
-- Author: Nicola Ferralis <ferralis@generalflash.com>. I commit and push from the Mac; carbonio clones in `~/Software/`.
-- Keep answers concise; give commands ready to paste.
-- Python ≥ 3.10; `pyproject.toml` extras `[mcp, test]` (+ `gmsh`); entry points `cfdt`, `cfdt-mcp`.
+```bash
+cfdt format > study_format.json          # the study format (what an LLM reads first)
+cfdt validate examples/studies.json      # static checks with fixable messages
+cfdt run examples/studies.json           # mesh, solve, check; results in ~/cfdt_runs/run_*/
+cfdt case examples/studies.json pipe_laminar   # write the OpenFOAM case only (inspect, run by hand)
+```
 
-## Architecture
+Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case.foam` in ParaView), `<study>_case.tgz` and `<study>.json`. Environment: `CFDT_OUT` (~/cfdt_runs), `CFDT_WORKERS` (2), `CFDT_TIMEOUT` (3600 s per study), `CFDT_SOLVER` (auto | foam | ref), `CFDT_PROCS` (MPI ranks; 1).
 
-- `format.py`: spec format (kinds, parameters, units, conventions, example) as JSON; static `validate()` with precise messages.
-- Core translation (`case.py`): spec → OpenFOAM case dictionaries (`controlDict`, `fvSchemes`, `fvSolution`, `0/U`, `0/p`, `0/k`, `0/omega`, `0/nut`, `momentumTransport`, `physicalProperties`, function objects). Pure Python, testable without OpenFOAM; patch names come from our own face selection, never from OpenFOAM numbering.
-- `mesh.py`: Gmsh volume mesh with physical groups per selected face set (internal/external domain, boundary layers) and `blockMesh` for box cases.
-- Backend (`foam.py`): the only module calling OpenFOAM (`gmshToFoam`, `blockMesh`, `checkMesh`, solver, `postProcess`), as subprocesses with timeouts and logs.
-- `results.py`: tolerant readers of `postProcessing/` function-object output (forces, surfaceFieldValue, probes, residuals) and logs, with test fixtures.
-- `runner.py`: one study end to end, with checks (`expect`, mass/momentum balance, residuals, warnings).
-- `bench.py`: cases with known answers; `cfdt bench`.
-- `refsolver.py`: small independent laminar FV solver (2D).
-- `api.py` (JSON, spawned workers with time limits, `CFDT_OUT` folder, long runs as start + status), `cli.py` (`format|validate|run|bench|status`), `mcp_server.py` (`study_format`, `validate_studies`, `run_studies`, `start_run`, `run_status`, `run_benchmarks`, `get_file`; MCP SDK 1.x/2.x; stdio and `--http`).
-- `tests/` (skip what is not installed), `examples/`, `README.md` (install, use, format, checker results, versions).
+## A study
 
-## Lessons from b3dt and feat
+```json
+{"pipe_laminar": {
+  "geometry": {"cylinder": [5, 200]},
+  "fluid": "water",
+  "model": "laminar",
+  "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "flow_rate_lpm": 0.5, "profile": "parabolic"},
+          {"kind": "outlet", "faces": {"nz": 1}, "pressure": 0}],
+  "mesh": {"size": 0.8, "extrude": 80},
+  "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]}}
+```
 
-1. Research the target program first (manual, output formats), then the spec, then code. List unverified assumptions in the README, each with a benchmark that would catch it (feat: CalculiX's RF includes applied loads; caught by `gravity_block`). Likely CFD examples: kinematic vs. static pressure (OpenFOAM's incompressible `p` is p/ρ), the sign of the `forces` output, units after `gmshToFoam` (mm → m scaling), and flux sign conventions.
-2. Never rely on the program's internal numbering or ordering; recompute from geometry or data.
-3. Exact checks where possible (1e-6), loose only where physics says so, with the reason. For CFD: laminar closed-form ≤ 1–2 % on converged meshes; turbulent correlations ±10 %.
-4. Every run checks itself (conservation, validity), not only the benchmarks.
-5. Validate before running; an LLM must fix every error from its message alone.
-6. Compute derived quantities the way the target does (feat's flat-triangle loads were 0.1 % off on curved faces until isoparametric). For CFD: integrate forces/fluxes on the same faces and the same way as OpenFOAM's function objects.
-7. Keep `study_format` compact (local LLMs need ≥ 16k context for it).
-8. If the sandbox cannot run the target (ARM Linux, no apt/conda/Homebrew), say so up front, test the rest, give exact carbonio commands, iterate on my output.
+- **geometry**: `{"goal": <b3dt goal>}`, `{"step": path}`, `{"box": [lx, ly, lz]}` or `{"cylinder": [r, h]}` (axis Z). Lengths are in mm, with Z up, the base on z = 0, and the part centred in X/Y (as in b3dt).
+- **domain**: `internal` (default) means the geometry is the fluid. `{"kind": "external", "box": [x0, y0, z0, x1, y1, z1]}` means the fluid is that box minus the geometry.
+- **2d**: `true` gives a one-cell-thick mesh along Z with `empty` front and back. The domain must be a prism along Z.
+- **fluid**: `air`, `water`, `{"rho", "mu"}`, or a name with overrides. **model**: `laminar` or `kOmegaSST`.
+- **bcs**: the kinds are listed below. Faces use the selectors of b3dt and feat: `nx/ny/nz` (+ `at`), `pts`, `cyl_r` (+ `side`), `all`, lists for a union. External studies add `{"box": "xmin" … "zmax"}` for the domain sides. For external flow the normals are the solid part's, so one selector names the same face in b3dt, feat and here. A face is taken by at most one bc (`all` yields to the others). Faces no bc takes become the no-slip patch `walls`.
 
-## Environment
+| kind | parameters | OpenFOAM (U / p) |
+|---|---|---|
+| inlet | `velocity` (number = normal in, or `[vx, vy, vz]`), or `flow_rate` (m3/s), or `flow_rate_lpm`; `profile` uniform or parabolic; `intensity`, `length_scale` | fixedValue (our values, face by face) / zeroGradient |
+| outlet | `pressure` (Pa, 0) | inletOutlet / fixedValue p/ρ |
+| opening | `pressure` (Pa, 0) | pressureInletOutletVelocity / fixedValue p/ρ |
+| wall | `velocity` (moving wall; tangential part) | noSlip or fixedValue / zeroGradient |
+| slip | | slip / zeroGradient |
+| symmetry | | symmetry |
 
-- Mac (Apple Silicon): development, Claude desktop, LM Studio. No Homebrew; MacPorts gfortran fails for Fortran builds.
-- carbonio (Ubuntu, Python 3.14): heavy programs (CalculiX, Gmsh, OpenFOAM .org via apt), shared venv `cad`. OpenFOAM needs its `etc/bashrc` sourced; the backend must do this in each subprocess.
-- MCP servers on carbonio, in `~/Library/Application Support/Claude/claude_desktop_config.json`:
+The parabolic profile is the fully developed laminar one for circular, rectangular (series solution) and 2D inlets. It is scaled so the flow rate is exact.
+
+- **mesh**:
+  - A box geometry with `cells [nx, ny, nz]` (+ `grading`) gets a structured hex mesh, as blockMesh would make.
+  - Otherwise Gmsh meshes the domain. `size` is in mm. `refine` takes `[{at, r, size}]`.
+  - For prisms along Z, `extrude: n` sweeps a 2D mesh of the bottom face (quads by default) into n layers.
+  - `layers: {n, first, growth}` adds boundary layers on the walls, in 2D or swept meshes only.
+  - Plain 3D meshes are tetrahedra.
+- **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other}`.
+- **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
+- **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
+- **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
+
+### Results
+
+| key | what |
+|---|---|
+| `flow.<bc>.Q`, `Q_lpm`, `mdot`, `U_mean` | flow through inlets, outlets and openings (positive = into the domain) |
+| `pressure.<bc>.p_mean`, `p_total` | area-mean static pressure; flow-weighted total pressure (Pa) |
+| `pressure_drop`, `total_pressure_drop` | mean inlet minus mean outlet (Pa) |
+| `forces.<wall bc>.fx/fy/fz`, `mx/my/mz`, `pressure`, `viscous` | force by the fluid on each wall patch (N), moments about `reference.cofr` (N m) |
+| `forces.part` (external) / `forces.all_walls` (internal) | total over the part's faces / all walls |
+| `coefficients.cd`, `cl`, `cm` | with `reference.velocity` and `area` (drag along the inlet velocity unless `drag_dir` is given) |
+| `probes.<name>.ux/uy/uz/u/p` | values at points; lists for lines |
+| `wall_shear.<bc>.mean/max`, `y_plus.<bc>` | Pa; y⁺ for kOmegaSST |
+| `max_velocity` | largest cell velocity and where it is |
+| `feat_loads` | external flow: one fea-translator `force` bc per part face (`pts` selector, N), ready to paste into a feat study of the same part |
+| `checks` | `mass_balance`, `momentum_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
+
+Each study's result also has `selection` (what every bc took: face kind, area, normal, radius, side), `mesh` (cells, volume, non-orthogonality, closedness), `solve` (converged, iterations, last residuals, checkMesh), `warnings` and `files`.
+
+**Interface** (read by other tools; kept stable): `forces.part.*`, `feat_loads.bcs`, `feat_loads.total`, `flow.<bc>.Q`, `pressure_drop`, `coefficients.*`.
+
+## The checker
+
+**Every run checks itself:**
+
+- **Mass:** the boundary fluxes (`phi`) sum to zero.
+- **Momentum over the whole boundary:**
+
+  ```
+  Σ_faces ( ρ U_f φ_f + (p_f − p_ref) S_f + F_viscous,f ) = 0
+  ```
+
+  - Wall terms use OpenFOAM's `wallShearStress`, open boundaries ν_eff·snGrad(U).
+  - With OpenFOAM's conservative face fluxes this holds to convergence. Above 3% the run warns.
+- **Inlets:** the measured inlet flow must equal the prescribed one (this checks the case writing and the reading).
+- **Wall shear:** our own wall shear (ν_eff (U_f − U_P)·Δ, tangential) is compared with OpenFOAM's.
+- **Solver and mesh:** solver convergence, the residuals, and checkMesh, plus our own mesh checks: closed cells, positive volumes, outward boundary normals, upper-triangular face order, non-orthogonality. The schemes and non-orthogonal correctors follow the non-orthogonality.
+
+**Benchmarks** (`cfdt bench`):
+
+| case | reference | tolerance | reference solver | OpenFOAM |
+|---|---|---|---|---|
+| couette_2d | Q = UH/2, τ = μU/H | 0.5 % | pass (exact, 1e-16) | to run |
+| channel_2d | dp = 12 μ L U / H², wall force | 1 % | pass (0.13 %) | to run |
+| cavity_re100 | Ghia, Ghia & Shin 1982, 30 centreline points | 0.02 U | pass (max 0.0086) | to run |
+| pipe_poiseuille | dp = 8 μ L Q / (π R⁴), wall force (swept disk, Gmsh) | 2 % | — | to run |
+| cylinder_2d1 | Schäfer & Turek 1996, Re 20: cD 5.58, cL 0.0106, Δp 0.1174 Pa | 2 % / 0.005 / 5 % | — | to run |
+| cavity_re1000 (slow) | Ghia 1982 | 0.03 U | — | to run |
+| pipe_turbulent (slow) | Colebrook, Re 5×10⁴, kOmegaSST | 10 % | — | to run |
+| chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | to run |
+
+The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
+
+**Unverified assumptions** (each with what would catch it):
+
+1. **Sign of `wallShearStress`.** It is R·n with n into the domain and R = −viscous stress (from the v14 source), so the viscous force on a wall is −ρ τ A. → channel_2d and pipe_poiseuille wall forces, and the momentum balance on every run.
+2. **Missing boundary values.** Patches written without `value` (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does: cell value, zero, or the tangential part. → couette_2d and the momentum balance; the reader is tested on files in OpenFOAM's output style.
+3. **What `phi` contains.** Its boundary values are outward volumetric fluxes (m³/s) at the last time. → `inlet_flow_error` on every run.
+4. **Function-object fields.** `wallShearStress` and `yPlus` (in controlDict, `writeControl writeTime`) write their fields at the converged time, which `writeAndEnd` writes (from the v14 source). If they are missing, our snGrad estimate is used and `wall_shear_vs_ours` is absent. → channel_2d.
+5. **Accepted input syntax.** Numeric dimension sets, `nu` without dimensions, and `simulationType laminar;` alone (Stokes, from the v14 source) are accepted. → any run.
+6. **Gmsh details.** Boundary layers in 2D come from the `BoundaryLayer` field. After the side faces are removed, the bottom face's curves are matched by bounding box. → the Gmsh tests and cylinder_2d1.
+7. **Ghia Re 1000 values.** They were typed from the paper. The Re 100 values are confirmed by the reference solver to 0.009. → cavity_re1000.
+
+**Limits:**
+
+- Plain 3D meshes are tetrahedra without boundary layers, so turbulent external flow needs fine meshes. y⁺ is reported, with a warning outside 30–300.
+- Steady flow only; no heat transfer; no rotating frames.
+- Parallel runs (`CFDT_PROCS`) are untested.
+
+## How it works
+
+1. `format.py` validates the study. Every error names the key and the fix.
+2. `mesher.py` builds the fluid domain, which is one of:
+   - a structured box;
+   - Gmsh (OpenCASCADE): the goal/STEP/primitive, cut out of the domain box for external flow, meshed as tetrahedra or as a 2D mesh of the bottom face (quads, boundary layers) swept along Z.
+
+   Boundary faces keep the tag of the CAD face they lie on.
+3. `polymesh.py` turns cells into OpenFOAM's polyMesh. Faces are oriented outward from their cells (checked against centroids, so mesher node order never matters). Internal faces are matched and sorted by owner and neighbour. Boundary faces are grouped by patch. Geometry is computed with OpenFOAM's formulas.
+4. `select.py` evaluates the selectors and assigns faces to patches. The `selection` report says what each bc took.
+5. `case.py` writes the case:
+   - inlet values face by face, scaled to the exact flow rate;
+   - k = 1.5 (I U)² and ω = √k / (C_μ^¼ L);
+   - kinematic pressures;
+   - schemes chosen from the mesh's non-orthogonality.
+6. `foam.py` runs `checkMesh` and `foamRun` (or MPI). `foamio.py` reads the logs and the last time's fields. `refsolver.py` is the alternative solver.
+7. `post.py` computes results and invariants from the fields; `runner.py` ties one study together. `api.py`, `cli.py` and `mcp_server.py` are the interfaces.
+
+## For LLM tools: the MCP server
+
+Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending`), `study_status`, `get_case`, `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
@@ -89,13 +179,25 @@ Works **together** with b3dt and feat:
                   "/home/nicola/Software/build123d-translator/.venv/bin/cfdt-mcp"]}
 ```
 
-## How to start
+`cfdt-mcp --http 8768 --host 0.0.0.0` serves streamable HTTP instead of stdio.
 
-1. Design questions are already answered: OpenFOAM .org; steady incompressible (laminar + kOmegaSST); Gmsh + blockMesh; b3dt goals inline and CFD → feat loads. Ask only what is still open.
-2. Research OpenFOAM .org (current release: solver names, dictionary keywords, function objects, `gmshToFoam` patch handling). Summarise the proposed spec format and benchmark list before coding.
-3. Build, test what can run here, write the README; give carbonio commands (`sudo apt install openfoamNN`, `git pull`, `pip install -e`, `pytest -q`, `cfdt bench`).
-4. Finish with an end-to-end test prompt using cfdt with b3dt and feat.
+## Files
 
-## State
+```
+cfd_translator/
+  format.py     study format, validation          case.py       the OpenFOAM case
+  polymesh.py   cells -> polyMesh, box, extrusion  foam.py       runs OpenFOAM, reads fields
+  mesher.py     Gmsh meshing                       foamio.py     readers (fields, logs, checkMesh)
+  select.py     selectors, bc -> patches           post.py       results and invariants
+  refsolver.py  2D MAC reference solver            runner.py     one study end to end
+  bench.py      benchmarks                         api.py, cli.py, mcp_server.py
+tests/test_cfd.py      examples/studies.json      CLAUDE.md (session context)
+```
 
-`<filled in by Claude at the end of each session: version, what passes, open ideas>`
+## Versions
+
+| version | changes |
+|---|---|
+| 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
+
+Author: Nicola Ferralis <ferralis@generalflash.com>
