@@ -22,6 +22,16 @@ source ~/Software/build123d-translator/.venv/bin/activate
 pip install -e "$HOME/Software/cfd-translator[mesh,mcp,test]"
 ```
 
+On **Linux ARM (aarch64**, e.g. DGX Spark) PyPI has no Gmsh wheels, so the `mesh` extra skips it; use Ubuntu's (Gmsh 4.12 on 24.04) and link its Python module into the venv (the venv must use the system's Python version, 3.12 on 24.04):
+
+```bash
+sudo apt install -y python3-gmsh
+ln -sf /usr/lib/python3/dist-packages/gmsh.py "$VIRTUAL_ENV/lib/python3.12/site-packages/gmsh.py"
+python -c "import gmsh; print(gmsh.__version__)"
+```
+
+On ARM, check that openfoam.org has an arm64 package before installing (`apt-cache policy openfoam14` after adding the repository). Without OpenFOAM, the package still meshes, writes cases (`cfdt case`) and runs the 2D reference solver.
+
 The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or `PATH` when the shell is already sourced). Without that variable, it uses `foamRun` on the PATH, or else the newest `/opt/openfoam*/etc/bashrc`. OpenFOAM .org 11 or later is needed (`foamRun`, `solver incompressibleFluid`), and 14 is the target. Without OpenFOAM, the package's reference solver runs the 2D box studies (`--solver ref`).
 
 ```bash
@@ -197,6 +207,7 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.16.5 | Linux ARM (aarch64): the `mesh` extra skips Gmsh (no PyPI wheels); README: Ubuntu's python3-gmsh linked into the venv, as in fea-translator. |
 | 2026.10.16.4 | First OpenFOAM 14 benchmark results (table above): all default cases pass; chain_plate needs fea-translator >= 2026.10.16.6 (checked) and uses a lighter mesh (it took 15 min on 230k cells); the wall-shear comparison warns only above 50 % (our estimate omits the dev2 term, ~20 % on tetrahedra; the momentum balance uses OpenFOAM's values). |
 | 2026.10.16.3 | A velocity component that is zero everywhere (exact 2D solutions) no longer blocks "converged" (its normalised residual is round-off); `cfdt bench` prints one progress line per case on stderr. First OpenFOAM 14 runs on carbonio: mass balance ≤ 4e-10, momentum balance ≤ 4e-4, OpenFOAM vs our wall shear ≤ 1e-4 (cavity 5 %, lid corners). |
 | 2026.10.16.2 | Boundary layers: the walls are found on the swept mesh itself (no separate Gmsh surface mesh); cylinder fit accepts coarse, short triangulations (facet normals tilted ~20°). |
