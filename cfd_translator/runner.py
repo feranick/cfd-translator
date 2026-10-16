@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.16.1
+Version: 2026.10.16.3
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -11,6 +11,8 @@ import tarfile
 import time
 import traceback
 from pathlib import Path
+
+import numpy as np
 
 from . import __version__
 from .format import validate_study
@@ -68,6 +70,17 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                             "checkMesh": info["checkMesh"]}
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
+            if not lg["converged"]:
+                # a velocity component that is zero everywhere (exact 1D/2D solutions) has a residual of
+                # round-off over a near-zero normalisation that never meets the target: leave it out
+                Uc = np.asarray(fields["U"], float)
+                umax = float(np.abs(Uc).max()) if Uc.size else 0.0
+                tiny = [f"U{c}" for k, c in enumerate("xyz") if Uc.size and float(np.abs(Uc[:, k]).max()) <= 1e-9 * umax]
+                rest = {f: r for f, r in lg["residuals"].items() if f not in tiny}
+                if tiny and rest and max(rest.values()) <= plan["residual"]:
+                    lg["converged"] = True
+                    out["solve"]["converged"] = True
+                    out["solve"]["converged_by"] = f"residuals, ignoring {', '.join(t for t in tiny if t in lg['residuals'])} (zero everywhere)"
             if not lg["converged"]:
                 worst = max(lg["residuals"].items(), key=lambda kv: kv[1]) if lg["residuals"] else ("?", float("nan"))
                 warns.append(f"not converged in {lg['iterations']} iterations (largest last residual: {worst[0]} "

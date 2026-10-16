@@ -1,6 +1,6 @@
 # cfd-translator: context for a new session
 
-Session context for Claude (the project documentation is README.md). Start a chat with: "Read CLAUDE.md and start."
+Session context for Claude (the project documentation is README.md). Start a chat with: "Read planning.md and start."
 
 ## What this is
 
@@ -94,9 +94,10 @@ Works **together** with b3dt and feat:
 
 ## State
 
-**2026.10.16.1** (first version, built in a sandbox without OpenFOAM and Gmsh: ARM Linux, no wheels).
+**2026.10.16.3**. .1 was built in a sandbox without OpenFOAM and Gmsh. On carbonio (OpenFOAM 14, Gmsh 4.15.2): .1 passed 17/18 tests (cyl_r on a coarse short cylinder's Gmsh surface mesh; fixed in .2), .2 passed 19/19. First `cfdt bench` on OpenFOAM: every case ran; mass balance <= 4e-10, momentum balance <= 4e-4 (confirms the wallShearStress sign and the value-less boundary reading), wall shear OpenFOAM vs ours <= 1e-4 (cavity 5 %: lid corners). couette/channel hit 2000 iterations on the residual of Uy = 0 (round-off over a zero normalisation): .3 ignores components that are zero everywhere. Benchmark pass/fail values and chain_plate: pending.
 
-- Passes here: `pytest -q` 15 passed, 3 skipped (Gmsh, OpenFOAM); `cfdt bench --solver ref`: couette_2d (exact), channel_2d (0.13 %), cavity_re100 (max 0.009 U vs Ghia).
-- Not yet run: anything with OpenFOAM or Gmsh (mesher.py Gmsh paths, foam.py, the OpenFOAM benchmarks, chain_plate). First carbonio session: `pytest -q`, `cfdt bench`, then the slow ones; fix from the output.
+- Passes in the sandbox: `pytest -q` 16 passed, 3 skipped (Gmsh, OpenFOAM); `cfdt bench --solver ref`: couette_2d (exact), channel_2d (0.13 %), cavity_re100 (max 0.009 U vs Ghia).
+- Not yet run: the OpenFOAM benchmarks (`cfdt bench`, then cavity_re1000, pipe_turbulent, chain_plate); fix from the output.
+- fea-translator has the same 0.02 normal-eigenvalue cylinder test that failed here: offer the same fix there.
 - Design changes from the plan: own polyMesh writer instead of gmshToFoam/blockMesh; tools follow feat (`run_studies` + `study_status`, `get_case`) instead of `start_run`/`run_status`.
 - Open ideas: `converge: true` (rerun finer, report changes, like feat); 3D prism boundary layers; cyclic patches (fully developed pipes); heat transfer and CHT with feat's thermal analysis; transient (PIMPLE); MRF/rotating walls; snappyHexMesh for external 3D; porous zones.

@@ -191,13 +191,14 @@ cfd_translator/
   select.py     selectors, bc -> patches           post.py       results and invariants
   refsolver.py  2D MAC reference solver            runner.py     one study end to end
   bench.py      benchmarks                         api.py, cli.py, mcp_server.py
-tests/test_cfd.py      examples/studies.json      CLAUDE.md (session context)
+tests/test_cfd.py      examples/studies.json      planning.md (session context)
 ```
 
 ## Versions
 
 | version | changes |
 |---|---|
+| 2026.10.16.3 | A velocity component that is zero everywhere (exact 2D solutions) no longer blocks "converged" (its normalised residual is round-off); `cfdt bench` prints one progress line per case on stderr. First OpenFOAM 14 runs on carbonio: mass balance ≤ 4e-10, momentum balance ≤ 4e-4, OpenFOAM vs our wall shear ≤ 1e-4 (cavity 5 %, lid corners). |
 | 2026.10.16.2 | Boundary layers: the walls are found on the swept mesh itself (no separate Gmsh surface mesh); cylinder fit accepts coarse, short triangulations (facet normals tilted ~20°). |
 | 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
 

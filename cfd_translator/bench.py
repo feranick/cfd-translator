@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.16.1
+Version: 2026.10.16.3
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -17,6 +17,8 @@ Slow cases run only when named. The reference solver runs the 2D box cases (coue
 from __future__ import annotations
 
 import math
+import sys
+import time
 from pathlib import Path
 
 
@@ -200,12 +202,16 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
         if missing:
             out[n] = {"skipped": f"needs {', '.join(missing)}"}
             continue
+        print(f"[cfdt bench] {n} ...", file=sys.stderr, flush=True)
+        t0 = time.time()
         if c.get("chain"):
             out[n] = _chain(Path(folder), solver)
+            _progress(n, out[n], t0)
             continue
         r = run_study(n, c["study"], Path(folder) / n, solver)
         if not r.get("ok"):
             out[n] = {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
+            _progress(n, out[n], t0)
             continue
         checks = []
         for what, exp, got, tol in c["checks"](r["results"]):
@@ -221,4 +227,17 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
                   "solve": r.get("solve", {}).get("converged"), "cells": r["mesh"]["cells"],
                   "invariants": {k: r["results"]["checks"][k].get("error") for k in ("mass_balance", "momentum_balance")},
                   "warnings": r.get("warnings", []), "seconds": r.get("seconds")}
+        _progress(n, out[n], t0, r)
     return out
+
+
+def _progress(name, res, t0, r=None):
+    """One line per case on stderr (stdout stays JSON)."""
+    s = "PASS" if res.get("passed") else "FAIL" if res.get("ok") else "ERROR"
+    extra = ""
+    if r and r.get("ok"):
+        sv = r.get("solve", {})
+        extra = f" cells {r['mesh']['cells']}, {sv.get('iterations')} iterations, converged {sv.get('converged')}"
+    worst = max((c.get("error", 0) for c in res.get("checks", [])), default=None)
+    print(f"[cfdt bench] {name}: {s} in {time.time() - t0:.0f} s{extra}" + (f", largest check error {worst:.3g}" if worst is not None else "")
+          + (f" ({str(res.get('error'))[:200]})" if s == "ERROR" else ""), file=sys.stderr, flush=True)
