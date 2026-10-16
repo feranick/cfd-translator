@@ -1,5 +1,5 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, or Gmsh (tetrahedra, or a swept 2D mesh).
-Version: 2026.10.16.1
+Version: 2026.10.16.2
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -221,25 +221,6 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
         if len(side) != 1:
             raise MeshError(f"bottom edge {abs(c)} touches {len(side)} side faces")
         curves[abs(c)] = (side[0], np.array(gmsh.model.getBoundingBox(1, abs(c))))
-    wall_curves = []
-    if "layers" in m:
-        # which side faces are walls: select on a surface mesh of the whole boundary first
-        from .select import Groups, assign_bcs
-        _sizes(gmsh, study, h, fields_too=False)
-        gmsh.model.mesh.generate(2)
-        pts, _, surf = _surface_mesh(gmsh)
-        # Gmsh orients each surface mesh like its surface: flip the ones that point into the fluid
-        sign = {abs(s): (1 if s > 0 else -1) for _, s in gmsh.model.getBoundary([(3, vol)], combined=False, oriented=True)}
-        surf = [(t, r if sign.get(t, 1) > 0 else r[:, ::-1]) for t, r in surf]
-        rings = np.concatenate([np.pad(r, ((0, 0), (0, 4 - r.shape[1])), constant_values=-1) for _, r in surf])
-        tags = np.concatenate([np.full(len(r), t) for t, r in surf])
-        groups = Groups(pts, rings, tags, info, study.get("domain", {}).get("kind") == "external")
-        patches, _, _ = assign_bcs(groups, study, [bottom, top] if two_d else [])
-        # boundary layers on the walls (external flow: on the part's walls, not on domain-box sides)
-        walls = {t for p in patches if p["kind"] == "wall" for t in p["tags"]
-                 if info.get(t, {}).get("on") != "box"}
-        wall_curves = [c for c, (s, _) in curves.items() if s in walls]
-        gmsh.model.mesh.clear()
     # keep only the bottom face (and its edges and corners)
     gmsh.model.occ.remove([(3, vol)])
     gmsh.model.occ.remove([(2, s) for s in info if s != bottom])
@@ -272,17 +253,38 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
     quads = bool(m.get("quads", True))
     gmsh.option.setNumber("Mesh.RecombineAll", 1 if quads else 0)
     gmsh.option.setNumber("Mesh.Algorithm", 8 if quads else 6)
-    if wall_curves:
-        L = m["layers"]
-        n, first, gr = int(L["n"]), float(L["first"]) * size_factor, float(L.get("growth", 1.2))
-        thick = first * n if abs(gr - 1) < 1e-12 else first * (gr ** n - 1) / (gr - 1)
-        bl = gmsh.model.mesh.field.add("BoundaryLayer")
-        gmsh.model.mesh.field.setNumbers(bl, "CurvesList", [c for c in now if remap[c] in set(wall_curves)])
-        gmsh.model.mesh.field.setNumber(bl, "Size", first)
-        gmsh.model.mesh.field.setNumber(bl, "Ratio", gr)
-        gmsh.model.mesh.field.setNumber(bl, "Thickness", thick)
-        gmsh.model.mesh.field.setNumber(bl, "Quads", 1)
-        gmsh.model.mesh.field.setAsBoundaryLayer(bl)
+    layers = 1 if two_d else int(m["extrude"])
+    empty = [bottom, top] if two_d else []
+    mesh = _sweep_bottom(gmsh, bottom, top, now, remap, curves, info, zmin, zmax, layers, tol)
+    wall_curves = []
+    if "layers" in m:
+        # boundary layers on the walls (external flow: the part's walls, not domain-box sides); the walls
+        # are found by selecting on the swept mesh without layers, then the bottom face is meshed again
+        from .select import assign_bcs, mesh_groups
+        external = study.get("domain", {}).get("kind") == "external"
+        patches, _, _ = assign_bcs(mesh_groups(mesh, external), study, empty)
+        walls = {t for p in patches if p["kind"] == "wall" for t in p["tags"] if info.get(t, {}).get("on") != "box"}
+        wall_curves = [c for c in now if curves[remap[c]][0] in walls]
+        if wall_curves:
+            L = m["layers"]
+            n, first, gr = int(L["n"]), float(L["first"]) * size_factor, float(L.get("growth", 1.2))
+            thick = first * n if abs(gr - 1) < 1e-12 else first * (gr ** n - 1) / (gr - 1)
+            bl = gmsh.model.mesh.field.add("BoundaryLayer")
+            gmsh.model.mesh.field.setNumbers(bl, "CurvesList", wall_curves)
+            gmsh.model.mesh.field.setNumber(bl, "Size", first)
+            gmsh.model.mesh.field.setNumber(bl, "Ratio", gr)
+            gmsh.model.mesh.field.setNumber(bl, "Thickness", thick)
+            gmsh.model.mesh.field.setNumber(bl, "Quads", 1)
+            gmsh.model.mesh.field.setAsBoundaryLayer(bl)
+            gmsh.model.mesh.clear()
+            mesh = _sweep_bottom(gmsh, bottom, top, now, remap, curves, info, zmin, zmax, layers, tol)
+    mesh.info.update({"empty_tags": empty, "bottom": bottom, "top": top,
+                      "boundary_layers_on": sorted({curves[remap[c]][0] for c in wall_curves})})
+    return mesh
+
+
+def _sweep_bottom(gmsh, bottom, top, now, remap, curves, info, zmin, zmax, layers, tol):
+    """Mesh the bottom face in 2D and sweep it along Z."""
     gmsh.model.mesh.generate(2)
     tags, coords, _ = gmsh.model.mesh.getNodes(2, bottom, includeBoundary=True)
     tags = np.asarray(tags, np.int64)
@@ -307,11 +309,8 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
                     edge_tags[(int(a), int(b))] = curves[remap[c]][0]
     if np.any(np.abs(pts[:, 2] - zmin) > tol):
         raise MeshError("the bottom face is not flat at z = min")
-    layers = 1 if two_d else int(m["extrude"])
     tri = np.concatenate(tris) if tris else np.zeros((0, 3), np.int64)
     qd = np.concatenate(quads_) if quads_ else np.zeros((0, 4), np.int64)
     mesh = extrude(pts[:, :2], tri, qd, zmin, zmax, layers, bottom, top, edge_tags, info)
-    mesh.info.update({"empty_tags": [bottom, top] if two_d else [], "bottom": bottom, "top": top,
-                      "cells_2d": int(len(tri) + len(qd)), "quads_2d": int(len(qd)),
-                      "boundary_layers_on": sorted({curves[c][0] for c in wall_curves})})
+    mesh.info.update({"cells_2d": int(len(tri) + len(qd)), "quads_2d": int(len(qd))})
     return mesh

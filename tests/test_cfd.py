@@ -371,3 +371,21 @@ def test_openfoam_couette_and_channel(tmp_path):
     r = bench.run("foam", ["couette_2d", "channel_2d"], tmp_path)
     assert r["couette_2d"]["passed"], r["couette_2d"]
     assert r["channel_2d"]["passed"], r["channel_2d"]
+
+
+def test_cylinder_fit_on_coarse_short_triangulation():
+    """A Gmsh-like surface mesh of a short cylinder side (R 50, h 10, 12 segments, staggered rims):
+    facet normals tilt ~20 degrees, which the first fit rejected (the carbonio failure)."""
+    R, h, n = 50.0, 10.0, 12
+    a0 = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    a1 = a0 + np.pi / n
+    pts = np.vstack([np.column_stack([R * np.cos(a0), R * np.sin(a0), np.zeros(n)]),
+                     np.column_stack([R * np.cos(a1), R * np.sin(a1), np.full(n, h)])])
+    tris = []
+    for j in range(n):
+        tris.append([j, (j + 1) % n, n + j])
+        tris.append([(j + 1) % n, n + (j + 1) % n, n + j])
+    rings = np.pad(np.array(tris), ((0, 0), (0, 1)), constant_values=-1)
+    g = Groups(pts, rings, np.zeros(len(rings), int), {0: {"on": "part"}}, external=False)
+    assert g.groups[0].radius == pytest.approx(R, rel=1e-6)
+    assert g.select({"cyl_r": 50, "side": "outer"}) == [0]

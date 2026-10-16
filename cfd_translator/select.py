@@ -1,5 +1,5 @@
 """select.py — boundary faces grouped by CAD face, and the face selectors (same as fea-translator).
-Version: 2026.10.16.1
+Version: 2026.10.16.2
 
 A group is every boundary face of the mesh with one tag (one CAD face, or one side of the domain box).
 Selectors:  {"nx", "ny", "nz" (+ "at")}  planar face by outward normal
@@ -44,7 +44,9 @@ def fit_cylinder(pts: np.ndarray, normals: np.ndarray, rtol: float = 2e-3):
     if len(pts) < 6:
         return None
     w, v = np.linalg.eigh(normals.T @ normals)
-    if w[0] > 0.02 * w[1]:
+    # facet normals of a coarse, short cylinder tilt a lot (a triangle spans a chord and a vertex on the
+    # other rim), so this only proposes the axis; the point fit below decides
+    if w[0] > 0.25 * w[1]:
         return None
     axis = v[:, 0]
     e1 = np.cross(axis, [1.0, 0, 0] if abs(axis[0]) < 0.9 else [0, 1.0, 0])

@@ -26,7 +26,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 18 tests: 15 run anywhere, 3 need Gmsh or OpenFOAM
+pytest -q                   # 19 tests: 16 run anywhere, 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -198,6 +198,7 @@ tests/test_cfd.py      examples/studies.json      CLAUDE.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.16.2 | Boundary layers: the walls are found on the swept mesh itself (no separate Gmsh surface mesh); cylinder fit accepts coarse, short triangulations (facet normals tilted ~20°). |
 | 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
 
 Author: Nicola Ferralis <ferralis@generalflash.com>
