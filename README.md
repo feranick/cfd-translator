@@ -129,13 +129,13 @@ Each study's result also has `selection` (what every bc took: face kind, area, n
 | cavity_re100 | Ghia, Ghia & Shin 1982, 30 centreline points | 0.02 U | pass (max 0.0086) | pass (max 0.0087) |
 | pipe_poiseuille | dp = 8 μ L Q / (π R⁴), wall force (swept disk, Gmsh) | 2 % | — | pass (0.80 %, 0.88 %) |
 | cylinder_2d1 | Schäfer & Turek 1996, Re 20: cD 5.58, cL 0.0106, Δp 0.1174 Pa | 2 % / 0.005 / 5 % | — | pass (cD 5.581: 0.03 %; Δp 0.11733: 0.06 %; cL 0.0078: low, inside 0.005) |
-| cavity_re1000 (slow) | Ghia 1982 | 0.03 U | — | to run |
-| pipe_turbulent (slow) | Colebrook, Re 5×10⁴, kOmegaSST | 10 % | — | to run |
-| chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass by hand with feat 2026.10.16.8 (reaction = −force to 1e-6); the bench run failed with feat 2026.10.16.5 (its own equilibrium error 0.11) |
+| cavity_re1000 (slow) | Ghia 1982 | 0.03 U | — | pass (max 0.0101; 16k cells, 28 s) |
+| pipe_turbulent (slow) | Colebrook, Re 5×10⁴, kOmegaSST | 10 % | — | pass (3.1 %: dp 1591 vs 1642 Pa; residuals stall at 2e-4, 'not converged' after 3000 iterations, 184 s) |
+| chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass (reaction = −CFD force to 2e-5; feat 2026.10.16.8; 58 s) |
 
 The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
 
-**Unverified assumptions** (each with what would catch it):
+**Assumptions about OpenFOAM and Gmsh** (each with what would catch it; all confirmed by the OpenFOAM 14 runs on carbonio, 2026-10-16, including the Ghia Re 1000 values typed from the paper):
 
 1. **Sign of `wallShearStress`.** It is R·n with n into the domain and R = −viscous stress (from the v14 source), so the viscous force on a wall is −ρ τ A. → channel_2d and pipe_poiseuille wall forces, and the momentum balance on every run.
 2. **Missing boundary values.** Patches written without `value` (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does: cell value, zero, or the tangential part. → couette_2d and the momentum balance; the reader is tested on files in OpenFOAM's output style.
@@ -143,7 +143,6 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 4. **Function-object fields.** `wallShearStress` and `yPlus` (in controlDict, `writeControl writeTime`) write their fields at the converged time, which `writeAndEnd` writes (from the v14 source). If they are missing, our snGrad estimate is used and `wall_shear_vs_ours` is absent. → channel_2d.
 5. **Accepted input syntax.** Numeric dimension sets, `nu` without dimensions, and `simulationType laminar;` alone (Stokes, from the v14 source) are accepted. → any run.
 6. **Gmsh details.** Boundary layers in 2D come from the `BoundaryLayer` field. After the side faces are removed, the bottom face's curves are matched by bounding box. → the Gmsh tests and cylinder_2d1.
-7. **Ghia Re 1000 values.** They were typed from the paper. The Re 100 values are confirmed by the reference solver to 0.009. → cavity_re1000.
 
 **Limits:**
 
