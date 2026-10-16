@@ -94,10 +94,25 @@ Works **together** with b3dt and feat:
 
 ## State
 
-**2026.10.16.4**. On carbonio (OpenFOAM 14, Gmsh 4.15.2): 19/19 tests; `cfdt bench` (.2): couette, channel, cavity_re100, pipe_poiseuille, cylinder_2d1 pass (cD 5.581, Δp 0.11733; cL 0.0078 is the weakest, vs 0.0104-0.0110); invariants: mass <= 4e-10, momentum <= 4e-4 (confirms the wallShearStress sign). chain_plate failed only because the venv had fea-translator 2026.10.16.5 (equilibrium error 0.11); with feat .8 (its MCP server) the same loads give reaction = -CFD force to 1e-6. .3: zero velocity components no longer block 'converged'; bench progress lines. .4: chain needs feat >= .6, lighter chain mesh, wall-shear warning only above 50 %. Slow set (.4, feat .8): cavity_re1000 pass (max 0.0101: confirms the typed Ghia Re 1000 table), pipe_turbulent pass (3.1 % vs Colebrook, but residuals stall at 2e-4: 'not converged'), chain_plate pass (2e-5). All 8 benchmarks pass on OpenFOAM 14. Open: pipe_turbulent residual stall (lower relax? check dp vs iterations); cylinder cL 0.0078 vs 0.0104-0.0110 (refine near the cylinder).
+**2026.10.16.6** (sandbox: 20 passed, 3 skipped; new OpenFOAM benchmarks not run yet). On OpenFOAM 14 (carbonio), every benchmark up to .4 passes:
+- couette, channel, cavity_re100/1000, pipe_poiseuille, cylinder_2d1 (cD 5.581, Δp 0.11733; cL 0.0078 is the weakest), pipe_turbulent (3.1 %, but its residuals stall at 2e-4), chain_plate (with feat >= .6).
+- Invariants: mass <= 4e-10, momentum <= 4e-4.
 
-- Passes in the sandbox: `pytest -q` 16 passed, 3 skipped (Gmsh, OpenFOAM); `cfdt bench --solver ref`: couette_2d (exact), channel_2d (0.13 %), cavity_re100 (max 0.009 U vs Ghia).
-- Not yet run: the OpenFOAM benchmarks (`cfdt bench`, then cavity_re1000, pipe_turbulent, chain_plate); fix from the output.
-- fea-translator has the same 0.02 normal-eigenvalue cylinder test that failed here: offer the same fix there.
-- Design changes from the plan: own polyMesh writer instead of gmshToFoam/blockMesh; tools follow feat (`run_studies` + `study_status`, `get_case`) instead of `start_run`/`run_status`.
-- Open ideas: `converge: true` (rerun finer, report changes, like feat); 3D prism boundary layers; cyclic patches (fully developed pipes); heat transfer and CHT with feat's thermal analysis; transient (PIMPLE); MRF/rotating walls; snappyHexMesh for external 3D; porous zones.
+.6 came from a pump study in another chat:
+- It reported unconverged numbers (momentum off 5-9 %) as ±15 %.
+- It fed a swirl-free uniform inlet at the impeller exit.
+- It ran serially for 90 min and polled every 50 s.
+
+So .6 adds: the `reliable` verdict, `head_loss_m`, `swirl` inlets, rotating walls, rotating zones (MRF: cellZones + MRFProperties, torque/power/pump head and efficiency, frame source in the balances), the annulus primitive, `solve.procs`, progress/ETA for pending studies, and MCP instructions to stop polling long runs.
+
+Next: on carbonio run the new benchmarks (`cfdt bench taylor_couette_2d taylor_couette_mrf swirl_pipe pipe_poiseuille_mpi`). Unverified for .6 (OpenFOAM 14):
+- MRF (checked against the v14 MRFZone.C: no `nonRotatingPatches`; rotating walls need `MRFnoSlip`, written with its value): `omega` in rad/s as a plain number; whether MRFnoSlip writes a value (the reader falls back to ω × r);
+- the cellZones file format;
+- decomposeParDict (`decomposer scotch`, from the v14 motorBike tutorial's form);
+- that phi stays absolute with MRF (the balances assume it).
+
+Open ideas:
+- pipe_turbulent residual stall; cylinder cL (refine);
+- `converge: true`; 3D prism layers; cyclic patches;
+- heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones;
+- a pump example (volute + impeller goal) once MRF is confirmed.

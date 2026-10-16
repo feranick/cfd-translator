@@ -36,7 +36,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 19 tests: 16 run anywhere, 3 need Gmsh or OpenFOAM
+pytest -q                   # 23 tests: 20 run anywhere, 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -65,7 +65,7 @@ Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case
   "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]}}
 ```
 
-- **geometry**: `{"goal": <b3dt goal>}`, `{"step": path}`, `{"box": [lx, ly, lz]}` or `{"cylinder": [r, h]}` (axis Z). Lengths are in mm, with Z up, the base on z = 0, and the part centred in X/Y (as in b3dt).
+- **geometry**: `{"goal": <b3dt goal>}`, `{"step": path}`, `{"box": [lx, ly, lz]}`, `{"cylinder": [r, h]}` or `{"annulus": [r_in, r_out, h]}` (axis Z). Lengths are in mm, with Z up, the base on z = 0, and the part centred in X/Y (as in b3dt).
 - **domain**: `internal` (default) means the geometry is the fluid. `{"kind": "external", "box": [x0, y0, z0, x1, y1, z1]}` means the fluid is that box minus the geometry.
 - **2d**: `true` gives a one-cell-thick mesh along Z with `empty` front and back. The domain must be a prism along Z.
 - **fluid**: `air`, `water`, `{"rho", "mu"}`, or a name with overrides. **model**: `laminar` or `kOmegaSST`.
@@ -73,14 +73,19 @@ Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case
 
 | kind | parameters | OpenFOAM (U / p) |
 |---|---|---|
-| inlet | `velocity` (number = normal in, or `[vx, vy, vz]`), or `flow_rate` (m3/s), or `flow_rate_lpm`; `profile` uniform or parabolic; `intensity`, `length_scale` | fixedValue (our values, face by face) / zeroGradient |
+| inlet | `velocity` (number = normal in, or `[vx, vy, vz]`), or `flow_rate` (m3/s), or `flow_rate_lpm`; `profile` uniform or parabolic; `swirl {axis, center, rpm or tangential}`; `intensity`, `length_scale` | fixedValue (our values, face by face) / zeroGradient |
 | outlet | `pressure` (Pa, 0) | inletOutlet / fixedValue p/ρ |
 | opening | `pressure` (Pa, 0) | pressureInletOutletVelocity / fixedValue p/ρ |
-| wall | `velocity` (moving wall; tangential part) | noSlip or fixedValue / zeroGradient |
+| wall | `velocity` (moving wall; tangential part), or `rotation` (a rotating zone's name, or `{axis, center, rpm}`) | noSlip, fixedValue (sliding: tangential part; rotating: rigid ω × r), or MRFnoSlip (rotating with a zone) / zeroGradient |
 | slip | | slip / zeroGradient |
 | symmetry | | symmetry |
 
-The parabolic profile is the fully developed laminar one for circular, rectangular (series solution) and 2D inlets. It is scaled so the flow rate is exact.
+The parabolic profile is the fully developed laminar one for circular, rectangular (series solution) and 2D inlets. It is scaled so the flow rate is exact. `swirl` adds a tangential velocity face by face (solid body with `rpm`, uniform speed with `tangential` in m/s) without changing the flow rate. Use it for flow leaving an impeller that isn't modelled, or a swirler.
+
+- **rotating** (pumps, fans, mixers): `[{name, axis, center, rpm, radius, span}]` defines rotating zones (MRF, frozen rotor). Each is a cylinder about `axis` through `center` (mm), with `span` [s0, s1] along the axis (default: all). The cells whose centres lie inside form the zone, as `topoSet cylinderToCell` would.
+  - The impeller's faces are a wall with `"rotation": "<zone name>"`. They must lie inside the zone.
+  - Those walls get OpenFOAM 14's `MRFnoSlip`, with the rigid velocity ω × r. Other walls stay at rest.
+  - The zone's cylinder should contain only fluid and the rotating walls.
 
 - **mesh**:
   - A box geometry with `cells [nx, ny, nz]` (+ `grading`) gets a structured hex mesh, as blockMesh would make.
@@ -88,7 +93,7 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
   - For prisms along Z, `extrude: n` sweeps a 2D mesh of the bottom face (quads by default) into n layers.
   - `layers: {n, first, growth}` adds boundary layers on the walls, in 2D or swept meshes only.
   - Plain 3D meshes are tetrahedra.
-- **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other}`.
+- **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other}`, `procs` (MPI ranks; default `CFDT_PROCS` or 1).
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
 - **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
 - **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
@@ -99,7 +104,10 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 |---|---|
 | `flow.<bc>.Q`, `Q_lpm`, `mdot`, `U_mean` | flow through inlets, outlets and openings (positive = into the domain) |
 | `pressure.<bc>.p_mean`, `p_total` | area-mean static pressure; flow-weighted total pressure (Pa) |
-| `pressure_drop`, `total_pressure_drop` | mean inlet minus mean outlet (Pa) |
+| `pressure_drop`, `total_pressure_drop`, `head_loss_m` | mean inlet minus mean outlet (Pa); total-pressure loss / (ρ g) in m (use it for losses: static drops include velocity changes) |
+| `flow.<bc>.angular_momentum_in` | moment-of-momentum flux into the domain about `reference.cofr` (N m) |
+| `rotating.<zone>.torque_Nm`, `power_W` | torque by the fluid on the zone's rotating walls (about its axis) and power to the fluid |
+| `pump.head_m`, `flow_m3h`, `power_W`, `efficiency` | with a rotating zone, an inlet and an outlet: total-head rise and hydraulic efficiency ρ g Q H / P |
 | `forces.<wall bc>.fx/fy/fz`, `mx/my/mz`, `pressure`, `viscous` | force by the fluid on each wall patch (N), moments about `reference.cofr` (N m) |
 | `forces.part` (external) / `forces.all_walls` (internal) | total over the part's faces / all walls |
 | `coefficients.cd`, `cl`, `cm` | with `reference.velocity` and `area` (drag along the inlet velocity unless `drag_dir` is given) |
@@ -107,9 +115,11 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 | `wall_shear.<bc>.mean/max`, `y_plus.<bc>` | Pa; y⁺ for kOmegaSST |
 | `max_velocity` | largest cell velocity and where it is |
 | `feat_loads` | external flow: one fea-translator `force` bc per part face (`pts` selector, N), ready to paste into a feat study of the same part |
-| `checks` | `mass_balance`, `momentum_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
+| `checks` | `mass_balance`, `momentum_balance`, `angular_momentum_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
 
-Each study's result also has `selection` (what every bc took: face kind, area, normal, radius, side), `mesh` (cells, volume, non-orthogonality, closedness), `solve` (converged, iterations, last residuals, checkMesh), `warnings` and `files`.
+Each study's result has **`reliable`**. It is false, with `unreliable_because`, when the solver did not converge, or the mass balance is off by more than 0.1%, or the momentum balance by more than 3%. Those numbers must not be reported as results.
+
+It also has `selection` (what every bc took: face kind, area, normal, radius, side), `mesh` (cells, volume, non-orthogonality, closedness), `solve` (converged, iterations, last residuals, checkMesh), `warnings` and `files`.
 
 **Interface** (read by other tools; kept stable): `forces.part.*`, `feat_loads.bcs`, `feat_loads.total`, `flow.<bc>.Q`, `pressure_drop`, `coefficients.*`.
 
@@ -126,6 +136,8 @@ Each study's result also has `selection` (what every bc took: face kind, area, n
 
   - Wall terms use OpenFOAM's `wallShearStress`, open boundaries ν_eff·snGrad(U).
   - With OpenFOAM's conservative face fluxes this holds to convergence. Above 3% the run warns.
+- **Angular momentum** (about `reference.cofr`): the same sum of moments. Finite volumes don't conserve it exactly, so it's reported, and the swirl and Taylor–Couette benchmarks bound it at 3%.
+- **Rotating zones:** both balances include the frame's source, ρ Ω × U over the zone's cells.
 - **Inlets:** the measured inlet flow must equal the prescribed one (this checks the case writing and the reading).
 - **Wall shear:** our own wall shear (ν_eff (U_f − U_P)·Δ, tangential) is compared with OpenFOAM's.
 - **Solver and mesh:** solver convergence, the residuals, and checkMesh, plus our own mesh checks: closed cells, positive volumes, outward boundary normals, upper-triangular face order, non-orthogonality. The schemes and non-orthogonal correctors follow the non-orthogonality.
@@ -141,6 +153,10 @@ Each study's result also has `selection` (what every bc took: face kind, area, n
 | cylinder_2d1 | Schäfer & Turek 1996, Re 20: cD 5.58, cL 0.0106, Δp 0.1174 Pa | 2 % / 0.005 / 5 % | — | pass (cD 5.581: 0.03 %; Δp 0.11733: 0.06 %; cL 0.0078: low, inside 0.005) |
 | cavity_re1000 (slow) | Ghia 1982 | 0.03 U | — | pass (max 0.0101; 16k cells, 28 s) |
 | pipe_turbulent (slow) | Colebrook, Re 5×10⁴, kOmegaSST | 10 % | — | pass (3.1 %: dp 1591 vs 1642 Pa; residuals stall at 2e-4, 'not converged' after 3000 iterations, 184 s) |
+| taylor_couette_2d | rotating inner cylinder: torque 4πμωR₁²R₂²/(R₂²−R₁²), u_t = Ar + B/r, angular momentum balance | 2 % / 2 % / 3 % | — | to run |
+| taylor_couette_mrf | the same with a rotating zone (MRF) around the inner cylinder; power = Tω | 2 % | — | to run |
+| swirl_pipe | solid-body swirl inlet: angular momentum in = ρUωπR⁴/2, flow unchanged, balance | 2 % / 1e-6 / 3 % | — | to run |
+| pipe_poiseuille_mpi | pipe_poiseuille on 4 MPI ranks (`solve.procs`) | 2 % | — | to run |
 | chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass (reaction = −CFD force to 2e-5; feat 2026.10.16.8; 58 s) |
 
 The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
@@ -157,8 +173,8 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 **Limits:**
 
 - Plain 3D meshes are tetrahedra without boundary layers, so turbulent external flow needs fine meshes. y⁺ is reported, with a warning outside 30–300.
-- Steady flow only; no heat transfer; no rotating frames.
-- Parallel runs (`CFDT_PROCS`) are untested.
+- Steady flow only; no heat transfer.
+- Rotating zones are frozen rotor: the impeller's position relative to the volute is fixed, and blade-passing effects are absent.
 
 ## How it works
 
@@ -180,13 +196,15 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 
 ## For LLM tools: the MCP server
 
-Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending`), `study_status`, `get_case`, `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: iteration, s/iteration, `eta_min_max`), `study_status`, `get_case`, `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
          "args": ["-T", "-o", "BatchMode=yes", "nicola@carbonio",
                   "/home/nicola/Software/build123d-translator/.venv/bin/cfdt-mcp"]}
 ```
+
+Polling costs tokens: every `study_status` call is a model turn. The server's instructions therefore tell the model to report the expected finish time and stop when a run needs more than about 5 minutes, and to collect the result later.
 
 `cfdt-mcp --http 8768 --host 0.0.0.0` serves streamable HTTP instead of stdio.
 
@@ -207,6 +225,7 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.16.6 | Rotating zones (MRF): `rotating`, walls with `rotation` (zone name or axis/rpm), torque, power, pump head and efficiency; `swirl` at inlets; `annulus` geometry; `solve.procs` (MPI); `reliable` verdict; `head_loss_m`; angular momentum flux and balance; pending studies report progress and ETA, and the MCP instructions stop long polling; benchmarks taylor_couette_2d, taylor_couette_mrf, swirl_pipe, pipe_poiseuille_mpi. |
 | 2026.10.16.5 | Linux ARM (aarch64): the `mesh` extra skips Gmsh (no PyPI wheels); README: Ubuntu's python3-gmsh linked into the venv, as in fea-translator. |
 | 2026.10.16.4 | First OpenFOAM 14 benchmark results (table above): all default cases pass; chain_plate needs fea-translator >= 2026.10.16.6 (checked) and uses a lighter mesh (it took 15 min on 230k cells); the wall-shear comparison warns only above 50 % (our estimate omits the dev2 term, ~20 % on tetrahedra; the momentum balance uses OpenFOAM's values). |
 | 2026.10.16.3 | A velocity component that is zero everywhere (exact 2D solutions) no longer blocks "converged" (its normalised residual is round-off); `cfdt bench` prints one progress line per case on stderr. First OpenFOAM 14 runs on carbonio: mass balance ≤ 4e-10, momentum balance ≤ 4e-4, OpenFOAM vs our wall shear ≤ 1e-4 (cavity 5 %, lid corners). |

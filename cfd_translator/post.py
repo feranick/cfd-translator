@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.16.4
+Version: 2026.10.16.6
 
     results(study, mesh, plan, fields) -> dict
 
@@ -78,6 +78,8 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     out = {"flow": {}, "pressure": {}, "forces": {}, "wall_shear": {}}
     totals = np.zeros(3)
     scale_m = 0.0
+    ang, scale_a = np.zeros(3), 0.0
+    face_forces = {}
     net_phi, inflow = 0.0, 0.0
     wall_faces = []          # (face indices, F per face) of every wall patch
     visc_cmp = [0.0, 0.0]
@@ -116,11 +118,17 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         totals += (Mo + F).sum(axis=0)
         scale_m = max(scale_m, float(np.linalg.norm(F.sum(axis=0))), float(np.linalg.norm(Mo.sum(axis=0))),
                       float(np.linalg.norm(Fp.sum(axis=0))))
+        face_forces[nm] = (f, F)
+        rf = g["Cf"][f] * SCALE - cofr
+        Ma, Fa = np.cross(rf, Mo).sum(axis=0), np.cross(rf, F).sum(axis=0)
+        ang += Ma + Fa
+        scale_a = max(scale_a, float(np.linalg.norm(Ma)), float(np.linalg.norm(Fa)))
         net_phi += float(phi.sum())
         inflow += float(np.clip(-phi, 0, None).sum())
         Q = -float(phi.sum())
         At = float(A.sum())
-        flow = {"Q": _r(Q), "Q_lpm": _r(Q * 60000.0), "mdot": _r(rho * Q), "U_mean": _r(Q / At), "area_mm2": _r(At / SCALE ** 2)}
+        flow = {"Q": _r(Q), "Q_lpm": _r(Q * 60000.0), "mdot": _r(rho * Q), "U_mean": _r(Q / At), "area_mm2": _r(At / SCALE ** 2),
+                "angular_momentum_in": _r(-Ma)}
         pt = pb + 0.5 * rho * np.einsum("ij,ij->i", Ub, Ub)
         aphi = np.abs(phi)
         pres = {"p_mean": _r((pb * A).sum() / At)}
@@ -223,6 +231,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         a, b = amean(ins, "pt"), amean(outs, "pt")
         if a is not None and b is not None:
             out["total_pressure_drop"] = _r(a - b)
+            out["head_loss_m"] = _r((a - b) / (rho * 9.80665))
     # field extremes and probes
     um = np.linalg.norm(Uc, axis=1)
     k = int(np.argmax(um))
@@ -261,13 +270,44 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             if mean < 25 or mean > 400:
                 warns.append(f"mean y+ on the walls is {mean:.3g}: wall functions want 30-300 at the first cell "
                              "(change mesh.size or mesh.layers.first)")
+    # rotating zones (MRF): the frame's source rho Omega x U enters the momentum balances; torque, power, pump
+    for zn, zp in plan.get("zones", {}).items():
+        cells = mesh.zones[zn]
+        a = np.asarray(zp["axis"], float)
+        Om = zp["omega_rad_s"] * a
+        V = g["V"][cells] * SCALE ** 3
+        src = rho * np.cross(Om, Uc[cells]) * V[:, None]
+        totals += src.sum(axis=0)
+        scale_m = max(scale_m, float(np.linalg.norm(src.sum(axis=0))))
+        ang += np.cross(g["C"][cells] * SCALE - cofr, src).sum(axis=0)
+        c0 = np.asarray(zp["center_mm"], float) * SCALE
+        torque = 0.0
+        for wn in zp["rotating_walls"]:
+            f, F = face_forces[wn]
+            torque += float(np.cross(g["Cf"][f] * SCALE - c0, F).sum(axis=0) @ a)
+        power = -torque * zp["omega_rad_s"]
+        out.setdefault("rotating", {})[zn] = {"torque_Nm": _r(torque), "power_W": _r(power),
+                                              "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
+                                              "rotating_walls": zp["rotating_walls"]}
+        if not zp["rotating_walls"]:
+            warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
+    if out.get("rotating") and "total_pressure_drop" in out:
+        P = sum(z["power_W"] for z in out["rotating"].values())
+        H = -out["total_pressure_drop"] / (rho * 9.80665)
+        Qin = sum(v["Q"] for n, v in out["flow"].items() if plan["patches"][n]["kind"] == "inlet")
+        out["pump"] = {"head_m": _r(H), "flow_m3h": _r(Qin * 3600), "power_W": _r(P),
+                       "efficiency": _r(rho * 9.80665 * Qin * H / P) if P > 0 else None,
+                       "note": "hydraulic efficiency of the modelled passages (frozen rotor, steady)"}
     # checks
     vol = float(g["V"].sum()) * SCALE ** 3
     qscale = max(inflow, plan.get("U_ref", 1.0) * vol ** (2 / 3) * 1e-3)
     mass_err = abs(net_phi) / qscale if qscale > 0 else 0.0
     mom_err = float(np.linalg.norm(totals)) / scale_m if scale_m > 0 else 0.0
     checks = {"mass_balance": {"inflow_m3s": _r(inflow), "net_m3s": _r(net_phi), "error": _r(mass_err)},
-              "momentum_balance": {"residual_N": _r(totals), "scale_N": _r(scale_m), "error": _r(mom_err)}}
+              "momentum_balance": {"residual_N": _r(totals), "scale_N": _r(scale_m), "error": _r(mom_err)},
+              "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(scale_a),
+                                           "error": _r(float(np.linalg.norm(ang)) / scale_a if scale_a > 0 else 0.0),
+                                           "about": _r(cofr / SCALE)}}
     if visc_cmp[0] > 0:
         checks["wall_shear_vs_ours"] = _r(visc_cmp[1] / visc_cmp[0])
         # our estimate leaves out OpenFOAM's dev2(T(grad U)) term, which is not small on tetrahedra (~20 %

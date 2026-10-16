@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -37,7 +37,13 @@ coefficients, probes, and loads for fea-translator (external flow).
 Workflow: call study_format once and follow its conventions; validate_studies and fix every error;
 run_studies (long studies come back as 'pending': poll study_status with the request path). Check
 'selection' (what each bc took), warnings, solve.converged and checks (mass and momentum balance)
-before trusting numbers; rerun with a finer mesh to check convergence.
+before trusting numbers; if 'reliable' is false, do not report the numbers as results (rerun as
+'unreliable_because' says). Rerun with a finer mesh to check mesh convergence. Use head_loss_m (total
+pressure) for losses. Pumps and fans: a 'rotating' zone (MRF) around the impeller, its faces a wall
+with rotation: the zone's name; results give rotating.<zone>.torque_Nm, power_W and pump.head_m,
+efficiency. Long runs: set solve.procs (MPI ranks). Pending studies report 'progress' with eta_min_max:
+polling costs tokens, so when a run needs more than about 5 minutes, tell the user when it should
+finish and stop; collect it later with study_status.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""
 
 server = _Server("cfd-translator", instructions=INSTRUCTIONS)

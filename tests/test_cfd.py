@@ -389,3 +389,74 @@ def test_cylinder_fit_on_coarse_short_triangulation():
     g = Groups(pts, rings, np.zeros(len(rings), int), {0: {"on": "part"}}, external=False)
     assert g.groups[0].radius == pytest.approx(R, rel=1e-6)
     assert g.select({"cyl_r": 50, "side": "outer"}) == [0]
+
+
+# ---- swirl, rotation, rotating zones, verdict, progress (2026.10.16.6) --------------------------
+def test_swirl_inlet_keeps_flow_and_adds_tangential(tmp_path):
+    st = {"geometry": {"box": [40, 40, 100]}, "fluid": "water",
+          "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "velocity": 0.5,
+                   "swirl": {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 60}},
+                  {"kind": "outlet", "faces": {"nz": 1}}],
+          "mesh": {"cells": [8, 8, 4]}}
+    assert validate_study(st)["ok"]
+    mesh, patches, sel, plan, w = prepare(st, tmp_path)
+    U = foamio.read_foam((tmp_path / "case" / "0" / "U").read_text())["boundaryField"]["inlet"]["value"]
+    f = mesh.patch_faces("inlet")
+    C = mesh.geometry()["Cf"][f] * 1e-3
+    assert np.allclose(U[:, 2], 0.5)                                       # normal part untouched
+    assert np.allclose(U[:, 0], -2 * np.pi * C[:, 1]) and np.allclose(U[:, 1], 2 * np.pi * C[:, 0])   # omega x r
+    assert plan["inlets"]["inlet"]["Q"] == pytest.approx(0.5 * 0.04 * 0.04)
+
+
+def test_rotating_zone_files_and_rotating_wall(tmp_path):
+    st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
+          "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 30, "radius": 30}],
+          "bcs": [{"kind": "wall", "name": "spin", "faces": {"ny": 1}, "rotation": {"axis": [0, 0, 1], "rpm": 30}}],
+          "mesh": {"cells": [10, 10, 1]}}
+    assert validate_study(st)["ok"], validate_study(st)
+    mesh, patches, sel, plan, w = prepare(st, tmp_path)
+    c = tmp_path / "case"
+    mrf = foamio.read_foam((c / "constant" / "MRFProperties").read_text())
+    assert mrf["rotor"]["cellZone"] == "rotor" and mrf["rotor"]["omega"] == pytest.approx(np.pi)
+    assert set(mrf["rotor"]) == {"cellZone", "origin", "axis", "omega"}
+    zones = (c / "constant" / "polyMesh" / "cellZones").read_text()
+    n = plan["zones"]["rotor"]["cells"]
+    assert f"cellLabels List<label> {n}" in zones and 0 < n < 100
+    U = np.atleast_2d(foamio.read_foam((c / "0" / "U").read_text())["boundaryField"]["spin"]["value"])
+    # a rotating wall moves rigidly: omega x r = (-omega y, omega x, 0) on the lid (y = +50 mm)
+    C = mesh.geometry()["Cf"][mesh.patch_faces("spin")] * 1e-3
+    assert np.allclose(U[:, 0], -np.pi * C[:, 1]) and np.allclose(U[:, 1], np.pi * C[:, 0])
+    with pytest.raises(Exception, match="MRF"):
+        solve_case(c)
+    bad = dict(st, bcs=[{"kind": "wall", "faces": {"ny": 1}, "rotation": "nope"}])
+    assert any("not a rotating zone" in e for e in validate_study(bad)["errors"])
+    # a wall rotating with the zone must lie in it
+    out = dict(st, bcs=[{"kind": "wall", "faces": {"ny": 1}, "rotation": "rotor"}])
+    with pytest.raises(Exception, match="outside the zone"):
+        prepare(out, tmp_path / "o")
+    inside = dict(st, rotating=[dict(st["rotating"][0], radius=500)],
+                  bcs=[{"kind": "wall", "name": "spin", "faces": {"ny": 1}, "rotation": "rotor"}])
+    prepare(inside, tmp_path / "i")
+    Ui = foamio.read_foam((tmp_path / "i" / "case" / "0" / "U").read_text())["boundaryField"]["spin"]
+    assert Ui["type"] == "MRFnoSlip"
+
+
+def test_verdict_and_head_loss(tmp_path):
+    from cfd_translator.runner import _verdict
+    ok, why = _verdict({"solve": {"converged": False}}, {"checks": {"momentum_balance": {"error": 0.08}}})
+    assert not ok and any("converge" in w for w in why) and any("momentum" in w for w in why)
+    r = run_study("ch", CHANNEL, tmp_path / "ch", "ref")
+    assert r["reliable"] is True and "unreliable_because" not in r
+    R = r["results"]
+    assert R["head_loss_m"] == pytest.approx(R["total_pressure_drop"] / (1.0 * 9.80665), rel=1e-5)
+
+
+def test_progress_eta(tmp_path):
+    from cfd_translator.api import _progress
+    d = tmp_path / "s"
+    (d / "case").mkdir(parents=True)
+    assert _progress(d, {})["stage"].startswith("meshing")
+    (d / "case" / "log.checkMesh").write_text("")
+    (d / "case" / "log.foamRun").write_text("".join(f"Time = {i}s\n\n" for i in range(1, 101)))
+    p = _progress(d, {"solve": {"iterations": 1000}})
+    assert p["iteration"] == 100 and p["max_iterations"] == 1000 and p["eta_min_max"] >= 0

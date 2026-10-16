@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -82,7 +82,7 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     return rc
 
 
-def run(case: Path, timeout: float = 3600) -> dict:
+def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
     """checkMesh, then the solver. Returns the parsed logs; raises FoamError on failure."""
     foam = find_foam()
     if not foam or "error" in (foam or {}):
@@ -97,11 +97,12 @@ def run(case: Path, timeout: float = 3600) -> dict:
             pass
     _step(foam, "checkMesh", "log.checkMesh", case, min(timeout, 900), raise_on_error=False)
     out["checkMesh"] = foamio.parse_checkmesh((case / "log.checkMesh").read_text(errors="replace"))
-    procs = int(os.environ.get("CFDT_PROCS", "1"))
+    procs = int(procs or os.environ.get("CFDT_PROCS", "1"))
+    out["procs"] = procs
     if procs > 1:
         (case / "system" / "decomposeParDict").write_text(
             "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
-            f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n\nmethod          scotch;\n")
+            f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
         _step(foam, "decomposePar -force", "log.decomposePar", case, timeout)
         steps = [(f"mpirun -np {procs} foamRun -parallel", "log.foamRun"), ("reconstructPar -latestTime", "log.reconstructPar")]
     else:
@@ -166,6 +167,11 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
                 return np.zeros((n, 3)) if width == 3 else np.zeros(n)
             if typ == "noSlip":
                 return np.zeros((n, 3))
+            zn = plan["patches"].get(nm, {}).get("zone")
+            if typ == "MRFnoSlip" and zn and width == 3:
+                zp = plan["zones"][zn]
+                d = (g["Cf"][f] - np.asarray(zp["center_mm"])) * 1e-3
+                return np.cross(zp["omega_rad_s"] * np.asarray(zp["axis"]), d)
             c = cells[own]
             if typ in ("slip", "symmetry", "symmetryPlane") and width == 3:
                 return c - np.einsum("ij,ij->i", c, nrm)[:, None] * nrm

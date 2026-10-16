@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.16.3
+Version: 2026.10.16.6
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -61,10 +61,10 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 warns.append("reference solver did not converge")
         else:
             from . import foam
-            info = foam.run(case, timeout)
+            info = foam.run(case, timeout, study.get("solve", {}).get("procs"))
             fields = foam.read_fields(case, mesh, plan)
             lg = info["log"]
-            out["solve"] = {"openfoam": info.get("openfoam"), "iterations": lg["iterations"],
+            out["solve"] = {"openfoam": info.get("openfoam"), "procs": info.get("procs"), "iterations": lg["iterations"],
                             "converged": lg["converged"], "residuals": lg["residuals"],
                             "first_residuals": lg["first_residuals"], "time": fields["time"],
                             "checkMesh": info["checkMesh"]}
@@ -97,6 +97,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             out["expect"] = check_expect(res, study["expect"])
             out["passed"] = all(e["passed"] for e in out["expect"])
         out["warnings"] = warns
+        out["reliable"], why = _verdict(out, res)
+        if why:
+            out["unreliable_because"] = why
         out["ok"] = True
         out["files"] = {"case": str(case), "archive": _archive(case, folder / f"{name}_case.tgz")}
         out["seconds"] = {"mesh_case": round(t1 - t0, 3), "solve": round(t2 - t1, 3),
@@ -105,6 +108,23 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
         out["trace"] = traceback.format_exc()[-2000:]
     return _save(out, folder, name)
+
+
+def _verdict(out: dict, res: dict) -> tuple[bool, list]:
+    """Whether the numbers may be reported as results: converged, mass and momentum balanced."""
+    why = []
+    if not out.get("solve", {}).get("converged"):
+        why.append("the solver did not converge (see solve.residuals)")
+    ch = res.get("checks", {})
+    if ch.get("mass_balance", {}).get("error", 0) > 1e-3:
+        why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
+    mb = ch.get("momentum_balance", {})
+    if "note" not in mb and mb.get("error", 0) > 0.03:
+        why.append(f"momentum balance off by {mb['error']:.2%}")
+    if why:
+        why.append("do not report these numbers as results: rerun with more solve.iterations, lower solve.relax "
+                   "(e.g. 0.5) or a better mesh, and check that the quantities of interest stop changing")
+    return not why, why
 
 
 def _archive(case: Path, path: Path) -> str | None:

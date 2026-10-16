@@ -1,5 +1,5 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, or Gmsh (tetrahedra, or a swept 2D mesh).
-Version: 2026.10.16.2
+Version: 2026.10.16.6
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -55,6 +55,12 @@ def _build_geometry(gmsh, study: dict, workdir: Path):
     elif "cylinder" in g:
         r, h = (float(v) for v in g["cylinder"])
         part = [(3, occ.addCylinder(0, 0, 0, 0, 0, h, r))]
+    elif "annulus" in g:
+        ri, ro, h = (float(v) for v in g["annulus"])
+        outer = occ.addCylinder(0, 0, 0, 0, 0, h, ro)
+        inner = occ.addCylinder(0, 0, 0, 0, 0, h, ri)
+        out, _ = occ.cut([(3, outer)], [(3, inner)])
+        part = [dt for dt in out if dt[0] == 3]
     else:
         part = [dt for dt in occ.importShapes(str(geometry_step(study, workdir))) if dt[0] == 3]
     occ.synchronize()

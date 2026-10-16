@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -126,16 +126,44 @@ def _collect(folder: Path) -> dict:
             out[name] = {"ok": False, "why": "not finished and not running here (the server restarted?); run it again"}
         else:
             pending.append(name)
+    progress = {n: _progress(folder / n, meta.get("studies", {}).get(n, {})) for n in pending}
     for v in out.values():
         if isinstance(v, dict):
             v.pop("trace", None)
     res = {"request": str(folder), "translator": __version__, "solver": meta["solver"], "done": not pending,
            "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
     if pending:
-        res["next"] = f"call study_status(request='{folder}') to collect the rest"
+        res["progress"] = progress
+        eta = max((p.get("eta_min_max") or 0) for p in progress.values()) if progress else 0
+        res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
+                       f"(now {eta:.0f} min) is more than about 5 min, tell the user when to come back and stop polling")
     else:
         (folder / "results.json").write_text(json.dumps(res, indent=1, default=float))
     return res
+
+
+def _progress(d: Path, study: dict) -> dict:
+    """Where a running study is: meshing, or iteration i of at most n with an upper-bound ETA."""
+    import re as _re
+    log = d / "case" / "log.foamRun"
+    if not log.is_file():
+        return {"stage": "meshing / writing the case" if (d / "case").exists() or d.exists() else "queued"}
+    try:
+        text = log.read_text(errors="replace")[-200000:]
+    except OSError:
+        return {"stage": "solving"}
+    it = _re.findall(r"^Time = ([-+0-9.eE]+)", text, _re.M)
+    s = study.get("solve", {})
+    nmax = int(s.get("iterations", 3000 if study.get("model", "laminar") != "laminar" else 2000))
+    start = (d / "case" / "log.checkMesh").stat().st_mtime if (d / "case" / "log.checkMesh").exists() else log.stat().st_ctime
+    el = max(time.time() - start, 1e-3)
+    if not it:
+        return {"stage": "solving (starting)", "elapsed_min": round(el / 60, 1)}
+    i = float(it[-1])
+    per = el / max(i, 1)
+    return {"stage": "solving", "iteration": int(i), "max_iterations": nmax, "s_per_iteration": round(per, 3),
+            "elapsed_min": round(el / 60, 1), "eta_min_max": round(per * max(nmax - i, 0) / 60, 1),
+            "note": "eta is an upper bound: the run stops earlier when it converges"}
 
 
 def start(studies: dict, solver: str | None = None) -> Path:
@@ -150,7 +178,8 @@ def start(studies: dict, solver: str | None = None) -> Path:
         else:
             jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s})
     (folder / "request.json").write_text(json.dumps({"names": [j["name"] for j in jobs], "invalid": invalid,
-                                                     "solver": s, "started": time.time()}))
+                                                     "solver": s, "started": time.time(),
+                                                     "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
     if jobs:
         _POOL.submit(folder, jobs)
     return folder

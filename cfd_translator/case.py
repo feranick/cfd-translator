@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -142,6 +142,24 @@ def inlet_shape(mesh, faces: np.ndarray, two_d: bool, profile: str):
     return rel / mean, dh, desc
 
 
+def swirl_velocity(Cf_mm: np.ndarray, spec: dict) -> np.ndarray:
+    """Tangential velocity (m/s) at face centres about spec's axis through spec's centre (mm): solid body
+    (rpm: omega x r) or uniform speed (tangential, m/s); right-handed about the axis."""
+    a = np.asarray(spec["axis"], float)
+    a /= np.linalg.norm(a)
+    d = (Cf_mm - np.asarray(spec.get("center", [0, 0, 0]), float)) * SCALE
+    r = d - np.outer(d @ a, a)                                     # radial vector, m
+    t = np.cross(a, r)                                             # |t| = r
+    if "rpm" in spec:
+        return float(spec["rpm"]) * 2 * np.pi / 60 * t
+    rn = np.linalg.norm(r, axis=1)
+    return float(spec["tangential"]) * t / np.maximum(rn, 1e-300)[:, None]
+
+
+def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
+    return U - np.einsum("ij,ij->i", U, n)[:, None] * n
+
+
 # ---- the case ----------------------------------------------------------------------------------
 def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     """Writes the case; returns the plan (inlet values, patches, schemes chosen) for the results."""
@@ -160,7 +178,25 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     q = mesh.quality()
     if not q["ok"]:
         raise MeshError(f"mesh check failed: {q}")
-    plan = {"rho": rho, "nu": nu, "mu": mu, "model": model, "patches": {}, "inlets": {}, "quality": q}
+    plan = {"rho": rho, "nu": nu, "mu": mu, "model": model, "patches": {}, "inlets": {}, "quality": q, "zones": {}}
+    zones = {z["name"]: z for z in study.get("rotating", [])}
+    mesh.zones = {}
+    for name, z in zones.items():
+        a = np.asarray(z["axis"], float)
+        a /= np.linalg.norm(a)
+        d = g["C"] - np.asarray(z.get("center", [0, 0, 0]), float)
+        ax = d @ a
+        rad = np.linalg.norm(d - np.outer(ax, a), axis=1)
+        s0, s1 = z.get("span", [-np.inf, np.inf])
+        cells = np.nonzero((rad <= float(z["radius"])) & (ax >= s0) & (ax <= s1))[0]
+        if not len(cells):
+            raise MeshError(f"rotating zone {name!r} contains no cell centres (check center, radius, span)")
+        mesh.zones[name] = cells
+        omega = float(z["rpm"]) * 2 * np.pi / 60
+        walls = [p["name"] for p in patches if p["kind"] == "wall" and p["bc"].get("rotation") == name]
+        plan["zones"][name] = {"cells": int(len(cells)), "omega_rad_s": omega, "axis": a.tolist(),
+                               "center_mm": list(map(float, z.get("center", [0, 0, 0]))),
+                               "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls}
     # inlets first (they set the turbulence reference)
     U = {}
     kin = {}
@@ -186,6 +222,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                 v = Q / Am2
             vmean = float(v)
             Uf = -vmean * rel[:, None] * n
+        if b.get("swirl"):
+            Uf = Uf + _tangential(swirl_velocity(g["Cf"][f], b["swirl"]), n)     # the flow rate is unchanged
+            vmean = float((np.linalg.norm(Uf, axis=1) * A).sum() / A.sum())
         Qin = float(-(np.einsum("ij,ij->i", Uf, Sf)).sum() * SCALE ** 2)
         if Qin <= 0:
             raise MeshError(f"inlet {p['name']!r}: the velocity points out of the domain")
@@ -251,14 +290,27 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
             nb[nm] = {"type": "calculated", "value": _uniform(0)}
         elif kind == "wall":
             vw = b.get("velocity")
-            if vw and np.linalg.norm(vw) > 0:
+            if b.get("rotation") or (vw and np.linalg.norm(vw) > 0):
                 f = mesh.patch_faces(nm)
                 Sf = g["Sf"][f]
                 n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
-                vw = np.asarray(vw, float)
-                Ut = vw[None, :] - np.einsum("ij,j->i", n, vw)[:, None] * n
-                same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * float(np.linalg.norm(vw)))
+                if b.get("rotation"):
+                    # rigid rotation: the full omega x r (blades move through the fluid; on surfaces of
+                    # revolution it is tangential anyway)
+                    spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
+                    Ut = swirl_velocity(g["Cf"][f], spec)
+                    if isinstance(b["rotation"], str):
+                        inside = np.isin(mesh.owner[f], mesh.zones[b["rotation"]]).mean()
+                        if inside < 0.99:
+                            raise MeshError(f"wall {nm!r} rotates with zone {b['rotation']!r} but {1 - inside:.0%} of its "
+                                            "faces are outside the zone: enlarge the zone (radius, span)")
+                else:
+                    Ut = _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
+                same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * max(float(np.abs(Ut).max()), 1e-300))
                 Ub[nm] = {"type": "fixedValue", "value": _uniform(Ut[0]) if same else _nonuniform(Ut)}
+                if isinstance(b.get("rotation"), str):        # rotating with an MRF zone (OpenFOAM 14: MRFnoSlip)
+                    Ub[nm]["type"] = "MRFnoSlip"
+                    plan["patches"][nm]["zone"] = b["rotation"]
                 plan["patches"][nm]["moving"] = True
             else:
                 Ub[nm] = {"type": "noSlip"}
@@ -292,6 +344,19 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     else:
         mt = "simulationType  laminar;"
     (case / "constant" / "momentumTransport").write_text(_dict("momentumTransport", "constant", mt))
+    mrf = case / "constant" / "MRFProperties"
+    if zones:
+        body = []
+        for name, z in zones.items():
+            zp = plan["zones"][name]
+            o = np.asarray(zp["center_mm"]) * SCALE
+            body.append(f"{name}\n{{\n    cellZone        {name};\n"
+                        f"    origin          ({o[0]:.12g} {o[1]:.12g} {o[2]:.12g});\n"
+                        f"    axis            ({zp['axis'][0]:.12g} {zp['axis'][1]:.12g} {zp['axis'][2]:.12g});\n"
+                        f"    omega           {zp['omega_rad_s']:.12g};   // rad/s ({zones[name]['rpm']:g} rpm)\n}}")
+        mrf.write_text(_dict("MRFProperties", "constant", "\n\n".join(body)))
+    elif mrf.exists():
+        mrf.unlink()
     mesh.write(case)
     # system
     s = study.get("solve", {})

@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -78,6 +78,7 @@ class PolyMesh:
     ncells: int
     tag_info: dict = field(default_factory=dict)     # tag -> {"on": "part"|"box", "box": "xmin", ...}
     patches: list = field(default_factory=list)      # [{"name", "type", "start", "n", "tags"}]
+    zones: dict = field(default_factory=dict)        # cell zones {name: cell indices}
     info: dict = field(default_factory=dict)
 
     # ---- sizes ----
@@ -221,6 +222,18 @@ class PolyMesh:
             lines += [f"        nFaces          {p['n']};", f"        startFace       {p['start']};", "    }"]
         lines += [")", "", "// " + "*" * 73 + " //", ""]
         (d / "boundary").write_text("\n".join(lines))
+        zf = d / "cellZones"
+        if self.zones:
+            z = [header("regIOobject", "cellZones", "constant/polyMesh"), f"{len(self.zones)}", "("]
+            for name, cells in self.zones.items():
+                c = np.asarray(cells, np.int64)
+                z += [name, "{", "    type cellZone;", f"    cellLabels List<label> {len(c)}", "("]
+                z += [str(int(i)) for i in c]
+                z += [")", ";", "}"]
+            z += [")", "", "// " + "*" * 73 + " //", ""]
+            zf.write_text("\n".join(z))
+        elif zf.exists():
+            zf.unlink()
         return d
 
 

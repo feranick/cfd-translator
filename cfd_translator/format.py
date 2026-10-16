@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.16.1
+Version: 2026.10.16.6
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -37,13 +37,17 @@ BC_KINDS = {
                "flow_rate": "m3/s (instead of velocity)", "flow_rate_lpm": "L/min (instead of velocity)",
                "profile": "uniform (default) | parabolic (fully developed laminar: circular, rectangular or 2D inlets)",
                "intensity": "turbulence intensity (kOmegaSST; default 0.05)",
-               "length_scale": "mm, turbulence length scale (default 0.07 x hydraulic diameter)"},
+               "length_scale": "mm, turbulence length scale (default 0.07 x hydraulic diameter)",
+               "swirl": "{axis: [x, y, z], center: [x, y, z] mm, rpm (solid body: omega r) or tangential (m/s, "
+                        "uniform)}: tangential velocity added face by face (impeller exits, swirlers)"},
               "Fixed velocity in (pressure zero-gradient)."),
     "outlet": ({"faces": ""}, {"pressure": "Pa (static, default 0)"},
                "Fixed static pressure; velocity zero-gradient, no backflow."),
     "opening": ({"faces": ""}, {"pressure": "Pa (static, default 0)"},
                 "Fixed static pressure; flow may go in or out (open ends, far-field)."),
-    "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part used; default at rest)"},
+    "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part used; default at rest)",
+                             "rotation": "a rotating zone's name (impeller faces inside it) or {axis: [x, y, z], "
+                                         "center: [x, y, z] mm, rpm}: rotating wall (u = omega x r, right-handed)"},
              "No-slip wall (every face no bc takes is a wall)."),
     "slip": ({"faces": ""}, {}, "Free-slip wall: no friction, no flow through (far-field sides)."),
     "symmetry": ({"faces": ""}, {}, "Symmetry plane."),
@@ -63,7 +67,7 @@ CONVENTIONS = [
     "Units: geometry, coordinates, mesh sizes, areas in mm (mm2); velocity m/s; pressure Pa; density kg/m3; "
     "viscosity Pa s; flow rate m3/s (or L/min with flow_rate_lpm); forces N; moments N m.",
     "One study is one steady incompressible flow (OpenFOAM incompressibleFluid, SIMPLE). The geometry is a "
-    "build123d-translator goal, a STEP file (mm), a box [lx, ly, lz] or a cylinder [r, h] (axis Z), all with "
+    "build123d-translator goal, a STEP file (mm), a box [lx, ly, lz], a cylinder [r, h] or an annulus [r_in, r_out, h] (axis Z), all with "
     "the base on z = 0 and centred in X/Y.",
     "domain internal (default): the geometry is the fluid (a channel, a manifold). external: the fluid is the "
     "domain box [x0, y0, z0, x1, y1, z1] minus the geometry (flow around a part).",
@@ -82,11 +86,19 @@ CONVENTIONS = [
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
     "Results: flow.<bc>.Q (m3/s, positive into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean (area mean, Pa), "
     "p_total (flow-weighted total pressure); pressure_drop (mean inlet minus mean outlet static pressure), "
-    "total_pressure_drop; forces.<wall bc>.fx/fy/fz (N, by the fluid on the wall, pressure + viscous) and "
+    "total_pressure_drop, head_loss_m (total pressure drop / (rho g): use it for losses); forces.<wall bc>.fx/fy/fz (N, by the fluid on the wall, pressure + viscous) and "
     ".mx/my/mz about reference.cofr; forces.part (external: every part face); coefficients.cd/cl (with "
     "reference.velocity and area); probes.<name>.ux/uy/uz/p/u; max_velocity; wall_shear; y_plus; "
     "feat_loads (external: per part face, as fea-translator force bcs); checks (mass and momentum balance, "
     "convergence, mesh).",
+    "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
+    "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
+    "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
+    "(hydraulic: rho g Q H / power). The zone must contain only fluid and the rotating walls; keep its "
+    "cylinder clear of stationary walls.",
+    "reliable: false (with reasons) when the solver did not converge or the mass or momentum balance is off: "
+    "then do not report the numbers as results; rerun with more solve.iterations, lower solve.relax, or a "
+    "better mesh. Long runs: use solve.procs (MPI ranks).",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
     "(pressure_drop, flow.inlet.Q, forces.part.fx, coefficients.cd, probes.p1.ux, probes.line.ux.4); tol is "
     "relative (default 0.02), or give abs (absolute).",
@@ -102,21 +114,23 @@ EXAMPLE = {"pipe_laminar": {
     "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]}}
 
 STUDY_KEYS = {
-    "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]}",
+    "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': [r_in, r_out, h]}",
     "domain": "{'kind': 'internal'} (default) | {'kind': 'external', 'box': [x0, y0, z0, x1, y1, z1]}",
     "2d": "true: one cell along Z, empty front/back",
     "fluid": f"one of {sorted(FLUIDS)} or {{rho, mu}} (or a name plus overrides)",
     "model": "|".join(MODELS),
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
-    "solve": "{iterations (2000), residual (1e-5), relax: {U, other}}",
+    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other}, procs (MPI ranks; default CFDT_PROCS or 1)}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
+    "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis from center}]: "
+                "rotating zones (MRF, frozen rotor): the cells whose centres are inside the cylinder",
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
-SOLVE_KEYS = {"iterations", "residual", "relax"}
+SOLVE_KEYS = {"iterations", "residual", "relax", "procs"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p"}
 
 
@@ -180,6 +194,20 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
     return errs
 
 
+def _rotation_errors(r, where: str, speeds: tuple) -> list[str]:
+    if not isinstance(r, dict):
+        return [f"{where}: {{axis: [x, y, z], center: [x, y, z], {' or '.join(speeds)}}}"]
+    errs = [f"{where}: unknown key {k!r}" for k in r if k not in ("axis", "center") + speeds]
+    if not _vec(r.get("axis")) or not any(r["axis"]):
+        errs.append(f"{where}.axis: [x, y, z], not zero")
+    if "center" in r and not _vec(r["center"]):
+        errs.append(f"{where}.center: [x, y, z] (mm)")
+    given = [k for k in speeds if k in r]
+    if len(given) != 1 or not _num(r[given[0]]):
+        errs.append(f"{where}: give one of {list(speeds)} (a number; negative turns the other way)")
+    return errs
+
+
 def fluid_props(f) -> dict:
     if isinstance(f, str):
         return dict(FLUIDS[f])
@@ -216,17 +244,20 @@ def validate_study(st: dict) -> dict:
     g = st.get("geometry")
     geo_kind = None
     if not isinstance(g, dict):
-        errs.append("geometry: {'goal': ...} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]}")
+        errs.append("geometry: {'goal': ...} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': [r_in, r_out, h]}")
     else:
-        kinds = [k for k in ("goal", "step", "box", "cylinder") if k in g]
+        kinds = [k for k in ("goal", "step", "box", "cylinder", "annulus") if k in g]
         if len(kinds) != 1:
-            errs.append(f"geometry: give exactly one of goal, step, box, cylinder (got {kinds or list(g)})")
+            errs.append(f"geometry: give exactly one of goal, step, box, cylinder, annulus (got {kinds or list(g)})")
         else:
             geo_kind = kinds[0]
             if geo_kind == "box" and (not _vec(g["box"]) or min(g["box"]) <= 0):
                 errs.append("geometry.box: [lx, ly, lz] positive (mm)")
             if geo_kind == "cylinder" and (not _vec(g["cylinder"], 2) or min(g["cylinder"]) <= 0):
                 errs.append("geometry.cylinder: [r, h] positive (mm), axis Z, base on z = 0")
+            if geo_kind == "annulus" and (not _vec(g["annulus"], 3) or min(g["annulus"]) <= 0
+                                          or g["annulus"][0] >= g["annulus"][1]):
+                errs.append("geometry.annulus: [r_in, r_out, h] positive with r_in < r_out (mm), axis Z, base on z = 0")
             if geo_kind == "step" and not isinstance(g["step"], str):
                 errs.append("geometry.step: a path to a STEP file (mm)")
             if geo_kind == "goal" and not isinstance(g["goal"], dict):
@@ -306,14 +337,20 @@ def validate_study(st: dict) -> dict:
                 errs.append(f"{w}: intensity between 0 and 0.5 (e.g. 0.05)")
             if "length_scale" in b and (not _num(b["length_scale"]) or b["length_scale"] <= 0):
                 errs.append(f"{w}: length_scale is a positive length (mm)")
+            if "swirl" in b:
+                errs += _rotation_errors(b["swirl"], f"{w}.swirl", ("rpm", "tangential"))
         if b["kind"] in ("outlet", "opening") and "pressure" in b and not _num(b["pressure"]):
             errs.append(f"{w}: pressure is a number (Pa)")
         if b["kind"] == "wall" and "velocity" in b and not _vec(b["velocity"]):
             errs.append(f"{w}: velocity is [vx, vy, vz] (m/s)")
+        if b["kind"] == "wall" and "rotation" in b and not isinstance(b["rotation"], str):
+            errs += _rotation_errors(b["rotation"], f"{w}.rotation", ("rpm",))
+            if "velocity" in b:
+                errs.append(f"{w}: give velocity or rotation, not both")
     if len(set(names)) != len(names):
         errs.append(f"bcs: names must be unique (got {names})")
     kinds = [b.get("kind") for b in bcs if isinstance(b, dict)]
-    moving = any(b.get("kind") == "wall" and b.get("velocity") for b in bcs if isinstance(b, dict))
+    moving = any(b.get("kind") == "wall" and (b.get("velocity") or b.get("rotation")) for b in bcs if isinstance(b, dict))
     if bcs and not ({"inlet", "opening"} & set(kinds)) and not moving:
         errs.append("bcs: nothing drives the flow (add an inlet, an opening or a moving wall)")
     if "inlet" in kinds and not ({"outlet", "opening"} & set(kinds)):
@@ -372,10 +409,38 @@ def validate_study(st: dict) -> dict:
         errs.append("solve.iterations: a positive integer")
     if "residual" in s and (not _num(s["residual"]) or not 0 < s["residual"] < 1):
         errs.append("solve.residual: between 0 and 1 (e.g. 1e-5)")
+    if "procs" in s and (not isinstance(s["procs"], int) or s["procs"] < 1):
+        errs.append("solve.procs: number of MPI ranks (integer >= 1)")
     if "relax" in s:
         rl = s["relax"]
         if not isinstance(rl, dict) or not all(k in ("U", "other") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
             errs.append("solve.relax: {U: 0..1, other: 0..1}")
+    # rotating zones
+    rot = st.get("rotating", [])
+    znames = []
+    if not isinstance(rot, list):
+        errs.append("rotating: a list of zones")
+        rot = []
+    for i, z in enumerate(rot):
+        w = f"rotating[{i}]"
+        if not isinstance(z, dict) or not isinstance(z.get("name"), str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", z.get("name", "")):
+            errs.append(f"{w}: {{name (a word), axis, center, rpm, radius, span}}")
+            continue
+        znames.append(z["name"])
+        errs += _rotation_errors({k: v for k, v in z.items() if k in ("axis", "center", "rpm")}, w, ("rpm",))
+        for k in z:
+            if k not in ("name", "axis", "center", "rpm", "radius", "span"):
+                errs.append(f"{w}: unknown key {k!r}")
+        if not _num(z.get("radius")) or z["radius"] <= 0:
+            errs.append(f"{w}.radius: a positive radius (mm)")
+        if "span" in z and (not _vec(z["span"], 2) or z["span"][0] >= z["span"][1]):
+            errs.append(f"{w}.span: [s0, s1] (mm along the axis from center, s0 < s1)")
+    if len(set(znames)) != len(znames):
+        errs.append("rotating: zone names must be unique")
+    for i, b in enumerate(bcs):
+        r = b.get("rotation") if isinstance(b, dict) else None
+        if isinstance(r, str) and r not in znames:
+            errs.append(f"bcs[{i}].rotation: {r!r} is not a rotating zone ({znames or 'none defined'})")
     # reference, probes, expect
     ref = st.get("reference", {})
     if not isinstance(ref, dict):

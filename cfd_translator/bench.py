@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.16.4
+Version: 2026.10.16.6
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -8,6 +8,10 @@ Version: 2026.10.16.4
   cavity_re100     lid-driven cavity, Re 100: centreline velocities vs Ghia, Ghia & Shin (1982)
   pipe_poiseuille  Hagen-Poiseuille pipe: dp = 8 mu L Q / (pi R^4) (swept disk mesh; Gmsh)
   cylinder_2d1     Schaefer & Turek (1996) 2D-1, cylinder in a channel at Re 20: cD, dp (Gmsh)
+  taylor_couette_2d   rotating inner cylinder (rotating wall): exact torque and velocity (Gmsh)
+  taylor_couette_mrf  the same with the inner region as a rotating zone (MRF): same answers, power = T omega
+  swirl_pipe       solid-body swirl at an inlet: exact angular momentum inflow, angular momentum balance (Gmsh)
+  pipe_poiseuille_mpi  pipe_poiseuille on 4 MPI ranks (solve.procs)
   cavity_re1000    lid-driven cavity, Re 1000 vs Ghia (slow; OpenFOAM)
   pipe_turbulent   turbulent pipe, Re 5e4, kOmegaSST: friction factor vs Colebrook (slow; Gmsh)
   chain_plate      build123d-translator plate -> cfd-translator -> fea-translator: the FEA support
@@ -132,6 +136,48 @@ def _cases() -> dict:
         "checks": lambda r: [("dp over 25 D = f (L/D) rho U^2 / 2 (Colebrook f = %.4f)" % f,
                               f * 25 * rho * Ub ** 2 / 2, r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.10})],
         "ref": False, "needs": ["gmsh"], "slow": True}
+    # Taylor-Couette (2D): inner cylinder R1 = 20 mm turning at 1 rad/s, outer R2 = 40 mm at rest, mu 0.01:
+    # u_t = A r + B / r, torque per length 4 pi mu omega R1^2 R2^2 / (R2^2 - R1^2)
+    R1, R2, w, mu_tc, depth = 0.02, 0.04, 1.0, 0.01, 0.01
+    T_tc = 4 * math.pi * mu_tc * w * R1 ** 2 * R2 ** 2 / (R2 ** 2 - R1 ** 2) * depth
+    A_tc, B_tc = -w * R1 ** 2 / (R2 ** 2 - R1 ** 2), w * R1 ** 2 * R2 ** 2 / (R2 ** 2 - R1 ** 2)
+    rpm = w * 60 / (2 * math.pi)
+
+    def tc(mrf: bool) -> dict:
+        st = {"geometry": {"annulus": [20, 40, 10]}, "2d": True, "fluid": {"rho": 1000.0, "mu": mu_tc},
+              "bcs": [{"kind": "wall", "name": "inner", "faces": {"cyl_r": 20},
+                       "rotation": "rotor" if mrf else {"axis": [0, 0, 1], "rpm": rpm}},
+                      {"kind": "wall", "name": "outer", "faces": {"cyl_r": 40}}],
+              "mesh": {"size": 1.0}, "solve": {"iterations": 4000, "residual": 1e-7},
+              "probes": [{"name": "mid", "at": [30, 0, 5]}]}
+        if mrf:
+            st["rotating"] = [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": rpm, "radius": 30}]
+        return st
+
+    def tc_checks(r):
+        return [("torque on the inner cylinder", -T_tc, r["forces"]["inner"]["mz"], {"tol": 0.02}),
+                ("torque on the outer cylinder", T_tc, r["forces"]["outer"]["mz"], {"tol": 0.02}),
+                ("u_t at r = 30 mm (A r + B / r)", A_tc * 0.03 + B_tc / 0.03, r["probes"]["mid"]["uy"], {"tol": 0.02}),
+                ("angular momentum balance", 0.0, r["checks"]["angular_momentum_balance"]["error"], {"abs": 0.03})]
+    C["taylor_couette_2d"] = {"study": tc(False), "checks": tc_checks, "ref": False, "needs": ["gmsh"]}
+    C["taylor_couette_mrf"] = {"study": tc(True), "checks": lambda r: tc_checks(r) + [
+        ("power to the fluid = torque x omega", T_tc * w, r["rotating"]["rotor"]["power_W"], {"tol": 0.02})],
+        "ref": False, "needs": ["gmsh"]}
+    # swirling inflow (solid body, 1 rad/s) into a pipe R = 10 mm at 0.01 m/s: angular momentum flux
+    # rho U omega pi R^4 / 2 in, balanced by the wall torque and the outflow
+    C["swirl_pipe"] = {
+        "study": {"geometry": {"cylinder": [10, 200]}, "fluid": {"rho": 1000.0, "mu": 0.01},
+                  "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "velocity": 0.01,
+                           "swirl": {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": rpm}},
+                          {"kind": "outlet", "faces": {"nz": 1}}],
+                  "mesh": {"size": 1.0, "extrude": 40}, "solve": {"residual": 1e-7}},
+        "checks": lambda r: [("angular momentum in = rho U omega pi R^4 / 2", 1000 * 0.01 * w * math.pi * 0.01 ** 4 / 2,
+                              r["flow"]["inlet"]["angular_momentum_in"][2], {"tol": 0.02}),
+                             ("flow rate unchanged by the swirl", 0.01 * math.pi * 0.01 ** 2, r["flow"]["inlet"]["Q"], {"tol": 1e-6}),
+                             ("angular momentum balance", 0.0, r["checks"]["angular_momentum_balance"]["error"], {"abs": 0.03})],
+        "ref": False, "needs": ["gmsh"]}
+    C["pipe_poiseuille_mpi"] = dict(C["pipe_poiseuille"], study=dict(C["pipe_poiseuille"]["study"],
+                                    solve={"residual": 1e-7, "procs": 4}))
     C["chain_plate"] = {"study": None, "chain": True, "ref": False, "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     return C
 
@@ -220,6 +266,9 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             continue
         checks = []
         for what, exp, got, tol in c["checks"](r["results"]):
+            if got is None:
+                checks.append({"what": what, "expected": exp, "got": None, "passed": False})
+                continue
             if "abs" in tol:
                 err = abs(got - exp)
                 ok = err <= tol["abs"]
