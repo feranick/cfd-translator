@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.16.3
+Version: 2026.10.16.4
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -148,8 +148,13 @@ def _chain(folder: Path, solver: str) -> dict:
                      {"kind": "outlet", "faces": {"box": "xmax"}},
                      {"kind": "slip", "name": "farfield", "faces": {"box": ["ymin", "ymax", "zmax", "zmin"]}},
                      {"kind": "wall", "name": "plate", "faces": {"all": True}}],
-             "mesh": {"size": 8, "refine": [{"at": [0, 0, 20], "r": 40, "size": 2}]},
+             "mesh": {"size": 14, "refine": [{"at": [0, 0, 20], "r": 32, "size": 3}]},
              "solve": {"iterations": 1500, "residual": 1e-6}}
+    import fea_translator
+    v = tuple(int(x) for x in fea_translator.__version__.split("."))
+    if v < (2026, 10, 16, 6):
+        return {"ok": False, "passed": False, "error": f"fea-translator {fea_translator.__version__} is too old: 2026.10.16.6 or "
+                "later is needed (earlier versions lose up to 10 % of distributed loads; git pull it)"}
     r = run_study("chain_plate", study, folder / "chain_plate", solver)
     if not r.get("ok"):
         return {"ok": False, "passed": False, "error": r.get("error"), "why": r.get("why")}

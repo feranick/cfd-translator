@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.16.1
+Version: 2026.10.16.4
 
     results(study, mesh, plan, fields) -> dict
 
@@ -270,9 +270,11 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
               "momentum_balance": {"residual_N": _r(totals), "scale_N": _r(scale_m), "error": _r(mom_err)}}
     if visc_cmp[0] > 0:
         checks["wall_shear_vs_ours"] = _r(visc_cmp[1] / visc_cmp[0])
-        if visc_cmp[1] / visc_cmp[0] > 0.1:
-            warns.append(f"OpenFOAM's wall shear and ours (snGrad) differ by {visc_cmp[1] / visc_cmp[0]:.1%} "
-                         "(coarse or skewed cells at the walls?)")
+        # our estimate leaves out OpenFOAM's dev2(T(grad U)) term, which is not small on tetrahedra (~20 %
+        # there); the momentum balance already uses OpenFOAM's values, so only a gross mismatch is a warning
+        if visc_cmp[1] / visc_cmp[0] > 0.5:
+            warns.append(f"OpenFOAM's wall shear and ours (snGrad) differ by {visc_cmp[1] / visc_cmp[0]:.1%}: "
+                         "check the wall cells (very coarse or skewed?)")
     for n, pl in plan.get("inlets", {}).items():
         got = -float(np.asarray(fields["patches"][n]["phi"], float).sum())
         if abs(got - pl["Q"]) > 1e-3 * abs(pl["Q"]):

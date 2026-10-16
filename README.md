@@ -124,14 +124,14 @@ Each study's result also has `selection` (what every bc took: face kind, area, n
 
 | case | reference | tolerance | reference solver | OpenFOAM |
 |---|---|---|---|---|
-| couette_2d | Q = UH/2, τ = μU/H | 0.5 % | pass (exact, 1e-16) | to run |
-| channel_2d | dp = 12 μ L U / H², wall force | 1 % | pass (0.13 %) | to run |
-| cavity_re100 | Ghia, Ghia & Shin 1982, 30 centreline points | 0.02 U | pass (max 0.0086) | to run |
-| pipe_poiseuille | dp = 8 μ L Q / (π R⁴), wall force (swept disk, Gmsh) | 2 % | — | to run |
-| cylinder_2d1 | Schäfer & Turek 1996, Re 20: cD 5.58, cL 0.0106, Δp 0.1174 Pa | 2 % / 0.005 / 5 % | — | to run |
+| couette_2d | Q = UH/2, τ = μU/H | 0.5 % | pass (exact, 1e-16) | pass (exact: 0) |
+| channel_2d | dp = 12 μ L U / H², wall force | 1 % | pass (0.13 %) | pass (0.13 %, 0.17 %) |
+| cavity_re100 | Ghia, Ghia & Shin 1982, 30 centreline points | 0.02 U | pass (max 0.0086) | pass (max 0.0087) |
+| pipe_poiseuille | dp = 8 μ L Q / (π R⁴), wall force (swept disk, Gmsh) | 2 % | — | pass (0.80 %, 0.88 %) |
+| cylinder_2d1 | Schäfer & Turek 1996, Re 20: cD 5.58, cL 0.0106, Δp 0.1174 Pa | 2 % / 0.005 / 5 % | — | pass (cD 5.581: 0.03 %; Δp 0.11733: 0.06 %; cL 0.0078: low, inside 0.005) |
 | cavity_re1000 (slow) | Ghia 1982 | 0.03 U | — | to run |
 | pipe_turbulent (slow) | Colebrook, Re 5×10⁴, kOmegaSST | 10 % | — | to run |
-| chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | to run |
+| chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass by hand with feat 2026.10.16.8 (reaction = −force to 1e-6); the bench run failed with feat 2026.10.16.5 (its own equilibrium error 0.11) |
 
 The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
 
@@ -198,6 +198,7 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.16.4 | First OpenFOAM 14 benchmark results (table above): all default cases pass; chain_plate needs fea-translator >= 2026.10.16.6 (checked) and uses a lighter mesh (it took 15 min on 230k cells); the wall-shear comparison warns only above 50 % (our estimate omits the dev2 term, ~20 % on tetrahedra; the momentum balance uses OpenFOAM's values). |
 | 2026.10.16.3 | A velocity component that is zero everywhere (exact 2D solutions) no longer blocks "converged" (its normalised residual is round-off); `cfdt bench` prints one progress line per case on stderr. First OpenFOAM 14 runs on carbonio: mass balance ≤ 4e-10, momentum balance ≤ 4e-4, OpenFOAM vs our wall shear ≤ 1e-4 (cavity 5 %, lid corners). |
 | 2026.10.16.2 | Boundary layers: the walls are found on the swept mesh itself (no separate Gmsh surface mesh); cylinder fit accepts coarse, short triangulations (facet normals tilted ~20°). |
 | 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
