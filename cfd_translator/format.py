@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.16.6
+Version: 2026.10.17.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -127,6 +127,9 @@ STUDY_KEYS = {
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis from center}]: "
                 "rotating zones (MRF, frozen rotor): the cells whose centres are inside the cylinder",
+    "images": "true (default pictures) or [{name, slice: {axis: x|y|z, at: mm}, field: u|ux|uy|uz|p, streamlines, "
+              "window: [a0, a1, b0, b1] mm} | {name, surface: part|walls|<wall bc>, field: p|wall_shear, view: "
+              "[elev, azim]}]: PNGs after the solve (get_image shows them; render_images makes more later)",
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
@@ -191,6 +194,49 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
         errs.append(f"{where}: at is [x, y, z] (mm)")
     if "side" in sel and k != "cyl_r":
         errs.append(f"{where}: side goes with cyl_r")
+    return errs
+
+
+def image_errors(im, two_d: bool = False) -> list[str]:
+    if im is True or im is False:
+        return []
+    if not isinstance(im, list):
+        return ["images: true or a list of {name, slice | surface, field, ...}"]
+    errs, names = [], []
+    for i, sp in enumerate(im):
+        w = f"images[{i}]"
+        if not isinstance(sp, dict) or ("slice" in sp) == ("surface" in sp):
+            errs.append(f"{w}: give slice: {{axis, at}} or surface: part | walls | <wall bc>")
+            continue
+        for k in sp:
+            if k not in ("name", "slice", "surface", "field", "streamlines", "window", "view"):
+                errs.append(f"{w}: unknown key {k!r}")
+        if "name" in sp:
+            if not isinstance(sp["name"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", sp["name"]):
+                errs.append(f"{w}.name: a word (letters, digits, _ . -)")
+            names.append(sp.get("name"))
+        if "slice" in sp:
+            sl = sp["slice"]
+            if not isinstance(sl, dict) or sl.get("axis") not in ("x", "y", "z") or not _num(sl.get("at")):
+                errs.append(f"{w}.slice: {{axis: x | y | z, at: coordinate in mm}}")
+            elif two_d and sl["axis"] != "z":
+                errs.append(f"{w}.slice: a 2d study has only the z slice")
+            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p"):
+                errs.append(f"{w}.field: u, ux, uy, uz or p")
+            if "window" in sp and (not _vec(sp["window"], 4) or sp["window"][0] >= sp["window"][1]
+                                   or sp["window"][2] >= sp["window"][3]):
+                errs.append(f"{w}.window: [a0, a1, b0, b1] in mm along the slice's two in-plane axes")
+        else:
+            if not isinstance(sp["surface"], str):
+                errs.append(f"{w}.surface: part, walls or a wall bc's name")
+            if sp.get("field", "p") not in ("p", "wall_shear"):
+                errs.append(f"{w}.field: p or wall_shear")
+            if "view" in sp and not _vec(sp["view"], 2):
+                errs.append(f"{w}.view: [elevation, azimuth] in degrees")
+        if "streamlines" in sp and not isinstance(sp["streamlines"], bool):
+            errs.append(f"{w}.streamlines: true or false")
+    if len([n for n in names if n]) != len({n for n in names if n}):
+        errs.append("images: names must be unique")
     return errs
 
 
@@ -441,6 +487,9 @@ def validate_study(st: dict) -> dict:
         r = b.get("rotation") if isinstance(b, dict) else None
         if isinstance(r, str) and r not in znames:
             errs.append(f"bcs[{i}].rotation: {r!r} is not a rotating zone ({znames or 'none defined'})")
+    # images
+    if "images" in st:
+        errs += image_errors(st["images"], two_d)
     # reference, probes, expect
     ref = st.get("reference", {})
     if not isinstance(ref, dict):

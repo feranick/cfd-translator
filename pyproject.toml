@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfd-translator"
-version = "2026.10.16.6"
+version = "2026.10.17.1"
 description = "CFD studies (geometry, fluid, boundary conditions on faces) to OpenFOAM cases and checked results; MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Nicola Ferralis", email = "ferralis@generalflash.com" }]
-dependencies = ["numpy>=1.22", "scipy>=1.8"]
+dependencies = ["numpy>=1.22", "scipy>=1.8", "matplotlib>=3.5"]
 
 [project.optional-dependencies]
 # PyPI has no Gmsh wheels for Linux on ARM (aarch64): there, install python3-gmsh with apt and link

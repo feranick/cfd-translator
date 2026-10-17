@@ -460,3 +460,42 @@ def test_progress_eta(tmp_path):
     (d / "case" / "log.foamRun").write_text("".join(f"Time = {i}s\n\n" for i in range(1, 101)))
     p = _progress(d, {"solve": {"iterations": 1000}})
     assert p["iteration"] == 100 and p["max_iterations"] == 1000 and p["eta_min_max"] >= 0
+
+
+# ---- images (2026.10.17.1) ------------------------------------------------------------------------
+def test_images_in_a_run_and_rerendered_from_the_saved_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    st = dict(CHANNEL, images=True)
+    r = run_study("ch", st, tmp_path / "req" / "ch", "ref")
+    assert r["ok"] and set(r["images"]) == {"velocity", "pressure"}, r.get("warnings")
+    for v in r["images"].values():
+        assert Path(v["path"]).stat().st_size > 10000
+    more = api.render_images(str(tmp_path / "req" / "ch"),
+                             [{"name": "zoom", "slice": {"axis": "z", "at": 5}, "field": "ux", "streamlines": True,
+                               "window": [-500, -400, -50, 50]}])
+    assert more["warnings"] == [] and Path(more["images"]["zoom"]["path"]).is_file()
+    assert api.image_path(more["images"]["zoom"]["path"]).suffix == ".png"
+    assert "errors" in api.render_images(str(tmp_path / "req" / "ch"), [{"slice": {"axis": "x", "at": 0}}])   # 2d: z only
+    with pytest.raises(ValueError):
+        api.image_path(str(tmp_path / "req" / "ch" / "ch.json"))
+
+
+def test_slice_masks_solid_parts(tmp_path):
+    """A ring mesh around a 5 mm cylinder: the slice's triangulation must leave the cylinder empty."""
+    import matplotlib.tri as mtri
+    from cfd_translator.render import _cell_size
+    nr, nt, a, R = 20, 64, 5.0, 40.0
+    pts = np.array([[a * (R / a) ** (i / nr) * math.cos(2 * math.pi * j / nt), a * (R / a) ** (i / nr) * math.sin(2 * math.pi * j / nt)]
+                    for i in range(nr + 1) for j in range(nt)])
+    q = [[i * nt + j, (i + 1) * nt + j, (i + 1) * nt + (j + 1) % nt, i * nt + (j + 1) % nt] for i in range(nr) for j in range(nt)]
+    e = {(j, (j + 1) % nt): 1 for j in range(nt)} | {(nr * nt + j, nr * nt + (j + 1) % nt): 2 for j in range(nt)}
+    m = extrude(pts, [], q, 0, 10, 1, 3, 4, e)
+    C = m.geometry()["C"][:, :2]
+    h = _cell_size(m, True)
+    tri = mtri.Triangulation(C[:, 0], C[:, 1])
+    E = C[tri.triangles]
+    L = np.max(np.linalg.norm(E - np.roll(E, 1, axis=1), axis=2), axis=1)
+    tri.set_mask(L > 2.0 * h[tri.triangles].max(axis=1))
+    finder = tri.get_trifinder()
+    assert finder(0.0, 0.0) == -1 and finder(1.0, 1.0) == -1          # inside the cylinder: no triangle
+    assert finder(20.0, 0.0) >= 0                                     # in the fluid: covered

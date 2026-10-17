@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.16.6
+Version: 2026.10.17.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -8,6 +8,7 @@ Version: 2026.10.16.6
     start(studies, solver)           the same in the background: returns the request folder
     status(request, wait)            finished studies with results, the others pending
     case(study, name)                mesh and OpenFOAM case of one study, without solving (file texts)
+    render_images(folder, images)    new pictures of a finished study from its saved mesh and fields
     bench(names, solver)             the benchmark studies with known answers
     read_file(path)                  a written file as base64 (only under the output folder)
     tool_status()                    versions, OpenFOAM and Gmsh found
@@ -227,6 +228,35 @@ def case(study: dict, name: str = "study") -> dict:
             texts[rel] = t if len(t) < 8000 else t[:8000] + "\n// ... (truncated; see the file)\n"
     return {"case": str(c), "mesh": plan["quality"], "selection": selection, "inlets": plan["inlets"],
             "warnings": warns + v["warnings"], "files": texts}
+
+
+def render_images(study_folder: str, images=True) -> dict:
+    """New pictures of a finished study (its folder: <request>/<name>) from the saved mesh and fields."""
+    from .format import image_errors
+    from .render import default_images, load_state, render
+
+    d = Path(study_folder).expanduser().resolve()
+    root = out_root().resolve()
+    if root not in d.parents:
+        return {"error": f"only study folders under {root}"}
+    if not (d / "state.npz").is_file():
+        return {"error": f"no saved state in {d} (a finished study's folder: <request>/<name>)"}
+    mesh, plan, fields, study = load_state(d)
+    errs = image_errors(images, bool(study.get("2d")))
+    if errs:
+        return {"error": "invalid images", "errors": errs}
+    specs = default_images(study, mesh) if images is True else images
+    out, warns = render(study, mesh, plan, fields, d / "images", specs, d.name)
+    return {"images": out, "warnings": warns}
+
+
+def image_path(path: str) -> Path:
+    """A PNG written by a run or by render_images (only under the output folder)."""
+    p = Path(path).expanduser().resolve()
+    root = out_root().resolve()
+    if root not in p.parents or p.suffix.lower() != ".png" or not p.is_file():
+        raise ValueError(f"no image {p} under {root}")
+    return p
 
 
 def bench(names=None, solver: str | None = None) -> dict:

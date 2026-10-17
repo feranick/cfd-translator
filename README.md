@@ -36,7 +36,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 23 tests: 20 run anywhere, 3 need Gmsh or OpenFOAM
+pytest -q                   # 25 tests: 22 run anywhere, 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -48,6 +48,7 @@ cfdt format > study_format.json          # the study format (what an LLM reads f
 cfdt validate examples/studies.json      # static checks with fixable messages
 cfdt run examples/studies.json           # mesh, solve, check; results in ~/cfdt_runs/run_*/
 cfdt case examples/studies.json pipe_laminar   # write the OpenFOAM case only (inspect, run by hand)
+cfdt images ~/cfdt_runs/run_.../<study> [views.json]   # more pictures of a finished study, without solving again
 ```
 
 Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case.foam` in ParaView), `<study>_case.tgz` and `<study>.json`. Environment: `CFDT_OUT` (~/cfdt_runs), `CFDT_WORKERS` (2), `CFDT_TIMEOUT` (3600 s per study), `CFDT_SOLVER` (auto | foam | ref), `CFDT_PROCS` (MPI ranks; 1).
@@ -97,6 +98,11 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
 - **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
 - **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
+- **images**: `true` for the default views, or a list of views. The PNGs are written after the solve.
+  - Defaults: 2D studies get |U| with streamlines and the pressure on the plane. External 3D studies get top and side slices through the part with streamlines, plus the pressure on the part. Internal 3D studies get a mid slice and the wall pressure.
+  - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p, streamlines, window: [a0, a1, b0, b1]}`.
+  - Surface: `{name, surface: part | walls | <wall bc>, field: p | wall_shear, view: [elev, azim]}`.
+  - Every run also saves its mesh and final fields (`state.npz`), so `render_images` / `cfdt images` can make other views later without solving again.
 
 ### Results
 
@@ -115,6 +121,7 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 | `wall_shear.<bc>.mean/max`, `y_plus.<bc>` | Pa; y⁺ for kOmegaSST |
 | `max_velocity` | largest cell velocity and where it is |
 | `feat_loads` | external flow: one fea-translator `force` bc per part face (`pts` selector, N), ready to paste into a feat study of the same part |
+| `images.<name>.path`, `what`, `min`, `max` | the PNGs (show them with the MCP tool `get_image`) |
 | `checks` | `mass_balance`, `momentum_balance`, `angular_momentum_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
 
 Each study's result has **`reliable`**. It is false, with `unreliable_because`, when the solver did not converge, or the mass balance is off by more than 0.1%, or the momentum balance by more than 3%. Those numbers must not be reported as results.
@@ -196,7 +203,7 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 
 ## For LLM tools: the MCP server
 
-Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: iteration, s/iteration, `eta_min_max`), `study_status`, `get_case`, `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: iteration, s/iteration, `eta_min_max`), `study_status`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
@@ -217,6 +224,7 @@ cfd_translator/
   mesher.py     Gmsh meshing                       foamio.py     readers (fields, logs, checkMesh)
   select.py     selectors, bc -> patches           post.py       results and invariants
   refsolver.py  2D MAC reference solver            runner.py     one study end to end
+  render.py     images (matplotlib), saved state
   bench.py      benchmarks                         api.py, cli.py, mcp_server.py
 tests/test_cfd.py      examples/studies.json      planning.md (session context)
 ```
@@ -225,6 +233,7 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.17.1 | Images: `images` in a study (slices of velocity or pressure with streamlines, wall-surface pressure or shear; solid parts masked); each run saves its mesh and fields (`state.npz`) for `render_images` / `cfdt images` without solving again; MCP `get_image` returns PNGs as images. matplotlib becomes a dependency. |
 | 2026.10.16.6 | Rotating zones (MRF): `rotating`, walls with `rotation` (zone name or axis/rpm), torque, power, pump head and efficiency; `swirl` at inlets; `annulus` geometry; `solve.procs` (MPI); `reliable` verdict; `head_loss_m`; angular momentum flux and balance; pending studies report progress and ETA, and the MCP instructions stop long polling; benchmarks taylor_couette_2d, taylor_couette_mrf, swirl_pipe, pipe_poiseuille_mpi. |
 | 2026.10.16.5 | Linux ARM (aarch64): the `mesh` extra skips Gmsh (no PyPI wheels); README: Ubuntu's python3-gmsh linked into the venv, as in fea-translator. |
 | 2026.10.16.4 | First OpenFOAM 14 benchmark results (table above): all default cases pass; chain_plate needs fea-translator >= 2026.10.16.6 (checked) and uses a lighter mesh (it took 15 min on 230k cells); the wall-shear comparison warns only above 50 % (our estimate omits the dev2 term, ~20 % on tetrahedra; the momentum balance uses OpenFOAM's values). |

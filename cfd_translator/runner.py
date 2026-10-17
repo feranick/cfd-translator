@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.16.6
+Version: 2026.10.17.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -93,6 +93,16 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         res, w = results(study, mesh, plan, fields)
         warns += w
         out["results"] = res
+        from .render import default_images, render, save_state
+        try:
+            save_state(folder, mesh, plan, fields, study)
+        except Exception as exc:  # noqa: BLE001
+            warns.append(f"could not save the state for re-rendering: {exc}")
+        if study.get("images"):
+            specs = default_images(study, mesh) if study["images"] is True else study["images"]
+            imgs, w = render(study, mesh, plan, fields, folder / "images", specs, name)
+            warns += w
+            out["images"] = imgs
         if study.get("expect"):
             out["expect"] = check_expect(res, study["expect"])
             out["passed"] = all(e["passed"] for e in out["expect"])

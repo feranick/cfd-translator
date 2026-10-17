@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.16.6
+Version: 2026.10.17.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -8,6 +8,8 @@ Tools (all JSON):
   study_status      collects the pending studies of a run_studies request
   get_case          the OpenFOAM case of one study (dictionaries as text), without solving
   run_benchmarks    the benchmark studies with known answers (is the toolchain right?)
+  get_image         a PNG (flow slices, streamlines, wall pressure) as an image
+  render_images     more pictures of a finished study, without solving again
   get_file          a written file as base64 (for callers on another machine)
 
 Run:  cfdt-mcp                       (stdio)
@@ -20,10 +22,12 @@ import argparse
 from . import api
 
 try:  # MCP Python SDK 2.x
+    from mcp.server.mcpserver import Image
     from mcp.server.mcpserver import MCPServer as _Server
     _V2 = True
 except ImportError:  # 1.x
     from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import Image
     _V2 = False
 
 INSTRUCTIONS = """cfd-translator runs steady incompressible CFD (OpenFOAM, laminar or k-omega SST) on one
@@ -44,6 +48,8 @@ with rotation: the zone's name; results give rotating.<zone>.torque_Nm, power_W 
 efficiency. Long runs: set solve.procs (MPI ranks). Pending studies report 'progress' with eta_min_max:
 polling costs tokens, so when a run needs more than about 5 minutes, tell the user when it should
 finish and stop; collect it later with study_status.
+Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
+get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""
 
 server = _Server("cfd-translator", instructions=INSTRUCTIONS)
@@ -92,6 +98,21 @@ def run_benchmarks(names: list[str] | None = None, solver: str = "auto") -> dict
     Ghia, Hagen-Poiseuille pipe, Schaefer-Turek cylinder; slow ones by name: cavity_re1000,
     pipe_turbulent; chain_plate with build123d-translator and fea-translator) and reports pass or fail."""
     return api.bench(names, solver)
+
+
+@server.tool()
+def get_image(path: str) -> Image:
+    """A PNG written by run_studies (results' images.<name>.path) or render_images, as an image you can
+    see and show: slices of velocity or pressure (with streamlines) and wall surfaces."""
+    return Image(path=str(api.image_path(path)))
+
+
+@server.tool()
+def render_images(study_folder: str, images: list | bool = True) -> dict:
+    """New pictures of a finished study without solving again: study_folder is <request>/<study name>
+    (the folder holding <name>.json). images: true (defaults) or [{name, slice: {axis, at}, field,
+    streamlines, window} | {name, surface, field, view}] as in study_format. Then get_image each path."""
+    return api.render_images(study_folder, images)
 
 
 @server.tool()

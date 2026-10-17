@@ -94,6 +94,14 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.17.1**: images.
+- `render.py` (matplotlib/Agg): slices with streamlines and masked solids; wall surfaces.
+- `state.npz` + `state.json` per study for re-rendering.
+- MCP `get_image` (an MCP Image) and `render_images`; `cfdt images`.
+- Checked here: cavity (vortex at Ghia's position), channel, potential flow around a cylinder (hole masked, 2U at the sides), 3D box surfaces. 22 tests pass here.
+- Not yet seen: images of real OpenFOAM 3D tetrahedral results (slab selection at about 0.6 cell; check the look on carbonio).
+- ParaView (pvbatch) rendering is an open idea for nicer 3D (streamtubes, iso-surfaces).
+
 **2026.10.16.6** (sandbox: 20 passed, 3 skipped; new OpenFOAM benchmarks not run yet). On OpenFOAM 14 (carbonio), every benchmark up to .4 passes:
 - couette, channel, cavity_re100/1000, pipe_poiseuille, cylinder_2d1 (cD 5.581, Δp 0.11733; cL 0.0078 is the weakest), pipe_turbulent (3.1 %, but its residuals stall at 2e-4), chain_plate (with feat >= .6).
 - Invariants: mass <= 4e-10, momentum <= 4e-4.

@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.10.16.1
+Version: 2026.10.17.1
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -8,6 +8,7 @@ Version: 2026.10.16.1
     cfdt status REQUEST                  results of a request folder (finished and pending studies)
     cfdt case studies.json NAME          write the OpenFOAM case of one study (no solve)
     cfdt bench [NAMES...] [--solver S]   the benchmark studies with known answers
+    cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
 
 '-' reads the studies from stdin.
 """
@@ -38,6 +39,9 @@ def main(argv=None) -> None:
     p = sub.add_parser("case")
     p.add_argument("studies")
     p.add_argument("name")
+    p = sub.add_parser("images")
+    p.add_argument("folder")
+    p.add_argument("images", nargs="?")
     p = sub.add_parser("bench")
     p.add_argument("names", nargs="*")
     p.add_argument("--solver", default=None)
@@ -53,6 +57,8 @@ def main(argv=None) -> None:
     elif a.cmd == "case":
         st = _load(a.studies)
         out = api.case(st[a.name], a.name)
+    elif a.cmd == "images":
+        out = api.render_images(a.folder, _load(a.images) if a.images else True)
     else:
         out = api.bench(a.names or None, a.solver)
     print(json.dumps(out, indent=1, default=float))
