@@ -659,3 +659,24 @@ def test_venturi_outline_is_closed_and_small_velocity_components_count_as_zero()
     assert zero_fields({"U": U, "p": np.linspace(0, 1, 10)}, {"rho": 1.0}) == ["Uy", "Uz"]
     U[2, 1] = 1e-3                                              # a real cross flow
     assert zero_fields({"U": U, "p": np.linspace(0, 1, 10)}, {"rho": 1.0}) == ["Uz"]
+
+
+def test_isothermal_energy_run_ignores_h_and_caps_gamg(tmp_path):
+    from cfd_translator.runner import zero_fields
+    pipe = {"geometry": {"box": [100, 10, 1]}, "2d": True, "fluid": "air", "energy": True,
+            "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.5}, {"kind": "outlet", "faces": {"nx": 1}}],
+            "mesh": {"cells": [20, 4, 1]}}
+    mesh, patches, sel, plan, w = prepare(pipe, tmp_path / "a")
+    fv = foamio.read_foam((tmp_path / "a" / "case" / "system" / "fvSolution").read_text())
+    assert plan["energy"]["isothermal"] and "h" not in fv["PIMPLE"]["residualControl"]
+    assert int(fv["solvers"]["p"]["maxIter"]) == 50
+    U = np.zeros((10, 3))
+    U[:, 0] = 1.0
+    T = np.full(10, 293.15)
+    T[0] += 5e-4                                    # u^2 / cp = 1e-3 K: kinetic energy, not heat
+    assert "h" in zero_fields({"U": U, "p": np.linspace(1e5, 1e5 + 1, 10), "T": T}, plan)
+    heated = dict(pipe, bcs=pipe["bcs"] + [{"kind": "wall", "faces": {"ny": 1}, "q": 100}])
+    mesh, patches, sel, plan, w = prepare(heated, tmp_path / "b")
+    fv = foamio.read_foam((tmp_path / "b" / "case" / "system" / "fvSolution").read_text())
+    assert not plan["energy"]["isothermal"] and "h" in fv["PIMPLE"]["residualControl"]
+    assert "h" not in zero_fields({"U": U, "p": np.linspace(1e5, 1e5 + 1, 10), "T": T}, plan)

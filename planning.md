@@ -99,7 +99,10 @@ Works **together** with b3dt and feat:
 - venturi_subsonic: outline not closed (b3dt BuildError); cfdt validation now runs b3dt's validate_goal.
 - heated_channel_2d: Nu 8.36 (ref 8.235), outlet T 23.826 (ref 23.833), but not converged (Uy) and a false inlet-flow warning (mass vs volume): both fixed.
 - natural_cavity_ra1e4: Nu 2.253 (ref 2.243), p_rgh 1.18e-6 vs 1e-6 at 6000 iterations: target now 1e-5.
-- Still to read on mochi: the rotation benchmarks' checks and pipe_air_low_mach.
+- Rotation benchmarks: Taylor-Couette torque 6.74e-7 (fixed wall) and 6.75e-7 N m (MRF) against 6.70e-7 analytic (mu 0.01, omega 1): +0.6 %; swirl_pipe reliable.
+- pipe_air_low_mach: dp over 0.1 m 0.2897 Pa against 0.2920 (-0.8 %), but 78 min: h stalled (isothermal) and GAMG ran 1000 sweeps per iteration on absolute p. Fixed by energy.isothermal (h out of residualControl) and maxIter 50.
+- taylor_couette_2d passes all checks (u_t at 30 mm -0.2 %). taylor_couette_mrf: torques +0.7/+1.0 %, power ok, but u_t at the probe +7.8 %: the probe sat on the zone's jagged 30 mm edge; zone moved to 25 mm.
+- swirl_pipe: angular momentum in -0.65 %; its flow check compared with pi R^2 (polygon area is 0.16 % less): now the meshed area. Its angular balance (0.22) and pipe_air's (1.09) were the scale: now per axis against gross face moments.
 
 **2026.10.18.6**: the run record (`execution` in every result), as added to EXECUTION.md together with lmpt's `slurm_job`/`mpi` fields.
 - The former `executor` block of run-study results is kept as an alias; drop it once llmt and lmpt read `execution`.

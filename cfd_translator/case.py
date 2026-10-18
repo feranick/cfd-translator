@@ -623,10 +623,18 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     else:
         rU = float(relax.get("U", 0.7 if (unstructured or transonic) else 0.9))
         rO = float(relax.get("other", 0.7 if (unstructured or transonic) else 0.9))
+    # no heat put in anywhere and low Mach: temperature varies only by u^2/cp (kinetic energy, ~1e-4 K), so
+    # h's normalised residual is round-off and stalls (pipe_air_low_mach on mochi: 1.5e-4 after 3000
+    # iterations). OpenFOAM then stops on U and p alone, and 'converged' ignores h (runner.zero_fields).
+    T_C = T_op - 273.15
+    heat_in = any(any(k in p["bc"] for k in ("T", "q", "power", "h")) for p in patches if p["kind"] == "wall") or any(
+        abs(float(p["bc"].get(k, T_C)) - T_C) > 1e-9 for p in patches for k in ("temperature", "total_temperature")
+        if p["kind"] in ("inlet", "outlet", "opening")) or any("total_pressure" in p["bc"] for p in patches)
+    isothermal = not heat_in and mach_est < 0.1
     plan["schemes"] = "unstructured" if unstructured else "orthogonal"
     plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO},
                  "fixed_pressure": any(pp["kind"] in ("outlet", "opening") for pp in patches),
-                 "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": gravity, "closed": closed,
+                 "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": gravity, "closed": closed, "isothermal": isothermal,
                             "density": "constant (closed, no gravity)" if rho_const else ("constant" if not gas else "perfect gas"),
                             "transonic": transonic, "mach_estimate": mach_est,
                             "solver": "fluid", "thermo": thermo_type}})
@@ -666,12 +674,17 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     (case / "system" / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
     pname = "p_rgh" if buoy else "p"
     tol = res * 1e-2
+    # maxIter: the pressure here is absolute (1e5 Pa) and GAMG stalls at a round-off floor just above relTol when
+    # the pressure differences are tiny; uncapped it took 1000 sweeps every iteration (heated channel on mochi:
+    # 0.26 s per iteration for 4000 cells, 17 min in all)
     solvers = (f"solvers\n{{\n    {pname}\n    {{\n        solver          GAMG;\n"
-               f"        tolerance       {tol:.3g};\n        relTol          0.01;\n        smoother        GaussSeidel;\n    }}\n\n"
+               f"        tolerance       {tol:.3g};\n        relTol          0.01;\n        smoother        GaussSeidel;\n"
+               "        maxIter         50;\n    }\n\n"
                "    \"(U|h|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
                f"        tolerance       {tol:.3g};\n        relTol          0.1;\n    }}\n}}\n\n")
     rc = (f"    residualControl\n    {{\n        {pname:<15} {res:.3g};\n        U               {res:.3g};\n"
-          f"        h               {res:.3g};\n        \"(k|omega)\"       {res:.3g};\n    }}\n")
+          + ("" if isothermal else f"        h               {res:.3g};\n")
+          + f"        \"(k|omega)\"       {res:.3g};\n    }}\n")
     if buoy:
         pim = (f"PIMPLE\n{{\n    momentumPredictor no;\n    nNonOrthogonalCorrectors {nonorth};\n"
                f"    pRefCell        0;\n    pRefValue       0;\n\n{rc}}}\n\n"

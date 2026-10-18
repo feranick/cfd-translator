@@ -164,7 +164,9 @@ def zero_fields(fields: dict, plan: dict) -> list[str]:
     if pc.size and float(np.ptp(pc)) <= 1e-6 * max(0.5 * rho * umax ** 2, 1e-300):
         out += ["p", "p_rgh"]
     T = fields.get("T")
-    if en and T is not None and float(np.ptp(np.asarray(T, float))) <= 1e-6 * en["T_op"]:
+    # no heat put in and low Mach (case.py): T varies only by the kinetic energy, up to u^2 / (2 cp)
+    dT = 1e-6 * en["T_op"] + (umax ** 2 / en["cp"] if en and en.get("isothermal") else 0.0) if en else 0.0
+    if en and T is not None and float(np.ptp(np.asarray(T, float))) <= dT:
         out.append("h")
     return out
 

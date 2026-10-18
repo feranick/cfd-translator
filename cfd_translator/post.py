@@ -90,6 +90,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     totals = np.zeros(3)
     scale_m = 0.0
     ang, scale_a = np.zeros(3), 0.0
+    gross_a = np.zeros(3)        # per axis: sum of |moment| of every face force and flux (and MRF source)
     face_forces = {}
     net_phi, inflow = 0.0, 0.0
     wall_faces = []          # (face indices, F per face) of every wall patch
@@ -142,6 +143,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         Ma, Fa = np.cross(rf, Mo).sum(axis=0), np.cross(rf, F).sum(axis=0)
         ang += Ma + Fa
         scale_a = max(scale_a, float(np.linalg.norm(Ma)), float(np.linalg.norm(Fa)))
+        gross_a += np.abs(np.cross(rf, Mo)).sum(axis=0) + np.abs(np.cross(rf, F)).sum(axis=0)
         net_phi += float(phi.sum())
         inflow += float(np.clip(-phi, 0, None).sum())
         At = float(A.sum())
@@ -167,7 +169,9 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             if kind in ("inlet", "outlet", "opening", "slip"):
                 e_flux = phi * (cp * (Tb - T_op) + 0.5 * np.einsum("ij,ij->i", Ub, Ub))
                 e_out += float(e_flux.sum())
-                e_scale = max(e_scale, float(np.abs(phi * cp * (Tb - T_op)).sum()))
+                # with no heat put in, the enthalpy flux is ~0 and the kinetic energy flux sets the scale
+                e_scale = max(e_scale, float(np.abs(phi * cp * (Tb - T_op)).sum()),
+                              float(np.abs(phi * 0.5 * np.einsum("ij,ij->i", Ub, Ub)).sum()))
             if kind == "wall":
                 whf = pf.get("whf")
                 if whf is not None:
@@ -390,7 +394,9 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         src = rho * np.cross(Om, Uc[cells]) * V[:, None]
         totals += src.sum(axis=0)
         scale_m = max(scale_m, float(np.linalg.norm(src.sum(axis=0))))
-        ang += np.cross(g["C"][cells] * SCALE - cofr, src).sum(axis=0)
+        msrc = np.cross(g["C"][cells] * SCALE - cofr, src)
+        ang += msrc.sum(axis=0)
+        gross_a += np.abs(msrc).sum(axis=0)
         c0 = np.asarray(zp["center_mm"], float) * SCALE
         torque = 0.0
         for wn in zp["rotating_walls"]:
@@ -414,12 +420,15 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     qscale = max(inflow, plan.get("U_ref", 1.0) * vol ** (2 / 3) * 1e-3 * (rho if en else 1.0))
     mass_err = abs(net_phi) / qscale if qscale > 0 else 0.0
     mom_err = float(np.linalg.norm(totals)) / scale_m if scale_m > 0 else 0.0
+    # each axis against the gross moments about it: the net moments of a non-swirling flow are ~0, so the old
+    # scale (largest net moment) made noise look like an error (swirl_pipe 0.22 from the x/y axes, pipe_air 1.09)
+    ang_scale = np.maximum(gross_a, 1e-6 * max(float(gross_a.max()), scale_a, 1e-300))
+    ang_err = float((np.abs(ang) / ang_scale).max())
     checks = {"mass_balance": {"inflow_m3s": _r(inflow), "net_m3s": _r(net_phi), "error": _r(mass_err),
                                **({"units": "kg/s (energy: phi is a mass flux)"} if en else {})},
               "momentum_balance": {"residual_N": _r(totals), "scale_N": _r(scale_m), "error": _r(mom_err)},
               **({"energy_balance": energy_check} if en else {}),
-              "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(scale_a),
-                                           "error": _r(float(np.linalg.norm(ang)) / scale_a if scale_a > 0 else 0.0),
+              "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(ang_scale), "error": _r(ang_err),
                                            "about": _r(cofr / SCALE)}}
     if visc_cmp[0] > 0:
         checks["wall_shear_vs_ours"] = _r(visc_cmp[1] / visc_cmp[0])

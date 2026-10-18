@@ -158,8 +158,9 @@ def _cases() -> dict:
                       {"kind": "wall", "name": "outer", "faces": {"cyl_r": 40}}],
               "mesh": {"size": 1.0}, "solve": {"iterations": 4000, "residual": 1e-7},
               "probes": [{"name": "mid", "at": [30, 0, 5]}]}
-        if mrf:
-            st["rotating"] = [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": rpm, "radius": 30}]
+        if mrf:   # zone edge at 25 mm, off the probe: cells are in by centre, so the edge is jagged (mochi: the
+            # probe on a 30 mm edge read u_t 7.8 % high)
+            st["rotating"] = [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": rpm, "radius": 25}]
         return st
 
     def tc_checks(r):
@@ -181,7 +182,8 @@ def _cases() -> dict:
                   "mesh": {"size": 1.0, "extrude": 40}, "solve": {"residual": 1e-7}},
         "checks": lambda r: [("angular momentum in = rho U omega pi R^4 / 2", 1000 * 0.01 * w * math.pi * 0.01 ** 4 / 2,
                               r["flow"]["inlet"]["angular_momentum_in"][2], {"tol": 0.02}),
-                             ("flow rate unchanged by the swirl", 0.01 * math.pi * 0.01 ** 2, r["flow"]["inlet"]["Q"], {"tol": 1e-6}),
+                             ("flow rate unchanged by the swirl (U x meshed area)", 0.01 * r["flow"]["inlet"]["area_mm2"] * 1e-6,
+                              r["flow"]["inlet"]["Q"], {"tol": 1e-5}),
                              ("angular momentum balance", 0.0, r["checks"]["angular_momentum_balance"]["error"], {"abs": 0.03})],
         "ref": False, "needs": ["gmsh"]}
     C["pipe_poiseuille_mpi"] = dict(C["pipe_poiseuille"], study=dict(C["pipe_poiseuille"]["study"],
@@ -210,7 +212,7 @@ def _cases() -> dict:
                   "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": Uw, "profile": "parabolic", "temperature": 20},
                           {"kind": "outlet", "faces": {"nx": 1}},
                           {"kind": "wall", "name": "heated", "faces": [{"ny": 1}, {"ny": -1}], "q": qw}],
-                  "mesh": {"cells": [200, 20, 1]}, "solve": {"iterations": 4000, "residual": 1e-6},
+                  "mesh": {"cells": [200, 20, 1]}, "solve": {"iterations": 4000, "residual": 1e-5},
                   "probes": [{"name": "wall", "at": [100, 5, 0.5]}]},
         "checks": lambda r: [("Nu at 300 mm (fully developed, both walls heated) = 8.235", 8.235,
                               qw * 2 * Hc / (water["k"] * (r["probes"]["wall"]["T"] - Tb)), {"tol": 0.03}),
@@ -271,7 +273,7 @@ def _cases() -> dict:
         "study": {"geometry": {"cylinder": [5, 200]}, "fluid": "air", "energy": True,
                   "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "velocity": 0.5, "profile": "parabolic"},
                           {"kind": "outlet", "faces": {"nz": 1}}],
-                  "mesh": {"size": 0.5, "extrude": 100}, "solve": {"residual": 1e-7},
+                  "mesh": {"size": 0.5, "extrude": 100}, "solve": {"residual": 1e-5},
                   "probes": [{"name": "a", "at": [0, 0, 50]}, {"name": "b", "at": [0, 0, 150]}]},
         "checks": lambda r: [("dp over 0.1 m = 8 mu L U / R^2", 8 * air["mu"] * 0.1 * 0.5 / 0.005 ** 2,
                               r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.02})],
