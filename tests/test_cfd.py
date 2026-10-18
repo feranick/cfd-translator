@@ -547,17 +547,20 @@ def test_energy_case_files(tmp_path):
     mesh, patches, sel, plan, w = prepare(ven, tmp_path / "ven")
     c = tmp_path / "ven" / "case"
     p = foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]
-    assert p["inlet"]["type"] == "totalPressure" and p["inlet"]["p0"] == pytest.approx(111325)
+    assert p["inlet"]["type"] == "uniformTotalPressure" and "400 111325" in p["inlet"]["p0"]
     fv = foamio.read_foam((c / "system" / "fvSolution").read_text())
-    assert fv["PIMPLE"]["transonic"] == "no" and float(fv["relaxationFactors"]["fields"]["p"]) == 0.3   # M 0.37: subsonic
+    assert fv["PIMPLE"]["transonic"] == "yes" and float(fv["relaxationFactors"]["fields"]["p"]) == 1   # total-pressure inlet
+    pin = foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]["inlet"]
+    assert pin["type"] == "uniformTotalPressure" and "400 111325" in pin["p0"]                # ramp by default
     assert "pMinFactor" not in fv["PIMPLE"]                       # OpenFOAM 14: an error there
-    u0 = plan["initial_U"]                                         # half the isentropic inlet speed, inward
-    assert u0[0] == pytest.approx(0.5 * plan["inlets"]["inlet"]["U_estimate"]) and abs(u0[1]) < 1e-9
+    assert "initial_U" not in plan                                 # from rest by default
     assert fv["PIMPLE"]["consistent"] == "yes"
     lim = foamio.read_foam((c / "system" / "fvConstraints").read_text())["limitp"]
     assert lim["type"] == "limitPressure" and float(lim["minFactor"]) == 0.5 and float(lim["maxFactor"]) == 2
-    mesh, patches, sel, plan, w = prepare(dict(ven, solve={"transonic": True}), tmp_path / "ven2")
-    assert foamio.read_foam((tmp_path / "ven2" / "case" / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "yes"
+    mesh, patches, sel, plan, w = prepare(dict(ven, solve={"transonic": False, "start": "estimate", "ramp": 0}), tmp_path / "ven2")
+    assert foamio.read_foam((tmp_path / "ven2" / "case" / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "no"
+    assert plan["initial_U"][0] == pytest.approx(0.5 * plan["inlets"]["inlet"]["U_estimate"])
+    assert foamio.read_foam((tmp_path / "ven2" / "case" / "0" / "p").read_text())["boundaryField"]["inlet"]["type"] == "totalPressure"
     assert plan["energy"]["mach_estimate"] == pytest.approx(0.369, rel=0.01)
     assert not (c / "0" / "p_rgh").exists()
     with pytest.raises(Exception, match="energy"):

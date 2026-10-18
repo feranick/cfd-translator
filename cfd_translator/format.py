@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.12
+Version: 2026.10.18.13
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -144,7 +144,7 @@ STUDY_KEYS = {
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p (energy)}, procs (MPI ranks; default CFDT_PROCS or 1), "
-             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7), consistent (energy: SIMPLEC, default true), start ('estimate' | 'rest'), ramp (iterations; total-pressure inlets)}",
+             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7 or with a total-pressure inlet), consistent (energy: SIMPLEC, default true), start ('rest' | 'estimate'), ramp (iterations; total-pressure gas inlets, default 400)}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -587,13 +587,13 @@ def validate_study(st: dict) -> dict:
         if not isinstance(rl, dict) or not all(k in ("U", "other", "p") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
             errs.append("solve.relax: {U: 0..1, other: 0..1, p: 0..1 (energy runs)}")
     if "start" in s and s["start"] not in ("rest", "estimate"):
-        errs.append("solve.start: 'estimate' (default: a total-pressure inlet starts at half its isentropic speed) or 'rest'")
+        errs.append("solve.start: 'rest' (default) or 'estimate' (a total-pressure inlet starts at half its isentropic speed)")
     if "ramp" in s and (not isinstance(s["ramp"], int) or s["ramp"] < 0):
-        errs.append("solve.ramp: iterations over which a total-pressure inlet rises from the outlet pressure (energy, gas; 0)")
+        errs.append("solve.ramp: iterations over which a total-pressure inlet rises from the outlet pressure (energy, gas; default 400, 0: none)")
     if "consistent" in s and not isinstance(s["consistent"], bool):
         errs.append("solve.consistent: true (SIMPLEC, default) or false (SIMPLE; energy runs)")
     if "transonic" in s and not isinstance(s["transonic"], bool):
-        errs.append("solve.transonic: true or false (energy, gas; default: true when the estimated Mach exceeds 0.7)")
+        errs.append("solve.transonic: true or false (energy, gas; default: true above an estimated Mach 0.7 or with a total-pressure inlet)")
     if "queue" in st and not isinstance(st["queue"], bool):
         errs.append("queue: true (always a SLURM job) or false (always local)")
     # energy, conditions, gravity

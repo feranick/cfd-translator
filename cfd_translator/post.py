@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.18.9
+Version: 2026.10.18.13
 
     results(study, mesh, plan, fields) -> dict
 
@@ -441,6 +441,8 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             warns.append(f"OpenFOAM's wall shear and ours (snGrad) differ by {visc_cmp[1] / visc_cmp[0]:.1%}: "
                          "check the wall cells (very coarse or skewed?)")
     for n, pl in plan.get("inlets", {}).items():
+        if not pl.get("Q"):          # a total-pressure inlet prescribes no flow (venturi: KeyError 'Q' on mochi)
+            continue
         # volumetric: with energy, phi is a mass flux (kg/s) and the flow entry already divides by rho
         got = float(out["flow"][n]["Q"]) if en and n in out.get("flow", {}) else \
             -float(np.asarray(fields["patches"][n]["phi"], float).sum())

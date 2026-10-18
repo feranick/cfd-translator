@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.12
+Version: 2026.10.18.13
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -479,7 +479,10 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                 p0 = p_op + float(b["total_pressure"])
                 T0 = float(b.get("total_temperature", T_op - 273.15)) + 273.15
                 Ub[nm] = {"type": "pressureInletOutletVelocity", "value": _uniform([0, 0, 0])}
-                ramp = int(study.get("solve", {}).get("ramp", 0) or 0)
+                # ramp (default 400 iterations, at most half the run) + transonic: the only combination that ran the
+                # subsonic venturi from rest on mochi; without the ramp, or without transonic, it diverged
+                sv = study.get("solve", {})
+                ramp = int(sv["ramp"]) if "ramp" in sv else (min(400, int(sv.get("iterations", 3000)) // 2) if gas else 0)
                 if ramp > 0:      # raise the total pressure from the outlet's over `ramp` iterations
                     p_start = p_op + min([float(pp["bc"].get("pressure", 0.0)) for pp in patches
                                           if pp["kind"] in ("outlet", "opening")] or [0.0])
@@ -562,11 +565,10 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     if external and len(U) == 1:
         U0 = next(iter(U.values())).mean(axis=0).tolist()
     inl = [p for p in patches if p["kind"] == "inlet"]
-    start = study.get("solve", {}).get("start", "estimate")
+    start = study.get("solve", {}).get("start", "rest")
     if not external and len(inl) == 1 and "total_pressure" in inl[0]["bc"] and start == "estimate":
-        # a flow driven by a total pressure, started from rest, diverged in 2 iterations (venturi on mochi:
-        # SIMPLEC's velocity correction is huge where the momentum matrix holds only viscous terms); start it at
-        # half the isentropic inlet speed along the inlet's inward normal instead
+        # solve.start 'estimate': start at half the isentropic inlet speed along the inlet's inward normal (on the
+        # venturi it made the first pressure correction larger, not smaller: the default is 'rest' with a ramp)
         nm = inl[0]["name"]
         Sf = g["Sf"][mesh.patch_faces(nm)].sum(axis=0)
         u_est = float(plan["inlets"].get(nm, {}).get("U_estimate") or 0.0)
@@ -638,7 +640,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     s_tr = s.get("transonic")
     # transonic (p as a convected variable) only near Mach 1: from rest it diverged on the subsonic venturi
     # (M 0.37 to 0.57) in two iterations on mochi; a study can still ask for it
-    transonic = bool(gas and not buoy and (s_tr if s_tr is not None else mach_est > 0.7))
+    tp_in = any(p["kind"] == "inlet" and "total_pressure" in p["bc"] for p in patches)
+    transonic = bool(gas and not buoy and (s_tr if s_tr is not None else (mach_est > 0.7 or tp_in)))
     relax = s.get("relax", {})
     if rho_const:          # no buoyancy coupling: enthalpy converges fast without strong relaxation
         rU, rO = float(relax.get("U", 0.7)), float(relax.get("other", 0.9))

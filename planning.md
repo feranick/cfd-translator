@@ -94,6 +94,8 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.13**: venturi variants on mochi (.12, local runs): rest / estimate / SIMPLE / relax 0.5,0.2 / ramp without transonic: all diverge (negative T or GAMG). Ramp 400 + transonic: stable, 4000 iterations, residuals ~2e-5 (h 2.4e-5). Now the default for total-pressure gas inlets. Results then failed on KeyError 'Q' (total-pressure inlet in inlet_flow_error): fixed. Physical check of the venturi still to see.
+
 **2026.10.18.12**: .11 on mochi: heated_channel_2d PASS and converged. Venturi variants (local runs): default, consistent false, relax 0.5/0.1, total pressure 100 and 1000 Pa: all SIGFPE in MachNo after iteration 1 (limitPressure min -1.3e6 at 10 kPa); 60 m/s velocity inlet runs fine (throat 86.9 m/s, M 0.25). MachNo dropped; solve.start and solve.ramp added to try next.
 
 **2026.10.18.11**: .10 on mochi: heated_channel_2d and pipe_air_low_mach PASS (87 s, 28 s). venturi_subsonic still diverged at iteration 2 (p GAMG to 1e6, limitPressure saw +-1e25). Now the flow starts at half the isentropic inlet speed; if it still fails, try solve.consistent false and solve.relax.p on mochi with queue false.

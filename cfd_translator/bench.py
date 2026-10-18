@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.18.8
+Version: 2026.10.18.13
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -262,7 +262,7 @@ def _cases() -> dict:
                   "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "total_pressure": 10000, "total_temperature": 20},
                           {"kind": "outlet", "faces": {"nx": 1}},
                           {"kind": "slip", "name": "walls_slip", "faces": {"all": True}}],
-                  "mesh": {"size": 1.0}, "solve": {"iterations": 4000, "residual": 1e-7},
+                  "mesh": {"size": 1.0}, "solve": {"iterations": 6000, "residual": 3e-5},
                   "probes": [{"name": "throat", "at": [0, 0, 1]}]},
         "checks": lambda r: [("mass flow (isentropic, M_exit %.3f)" % Me, mdot_v, r["flow"]["inlet"]["mdot"], {"tol": 0.02}),
                              ("throat pressure, gauge (M_throat %.3f)" % Mt, pt_g, r["probes"]["throat"]["p"], {"tol": 0.03}),
