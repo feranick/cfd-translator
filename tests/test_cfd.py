@@ -551,6 +551,9 @@ def test_energy_case_files(tmp_path):
     fv = foamio.read_foam((c / "system" / "fvSolution").read_text())
     assert fv["PIMPLE"]["transonic"] == "no" and float(fv["relaxationFactors"]["fields"]["p"]) == 0.3   # M 0.37: subsonic
     assert "pMinFactor" not in fv["PIMPLE"]                       # OpenFOAM 14: an error there
+    u0 = plan["initial_U"]                                         # half the isentropic inlet speed, inward
+    assert u0[0] == pytest.approx(0.5 * plan["inlets"]["inlet"]["U_estimate"]) and abs(u0[1]) < 1e-9
+    assert fv["PIMPLE"]["consistent"] == "yes"
     lim = foamio.read_foam((c / "system" / "fvConstraints").read_text())["limitp"]
     assert lim["type"] == "limitPressure" and float(lim["minFactor"]) == 0.5 and float(lim["maxFactor"]) == 2
     mesh, patches, sel, plan, w = prepare(dict(ven, solve={"transonic": True}), tmp_path / "ven2")
@@ -694,5 +697,5 @@ def test_small_velocity_components_are_judged_against_the_peak_speed():
     U[:, 0] = 7.5e-4
     U[3, 1] = 1e-6                                   # heated channel: |Uy| / |U| = 1.3e-3, residual 7e-3
     r = velocity_scaled({"Ux": 4e-7, "Uy": 7e-3, "h": 2e-6, "p": 1e-6}, {"U": U})
-    assert r["Ux"] == 4e-7 and r["Uy"] == pytest.approx(7e-3 * 1e-6 / 7.5e-4) and r["h"] == 2e-6
+    assert r["Ux"] == pytest.approx(4e-7) and r["Uy"] == pytest.approx(7e-3 * 1e-7 / 7.5e-4, rel=1e-3) and r["h"] == 2e-6
     assert max(r.values()) < 1e-5

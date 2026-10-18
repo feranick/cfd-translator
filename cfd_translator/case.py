@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.10
+Version: 2026.10.18.11
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -554,6 +554,17 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     U0 = [0.0, 0.0, 0.0]
     if external and len(U) == 1:
         U0 = next(iter(U.values())).mean(axis=0).tolist()
+    inl = [p for p in patches if p["kind"] == "inlet"]
+    if not external and len(inl) == 1 and "total_pressure" in inl[0]["bc"]:
+        # a flow driven by a total pressure, started from rest, diverged in 2 iterations (venturi on mochi:
+        # SIMPLEC's velocity correction is huge where the momentum matrix holds only viscous terms); start it at
+        # half the isentropic inlet speed along the inlet's inward normal instead
+        nm = inl[0]["name"]
+        Sf = g["Sf"][mesh.patch_faces(nm)].sum(axis=0)
+        u_est = float(plan["inlets"].get(nm, {}).get("U_estimate") or 0.0)
+        if np.linalg.norm(Sf) > 0 and u_est > 0:
+            U0 = (-0.5 * u_est * Sf / np.linalg.norm(Sf)).tolist()
+            plan["initial_U"] = U0
     P = "[1 -1 -2 0 0 0 0]"
     (case / "0" / "U").write_text(_field("volVectorField", "U", "[0 1 -1 0 0 0 0]", _uniform(U0), Ub))
     (case / "0" / "T").write_text(_field("volScalarField", "T", "[0 0 0 1 0 0 0]", _uniform(T_op), Tb))
@@ -700,7 +711,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                "        \"(k|omega)\"       0.7;\n    }\n}")
     else:
         pim = (f"PIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    transonic       {'yes' if transonic else 'no'};\n"
-               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
+               f"    consistent      {'no' if s.get('consistent') is False else 'yes'};\n    pRefCell        0;\n"
+               f"    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
                f"relaxationFactors\n{{\n    fields\n    {{\n        p               {rP:g};\n    }}\n"
                f"    equations\n    {{\n        p               1;\n        U               {rU:g};\n"
                f"        h               {rO:g};\n        \".*\"            {rO:g};\n    }}\n}}")

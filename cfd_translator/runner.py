@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.9
+Version: 2026.10.18.11
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -155,17 +155,17 @@ def execution_record(procs_requested: int, procs_used: int | None = None, launch
 
 def velocity_scaled(residuals: dict, fields: dict) -> dict:
     """OpenFOAM normalises each velocity component's residual by that component's own variation; for a small
-    component (heated channel: |Uy| <= 1.3e-3 of the peak speed, residual stuck at 7e-3) that is round-off.
-    Relative to the flow, the residual is smaller by max|U_i| / max|U|; other fields are left as they are."""
+    component (heated channel: |Uy| <= 1e-6 m/s against 7.5e-4, residual stuck at 7e-3) that is round-off.
+    Relative to the flow, the residual is smaller by mean|U_i| / mean|U|; other fields are left as they are."""
     Uc = np.asarray(fields.get("U", []), float)
     if not Uc.size:
         return dict(residuals)
-    umax = float(np.abs(Uc).max())
+    umean = float(np.linalg.norm(Uc, axis=1).mean())
     out = dict(residuals)
     for k, c in enumerate("xyz"):
         f = f"U{c}"
-        if f in out and umax > 0:
-            out[f] = residuals[f] * min(1.0, float(np.abs(Uc[:, k]).max()) / umax)
+        if f in out and umean > 0:      # mean, like OpenFOAM's normalisation (a sum over the cells)
+            out[f] = residuals[f] * min(1.0, float(np.abs(Uc[:, k]).mean()) / umean)
     return out
 
 
