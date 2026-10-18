@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.18.2
+Version: 2026.10.18.3
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -138,8 +138,8 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
             "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
             f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
         _step(foam, "decomposePar -force", "log.decomposePar", case, timeout)
-        mpirun = os.environ.get("CFDT_MPIRUN", "mpirun")       # inside a SLURM job it uses the allocation
-        steps = [(f"{mpirun} -np {procs} foamRun -parallel", "log.foamRun"), ("reconstructPar -latestTime", "log.reconstructPar")]
+        steps = [(f"{mpirun_command(procs)} -np {procs} foamRun -parallel", "log.foamRun"),
+                 ("reconstructPar -latestTime", "log.reconstructPar")]
     else:
         steps = [("foamRun", "log.foamRun")]
     for i, (cmd, logname) in enumerate(steps):
@@ -152,6 +152,30 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
         if rc != 0:
             raise FoamError(f"{cmd} exited with code {rc}:\n" + _tail(case / logname))
     return out
+
+
+def physical_cores() -> int:
+    """Physical cores among the CPUs this process may run on (a SLURM job's cpuset)."""
+    cpus = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else set(range(os.cpu_count() or 1))
+    cores = set()
+    for c in cpus:
+        try:
+            t = Path(f"/sys/devices/system/cpu/cpu{c}/topology")
+            cores.add(((t / "physical_package_id").read_text().strip(), (t / "core_id").read_text().strip()))
+        except OSError:
+            cores.add(("?", str(c)))
+    return len(cores)
+
+
+def mpirun_command(procs: int) -> str:
+    """CFDT_MPIRUN, or mpirun. Inside a SLURM job, OpenMPI 5 places ranks by core and refuses more ranks
+    than cores ('allocation-overload'); when the job's CPUs are hardware threads of fewer cores, map by
+    hardware thread instead."""
+    if os.environ.get("CFDT_MPIRUN"):
+        return os.environ["CFDT_MPIRUN"]
+    if os.environ.get("SLURM_JOB_ID") and physical_cores() < procs:
+        return "mpirun --map-by hwthread"
+    return "mpirun"
 
 
 def read_fields(case: Path, mesh, plan: dict) -> dict:

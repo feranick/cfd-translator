@@ -44,7 +44,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 45 tests: 42 run anywhere (16 with a fake SLURM), 3 need Gmsh or OpenFOAM
+pytest -q                   # 47 tests: 44 run anywhere (18 with a fake SLURM), 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -75,11 +75,12 @@ With `CFDT_EXECUTOR=slurm`, each study becomes a SLURM job instead of running in
 | `CFDT_PROCS` | 1 | MPI ranks per study (`--ntasks`); a study's `solve.procs` overrides it |
 | `CFDT_TIMEOUT` | 3600 | seconds per study; the job asks for ceil(timeout/60) + 10 minutes, so the translator stops itself first |
 | `CFDT_MPIRUN` | `mpirun` | the MPI launcher; inside a job, OpenMPI's mpirun uses the allocation |
+| `CFDT_CELLS_PER_RANK` | 5000 | a study runs on at most cells/5000 ranks, so small cases run serially |
 
 A study's `"queue": true` or `false` forces SLURM or local; it never overrides `CFDT_EXECUTOR=local`.
 
 **What a submission writes**, in `<request>/<name>/`:
-- `job.sh`: the job name `cfdt:<request>:<name>`, `--chdir`, `--output=job.log`, `--ntasks`, `--time`, `--export=ALL`, then `<python> -m cfd_translator.cli run-study <request> <name>`. `sbatch job.sh` reruns it by hand.
+- `job.sh`: the job name `cfdt:<request>:<name>`, `--chdir`, `--output=job.log`, `--ntasks`, `--ntasks-per-core=1` (whole cores: OpenMPI 5 refuses more ranks than cores, 'allocation-overload'), `--time`, `--export=ALL`, then `<python> -m cfd_translator.cli run-study <request> <name>`. `sbatch job.sh` reruns it by hand.
 - `job.json`: the job id, submission time, ranks and time limit.
 
 If `sbatch` fails, the study's result is `{"ok": false, "why": "could not submit: ..."}`. There is no silent local fallback.
@@ -308,6 +309,10 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.18.3 | From mochi (OpenMPI 5, 20 cores × 2 threads, `CFDT_PROCS=9`), where `mpirun -np 9` failed with 'allocation-overload':
+- Jobs ask `--ntasks-per-core=1`, and `mpirun --map-by hwthread` is used when a job's cpuset has fewer cores than ranks.
+- Ranks are capped at one per 5000 cells (`CFDT_CELLS_PER_RANK`), with a warning.
+- The SLURM tests clear CFDT_PROCS and the other settings from the environment. |
 | 2026.10.18.2 | SLURM execution (llm-translators docs/EXECUTION.md):
 - `CFDT_EXECUTOR=slurm` submits each study as a job (`job.sh`, `job.json`), run by `cfdt run-study`.
 - States queued / running / timed_out / out_of_memory / cancelled / failed, from squeue, sacct or job.log; finished failures are kept as results.

@@ -37,7 +37,8 @@ def slurm(tmp_path, monkeypatch):
     monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
     monkeypatch.setenv("CFDT_TIMEOUT", "600")
     monkeypatch.setenv("PYTHONPATH", f"{REPO}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
-    for k in ("FAKE_PENDING", "FAKE_SACCT_FAIL", "FAKE_SBATCH_FAIL", "FAKE_SBATCH_DELAY", "CFDT_SLURM_MIN_MINUTES"):
+    for k in ("FAKE_PENDING", "FAKE_SACCT_FAIL", "FAKE_SBATCH_FAIL", "FAKE_SBATCH_DELAY", "CFDT_SLURM_MIN_MINUTES",
+              "CFDT_PROCS", "CFDT_SLURM_ARGS", "CFDT_MPIRUN", "CFDT_WORKERS", "SLURM_JOB_ID", "SLURM_NTASKS"):
         monkeypatch.delenv(k, raising=False)
     return state
 
@@ -193,3 +194,23 @@ def test_bench_runs_as_slurm_jobs(slurm, tmp_path):
     assert r["couette_2d"]["passed"], r
     jj = list((tmp_path / "out").glob("run_*/couette_2d/job.json"))
     assert len(jj) == 1 and json.loads(jj[0].read_text())["job_id"] == "1001"
+
+
+def test_mpirun_maps_by_hwthread_when_the_job_has_fewer_cores(monkeypatch):
+    from cfd_translator import foam
+    monkeypatch.delenv("CFDT_MPIRUN", raising=False)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    assert foam.mpirun_command(64) == "mpirun"                         # outside SLURM: as before
+    monkeypatch.setenv("SLURM_JOB_ID", "7")
+    monkeypatch.setattr(foam, "physical_cores", lambda: 5)
+    assert foam.mpirun_command(9) == "mpirun --map-by hwthread" and foam.mpirun_command(4) == "mpirun"
+    monkeypatch.setenv("CFDT_MPIRUN", "mpirun.openmpi")
+    assert foam.mpirun_command(9) == "mpirun.openmpi"
+
+
+def test_job_asks_a_core_per_rank(slurm, monkeypatch):
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    monkeypatch.setenv("CFDT_PROCS", "9")
+    r = api.run({"m": dict(COUETTE, queue=True)}, "ref", wait=0)
+    sh = (Path(r["request"]) / "m" / "job.sh").read_text()
+    assert "#SBATCH --ntasks=9" in sh and "#SBATCH --ntasks-per-core=1" in sh

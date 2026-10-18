@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.18.2
+Version: 2026.10.18.3
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -103,6 +103,7 @@ def job_script(request: Path, name: str, procs: int) -> str:
         f"#SBATCH --chdir={d}",
         f"#SBATCH --output={d / 'job.log'}",
         f"#SBATCH --ntasks={procs}",
+        "#SBATCH --ntasks-per-core=1",          # a whole core per rank (OpenMPI 5 maps ranks by core)
         f"#SBATCH --time={time_limit_min()}",
         "#SBATCH --export=ALL",
         f"exec {shlex.quote(sys.executable)} -m cfd_translator.cli run-study {shlex.quote(str(request))} {shlex.quote(name)}",

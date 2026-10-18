@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.2
+Version: 2026.10.18.3
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -7,6 +7,7 @@ Version: 2026.10.18.2
 from __future__ import annotations
 
 import json
+import os
 import tarfile
 import time
 import traceback
@@ -64,7 +65,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 warns.append("reference solver did not converge")
         else:
             from . import foam
-            info = foam.run(case, timeout, study.get("solve", {}).get("procs"))
+            procs = int(study.get("solve", {}).get("procs") or os.environ.get("CFDT_PROCS", "1") or 1)
+            per = int(os.environ.get("CFDT_CELLS_PER_RANK", "5000"))
+            use = max(1, min(procs, mesh.ncells // max(per, 1)))
+            if use < procs:
+                warns.append(f"ran on {use} MPI rank{'s' if use > 1 else ''} instead of {procs}: {mesh.ncells} cells "
+                             f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
+            info = foam.run(case, timeout, use)
             fields = foam.read_fields(case, mesh, plan)
             lg = info["log"]
             out["solve"] = {"openfoam": info.get("openfoam"), "procs": info.get("procs"), "iterations": lg["iterations"],

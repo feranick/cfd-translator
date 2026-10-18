@@ -94,6 +94,11 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.3** (mochi, first SLURM run): the jobs were submitted and collected, but OpenFOAM's `mpirun -np 9` failed with OpenMPI 5 'allocation-overload'.
+- Cause: with hyperthreads, `--ntasks=9` gets fewer physical cores than ranks.
+- Fix: `--ntasks-per-core=1` in job.sh, the `--map-by hwthread` fallback, and ranks capped by cells (`CFDT_CELLS_PER_RANK` 5000).
+- A test assumed CFDT_PROCS=1; the fixture now clears the settings.
+
 **2026.10.18.2**: SLURM execution per llm-translators `docs/EXECUTION.md`.
 - `executor.py`: submit, `run-study`, states from squeue (one call per request), sacct or job.log; `jobs`, `cancel`.
 - `api._collect` judges SLURM studies only from files and the queue, so any process sees them. Local pool studies are unchanged.
