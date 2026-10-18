@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.1
+Version: 2026.10.18.5
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -454,7 +454,12 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     q = plan["quality"]
     p_op, T_op = th["p_op"], th["T_op"]
     gas = th["kind"] == "gas"
-    buoy = study.get("gravity") is not None
+    # a closed domain (no inlet, outlet or opening) has no pressure level: use the p_rgh formulation of
+    # OpenFOAM's closed-cavity cases (heRhoThermo, reference cell, strong relaxation), with zero gravity if
+    # none is given; the psiThermo/consistent setting of open flows diverged there (mochi, conduction slab)
+    closed = not any(p["kind"] in ("inlet", "outlet", "opening") for p in patches)
+    gravity = study.get("gravity") or ([0.0, 0.0, 0.0] if closed else None)
+    buoy = gravity is not None
     Ub, pb, prb, Tb, kb, wb, nb, ab = ({} for _ in range(8))
     mach_est = 0.0
     for p in patches:
@@ -590,7 +595,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
         if (case / "constant" / f_).exists():
             (case / "constant" / f_).unlink()
     if buoy:
-        gx, gy, gz = (float(v) for v in study["gravity"])
+        gx, gy, gz = (float(v) for v in gravity)
         (case / "constant" / "g").write_text(header("uniformDimensionedVectorField", "g", "constant") +
                                              f"\ndimensions      [0 1 -2 0 0 0 0];\nvalue           ({gx:.12g} {gy:.12g} {gz:.12g});\n")
         (case / "constant" / "pRef").write_text(header("uniformDimensionedScalarField", "pRef", "constant") +
@@ -612,7 +617,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     plan["schemes"] = "unstructured" if unstructured else "orthogonal"
     plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO},
                  "fixed_pressure": any(pp["kind"] in ("outlet", "opening") for pp in patches),
-                 "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": study.get("gravity"),
+                 "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": gravity, "closed": closed,
                             "transonic": transonic, "mach_estimate": mach_est,
                             "solver": "fluid", "thermo": thermo_type}})
     walls = [p["name"] for p in patches if p["type"] == "wall"]

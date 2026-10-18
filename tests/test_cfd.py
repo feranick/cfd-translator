@@ -619,3 +619,26 @@ def test_energy_benchmarks_are_valid_studies():
     C = bench._cases()
     for n in ("conduction_slab_2d", "heated_channel_2d", "natural_cavity_ra1e4", "venturi_subsonic", "pipe_air_low_mach"):
         assert validate_study(C[n]["study"])["ok"], n
+
+
+def test_zero_fields_cover_exact_couette_and_isothermal_runs():
+    from cfd_translator.runner import zero_fields
+    U = np.zeros((10, 3))
+    U[:, 0] = np.linspace(0, 0.01, 10)
+    U[3, 1] = 1e-14                                                  # round-off
+    f = {"U": U, "p": np.full(10, 1e-19)}
+    assert zero_fields(f, {"rho": 1.0}) == ["Uy", "Uz", "p", "p_rgh"]          # mochi's Couette: Uy and p
+    f["p"] = np.linspace(0, 1e-3, 10)                                             # a real pressure drop
+    assert zero_fields(f, {"rho": 1.0}) == ["Uy", "Uz"]
+    en = {"rho": 1.2, "T_op": 293.15}
+    assert "h" in zero_fields({**f, "T": np.full(10, 293.15)}, {"energy": en})
+    assert "h" not in zero_fields({**f, "T": np.linspace(293, 300, 10)}, {"energy": en})
+
+
+def test_closed_energy_domain_uses_the_p_rgh_formulation(tmp_path):
+    mesh, patches, sel, plan, w = prepare(SLAB, tmp_path)
+    c = tmp_path / "case"
+    assert plan["energy"]["closed"] and plan["energy"]["buoyancy"] and plan["energy"]["gravity"] == [0.0, 0.0, 0.0]
+    assert (c / "0" / "p_rgh").exists() and (c / "constant" / "g").exists()
+    assert foamio.read_foam((c / "constant" / "physicalProperties").read_text())["thermoType"]["type"] == "heRhoThermo"
+    assert "p_rgh" in foamio.read_foam((c / "system" / "fvSolution").read_text())["PIMPLE"]["residualControl"]

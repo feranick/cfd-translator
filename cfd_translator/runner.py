@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.4
+Version: 2026.10.18.5
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -81,16 +81,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
             if not lg["converged"]:
-                # a velocity component that is zero everywhere (exact 1D/2D solutions) has a residual of
-                # round-off over a near-zero normalisation that never meets the target: leave it out
-                Uc = np.asarray(fields["U"], float)
-                umax = float(np.abs(Uc).max()) if Uc.size else 0.0
-                tiny = [f"U{c}" for k, c in enumerate("xyz") if Uc.size and float(np.abs(Uc[:, k]).max()) <= 1e-6 * umax]
-                rest = {f: r for f, r in lg["residuals"].items() if f not in tiny}
-                if tiny and rest and max(rest.values()) <= plan["residual"]:
+                zero = zero_fields(fields, plan)
+                rest = {f: r for f, r in lg["residuals"].items() if f not in zero}
+                if zero and rest and max(rest.values()) <= plan["residual"]:
                     lg["converged"] = True
                     out["solve"]["converged"] = True
-                    out["solve"]["converged_by"] = f"residuals, ignoring {', '.join(t for t in tiny if t in lg['residuals'])} (zero everywhere)"
+                    out["solve"]["converged_by"] = (f"residuals, ignoring {', '.join(z for z in zero if z in lg['residuals'])} "
+                                                    "(zero or uniform everywhere: their residuals are round-off)")
             if not lg["converged"]:
                 worst = max(lg["residuals"].items(), key=lambda kv: kv[1]) if lg["residuals"] else ("?", float("nan"))
                 warns.append(f"not converged in {lg['iterations']} iterations (largest last residual: {worst[0]} "
@@ -132,6 +129,26 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
         out["trace"] = traceback.format_exc()[-2000:]
     return _save(out, folder, name)
+
+
+def zero_fields(fields: dict, plan: dict) -> list[str]:
+    """Solved fields that are zero (velocity components) or uniform (pressure, enthalpy) everywhere, to within
+    1e-6 of their scale. Their normalised residuals are round-off over a near-zero normalisation and never meet
+    the target (exact solutions such as Couette flow: Uy = 0 and p = 0; isothermal energy runs: h)."""
+    Uc = np.asarray(fields["U"], float)
+    if not Uc.size:
+        return []
+    umax = float(np.abs(Uc).max())
+    out = [f"U{c}" for k, c in enumerate("xyz") if float(np.abs(Uc[:, k]).max()) <= 1e-6 * umax]
+    en = plan.get("energy")
+    rho = en["rho"] if en else 1.0                      # incompressible p is kinematic
+    pc = np.asarray(fields["p"], float)
+    if pc.size and float(np.ptp(pc)) <= 1e-6 * max(0.5 * rho * umax ** 2, 1e-300):
+        out += ["p", "p_rgh"]
+    T = fields.get("T")
+    if en and T is not None and float(np.ptp(np.asarray(T, float))) <= 1e-6 * en["T_op"]:
+        out.append("h")
+    return out
 
 
 def _verdict(out: dict, res: dict) -> tuple[bool, list]:

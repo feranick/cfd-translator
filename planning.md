@@ -94,6 +94,8 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.5**: on mochi, conduction_slab_2d diverged at iteration 4 (p GAMG 4.9e65, then SIGFPE in MachNo): closed energy domains now use the p_rgh/heRhoThermo closed-cavity formulation with g = 0. Queueing confirmed on mochi: 15-rank jobs take 30 CPUs (whole cores) and the rest wait (Resources, then Priority, with ahead). Also: Couette's 'not converged' came from p (zero everywhere, residual 0.05), not only Uy. `zero_fields` now covers U components, p/p_rgh and h.
+
 **2026.10.18.4**: mochi with SLURM works.
 - `llmt test cfdt`: 47 passed.
 - couette_2d and pipe_poiseuille_mpi pass. pipe_poiseuille_mpi ran on 4 ranks in a job: 17 s solve, against 41 s serial on carbonio.
