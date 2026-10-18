@@ -699,3 +699,19 @@ def test_small_velocity_components_are_judged_against_the_peak_speed():
     r = velocity_scaled({"Ux": 4e-7, "Uy": 7e-3, "h": 2e-6, "p": 1e-6}, {"U": U})
     assert r["Ux"] == pytest.approx(4e-7) and r["Uy"] == pytest.approx(7e-3 * 1e-7 / 7.5e-4, rel=1e-3) and r["h"] == 2e-6
     assert max(r.values()) < 1e-5
+
+
+def test_total_pressure_ramp_and_start_from_rest(tmp_path):
+    ven = {"geometry": {"box": [300, 20, 2]}, "2d": True, "fluid": "air", "energy": True,
+           "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "total_pressure": 10000}, {"kind": "outlet", "faces": {"nx": 1}},
+                   {"kind": "slip", "faces": {"all": True}}], "mesh": {"cells": [30, 4, 1]},
+           "solve": {"ramp": 200, "start": "rest"}}
+    assert validate_study(ven)["ok"]
+    assert not validate_study(dict(ven, solve={"start": "moving"}))["ok"]
+    mesh, patches, sel, plan, w = prepare(ven, tmp_path)
+    c = tmp_path / "case"
+    p = foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]["inlet"]
+    assert p["type"] == "uniformTotalPressure" and "200 111325" in p["p0"] and "0 101325" in p["p0"]
+    assert "initial_U" not in plan
+    cd = foamio.read_foam((c / "system" / "controlDict").read_text())
+    assert "MachNo" not in cd["functions"]

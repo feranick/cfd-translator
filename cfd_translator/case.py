@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.11
+Version: 2026.10.18.12
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -479,8 +479,15 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                 p0 = p_op + float(b["total_pressure"])
                 T0 = float(b.get("total_temperature", T_op - 273.15)) + 273.15
                 Ub[nm] = {"type": "pressureInletOutletVelocity", "value": _uniform([0, 0, 0])}
-                pb[nm] = {"type": "totalPressure", "p0": _uniform(p0), "psi": "psi",
-                          "gamma": f"{th['gamma']:.12g}", "value": _uniform(p0)}
+                ramp = int(study.get("solve", {}).get("ramp", 0) or 0)
+                if ramp > 0:      # raise the total pressure from the outlet's over `ramp` iterations
+                    p_start = p_op + min([float(pp["bc"].get("pressure", 0.0)) for pp in patches
+                                          if pp["kind"] in ("outlet", "opening")] or [0.0])
+                    pb[nm] = {"type": "uniformTotalPressure", "p0": f"table ((0 {p_start:.12g}) ({ramp} {p0:.12g}))",
+                              "psi": "psi", "gamma": f"{th['gamma']:.12g}", "value": _uniform(p_start)}
+                else:
+                    pb[nm] = {"type": "totalPressure", "p0": _uniform(p0), "psi": "psi",
+                              "gamma": f"{th['gamma']:.12g}", "value": _uniform(p0)}
                 Tb[nm] = {"type": "totalTemperature", "T0": _uniform(T0), "gamma": f"{th['gamma']:.12g}",
                           "value": _uniform(T0)}
                 outs = [float(pp["bc"].get("pressure", 0.0)) for pp in patches if pp["kind"] in ("outlet", "opening")]
@@ -555,7 +562,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     if external and len(U) == 1:
         U0 = next(iter(U.values())).mean(axis=0).tolist()
     inl = [p for p in patches if p["kind"] == "inlet"]
-    if not external and len(inl) == 1 and "total_pressure" in inl[0]["bc"]:
+    start = study.get("solve", {}).get("start", "estimate")
+    if not external and len(inl) == 1 and "total_pressure" in inl[0]["bc"] and start == "estimate":
         # a flow driven by a total pressure, started from rest, diverged in 2 iterations (venturi on mochi:
         # SIMPLEC's velocity correction is huge where the momentum matrix holds only viscous terms); start it at
         # half the isentropic inlet speed along the inlet's inward normal instead
@@ -666,8 +674,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                      f"        patches         ({' '.join(walls)});\n        writeControl    writeTime;\n    }}")
         if turb:
             funcs.append("    yPlus\n    {\n        type            yPlus;\n" + lib + "        writeControl    writeTime;\n    }")
-    if gas:
-        funcs.append("    MachNo\n    {\n        type            MachNo;\n" + lib + "        writeControl    writeTime;\n    }")
+    # no MachNo function object: our results compute Mach from U and T, and on the venturi it was MachNo's sqrt
+    # that stopped the run (SIGFPE) on the first iterations' transient pressures (mochi, 2026.10.18.11)
     cd = (f"solver          fluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {iters};\n\ndeltaT          1;\n\nwriteControl    timeStep;\n\n"
           f"writeInterval   {iters};\n\npurgeWrite      0;\n\nwriteFormat     ascii;\n\nwritePrecision  12;\n\n"
