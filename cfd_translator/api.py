@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.18.2
+Version: 2026.10.18.14
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -159,10 +159,13 @@ def _collect(folder: Path) -> dict:
            "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
     if pending:
         res["progress"] = progress
-        eta = max((p.get("eta_min_max") or 0) for p in progress.values()) if progress else 0
+        etas = [p["eta_min_max"] for p in progress.values() if p.get("eta_min_max") is not None]
+        eta = max(etas) if etas else 0
         sl = [job_ids[n] for n in pending if n in job_ids]
         if sl:
-            when = (f"the slowest has at most {eta:.0f} min left once running" if eta > 0 else
+            # a study at its last iteration has eta 0 and is reading results: that is an estimate, not none
+            when = (f"the slowest has at most {max(eta, 1):.0f} min left once running"
+                    if etas and len(etas) == len([n for n in pending if n in progress]) else
                     "no estimate yet: the time per iteration shows once OpenFOAM iterates (CFDT_TIMEOUT bounds a run)")
             res["next"] = (f"The studies are SLURM jobs on this machine (ids {', '.join(map(str, sl))}). They keep running "
                            f"without this conversation. Tell the user when they should finish ({when}) and stop; "
@@ -194,7 +197,8 @@ def _progress(d: Path, study: dict) -> dict:
         return {"stage": "solving (starting)", "elapsed_min": round(el / 60, 1)}
     i = float(it[-1])
     per = el / max(i, 1)
-    return {"stage": "solving", "iteration": int(i), "max_iterations": nmax, "s_per_iteration": round(per, 3),
+    return {"stage": "solving" if i < nmax else "finishing (fields, results, pictures)", "iteration": int(i),
+            "max_iterations": nmax, "s_per_iteration": round(per, 3),
             "elapsed_min": round(el / 60, 1), "eta_min_max": round(per * max(nmax - i, 0) / 60, 1),
             "note": "eta is an upper bound: the run stops earlier when it converges"}
 

@@ -95,7 +95,7 @@ Works **together** with b3dt and feat:
 ## State
 
 **2026.10.18.13**: venturi variants on mochi (.12, local runs): rest / estimate / SIMPLE / relax 0.5,0.2 / ramp without transonic: all diverge (negative T or GAMG). Ramp 400 + transonic: stable, 4000 iterations, residuals ~2e-5 (h 2.4e-5). Now the default for total-pressure gas inlets. Results then failed on KeyError 'Q' (total-pressure inlet in inlet_flow_error): fixed. On mochi with .13: venturi_subsonic PASS, converged in 1889 iterations (32 s): mass flow -0.12 %, throat pressure -13795 Pa vs -13970 isentropic (1.25 %), energy balance 0.7 %. All energy benchmarks now pass on mochi (conduction_slab, heated_channel, natural_cavity, venturi, pipe_air_low_mach), as do the rotation ones.
-- Still open: disconnecting Claude mid-run and collecting the result (EXECUTION.md test); lmpt's result to the `execution` record.
+- Disconnect test (EXECUTION.md) PASSED on mochi (2026.10.18.13): job 2534 ran on while Claude was closed; a new server found it with jobs() and collected the full result (execution: slurm, 6 of 6 ranks, mpirun -np 6, 6 cores / 12 hwthreads). lmpt already writes the same `execution` record (lmpt 2026.10.18.5).
 
 **2026.10.18.12**: .11 on mochi: heated_channel_2d PASS and converged. Venturi variants (local runs): default, consistent false, relax 0.5/0.1, total pressure 100 and 1000 Pa: all SIGFPE in MachNo after iteration 1 (limitPressure min -1.3e6 at 10 kPa); 60 m/s velocity inlet runs fine (throat 86.9 m/s, M 0.25). MachNo dropped; solve.start and solve.ramp added to try next.
 
