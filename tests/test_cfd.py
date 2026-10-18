@@ -550,7 +550,9 @@ def test_energy_case_files(tmp_path):
     assert p["inlet"]["type"] == "totalPressure" and p["inlet"]["p0"] == pytest.approx(111325)
     fv = foamio.read_foam((c / "system" / "fvSolution").read_text())
     assert fv["PIMPLE"]["transonic"] == "no" and float(fv["relaxationFactors"]["fields"]["p"]) == 0.3   # M 0.37: subsonic
-    assert float(fv["PIMPLE"]["pMinFactor"]) == 0.5
+    assert "pMinFactor" not in fv["PIMPLE"]                       # OpenFOAM 14: an error there
+    lim = foamio.read_foam((c / "system" / "fvConstraints").read_text())["limitp"]
+    assert lim["type"] == "limitPressure" and float(lim["minFactor"]) == 0.5 and float(lim["maxFactor"]) == 2
     mesh, patches, sel, plan, w = prepare(dict(ven, solve={"transonic": True}), tmp_path / "ven2")
     assert foamio.read_foam((tmp_path / "ven2" / "case" / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "yes"
     assert plan["energy"]["mach_estimate"] == pytest.approx(0.369, rel=0.01)

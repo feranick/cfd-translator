@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.9
+Version: 2026.10.18.10
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -430,6 +430,8 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
           f"        p               {res:.3g};\n        U               {res:.3g};\n        \"(k|omega)\"       {res:.3g};\n    }}\n}}\n\n"
           f"relaxationFactors\n{{\n    equations\n    {{\n        U               {rU:g};\n        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", fv))
+    if (case / "system" / "fvConstraints").exists():      # left by an energy run in the same folder
+        (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
     return plan
 
@@ -697,13 +699,20 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                f"    equations\n    {{\n        U               {rU:g};\n        h               {rO:g};\n"
                "        \"(k|omega)\"       0.7;\n    }\n}")
     else:
-        # pMin/MaxFactor: OpenFOAM clips p to [0.5, 2] x its boundary range, so a bad start cannot make it negative
         pim = (f"PIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    transonic       {'yes' if transonic else 'no'};\n"
-               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n"
-               f"    pMinFactor      0.5;\n    pMaxFactor      2;\n\n{rc}}}\n\n"
+               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
                f"relaxationFactors\n{{\n    fields\n    {{\n        p               {rP:g};\n    }}\n"
                f"    equations\n    {{\n        p               1;\n        U               {rU:g};\n"
                f"        h               {rO:g};\n        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", solvers + pim))
+    # pressure limits: OpenFOAM clips p to [0.5, 2] x its boundary range, so a bad start cannot make it negative
+    # (OpenFOAM 14 wants them here, not as pMinFactor/pMaxFactor in PIMPLE: 2026.10.18.9 failed on mochi)
+    fc = case / "system" / "fvConstraints"
+    if buoy:
+        if fc.exists():
+            fc.unlink()
+    else:
+        fc.write_text(_dict("fvConstraints", "system",
+                            "limitp\n{\n    type            limitPressure;\n    minFactor       0.5;\n    maxFactor       2;\n}"))
     (case / "case.foam").write_text("")
     return plan

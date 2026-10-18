@@ -94,6 +94,8 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.10**: .9's pMinFactor/pMaxFactor in PIMPLE is a fatal error in OpenFOAM 14 ("Pressure limits should now be specified in fvConstraints"): now system/fvConstraints limitPressure.
+
 **2026.10.18.9**: mochi run of .8 (request run_20261018_203019_cbfc51, --mem=16G now in CFDT_SLURM_ARGS).
 - pass: taylor_couette_mrf, swirl_pipe, natural_cavity_ra1e4 (reliable), conduction_slab_2d (in the .7 run). pipe_air_low_mach: converged in 177 iterations, 20 s, dp -0.8 %, but 'unreliable' from the energy balance of an isothermal run: no longer judged.
 - heated_channel_2d: Nu +1.7 %, outlet T ok, energy 0.2 %, but Uy (|Uy| <= 1e-6 m/s, 1.3e-3 of the speed) stalled at 7e-3: residuals now scaled by component size.
