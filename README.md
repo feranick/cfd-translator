@@ -44,7 +44,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 29 tests: 26 run anywhere, 3 need Gmsh or OpenFOAM
+pytest -q                   # 45 tests: 42 run anywhere (16 with a fake SLURM), 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -60,6 +60,46 @@ cfdt images ~/cfdt_runs/run_.../<study> [views.json]   # more pictures of a fini
 ```
 
 Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case.foam` in ParaView), `<study>_case.tgz` and `<study>.json`. Environment: `CFDT_OUT` (~/cfdt_runs), `CFDT_WORKERS` (2), `CFDT_TIMEOUT` (3600 s per study), `CFDT_SOLVER` (auto | foam | ref), `CFDT_PROCS` (MPI ranks; 1).
+
+## Running on SLURM
+
+With `CFDT_EXECUTOR=slurm`, each study becomes a SLURM job instead of running in the MCP server's own workers. This follows llm-translators' [docs/EXECUTION.md](https://github.com/feranick/llm-translators/blob/main/docs/EXECUTION.md). Studies from every chat then share the machine through one queue. A job keeps running when the conversation, the server or its ssh connection ends, and any later server process collects it.
+
+**Settings:**
+
+| variable | default | meaning |
+|---|---|---|
+| `CFDT_EXECUTOR` | `local` | `slurm`: studies become SLURM jobs |
+| `CFDT_SLURM_MIN_MINUTES` | 0 | studies estimated below this run locally; cfdt estimates only reference-solver studies (0.1 min), so OpenFOAM studies always go to SLURM |
+| `CFDT_SLURM_ARGS` | | extra `sbatch` arguments, e.g. `--mem=64G` |
+| `CFDT_PROCS` | 1 | MPI ranks per study (`--ntasks`); a study's `solve.procs` overrides it |
+| `CFDT_TIMEOUT` | 3600 | seconds per study; the job asks for ceil(timeout/60) + 10 minutes, so the translator stops itself first |
+| `CFDT_MPIRUN` | `mpirun` | the MPI launcher; inside a job, OpenMPI's mpirun uses the allocation |
+
+A study's `"queue": true` or `false` forces SLURM or local; it never overrides `CFDT_EXECUTOR=local`.
+
+**What a submission writes**, in `<request>/<name>/`:
+- `job.sh`: the job name `cfdt:<request>:<name>`, `--chdir`, `--output=job.log`, `--ntasks`, `--time`, `--export=ALL`, then `<python> -m cfd_translator.cli run-study <request> <name>`. `sbatch job.sh` reruns it by hand.
+- `job.json`: the job id, submission time, ranks and time limit.
+
+If `sbatch` fails, the study's result is `{"ok": false, "why": "could not submit: ..."}`. There is no silent local fallback.
+
+**States** (`study_status` → `progress.<name>.state`, and `jobs()`):
+
+| state | how it is known | what it reports |
+|---|---|---|
+| `queued` | `squeue` says PENDING | `reason`, `expected_start`, and `ahead` (pending jobs before it) |
+| `running` | `squeue` says RUNNING | iteration, `eta_min_max`, `job_elapsed_min` |
+| done | `<name>.json` exists | the result |
+| `timed_out`, `out_of_memory`, `cancelled`, `failed` | the job left the queue without a result: `sacct`, or `job.log` when there is no accounting | `ok: false`, `why`, and what to change |
+
+The four finished-failure states are written as the study's result, so they stay final. `study_status` makes one `squeue` call per request. It returns SLURM studies still pending after at most 15 s, since they don't need the server.
+
+**Tools:**
+- `jobs(limit, active)`: the newest requests with jobs, from any conversation, with the queue of cfdt jobs and the machine's CPUs.
+- `cancel(request, names)`: `scancel`, plus a `cancel` flag file. In local mode the flag stops the OpenFOAM run, in whatever process runs it, within a second. The solver's whole process group is killed, mpirun and every rank, on cancel and on timeout.
+
+`tool_status()` / `cfdt status` reports `executor: {kind, sbatch, min_minutes, procs, time_limit_min}`, which `llmt status` reads. The CLI has `cfdt jobs [--active]`, `cfdt cancel REQUEST [NAMES...]` and `cfdt run-study REQUEST NAME`.
 
 ## A study
 
@@ -237,7 +277,7 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 
 ## For LLM tools: the MCP server
 
-Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: iteration, s/iteration, `eta_min_max`), `study_status`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: state, iteration, s/iteration, `eta_min_max`, job id), `study_status`, `jobs` (SLURM runs from any conversation), `cancel`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks`, `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
@@ -260,6 +300,7 @@ cfd_translator/
   refsolver.py  2D MAC reference solver            runner.py     one study end to end
   render.py     images (matplotlib), saved state
   bench.py      benchmarks                         api.py, cli.py, mcp_server.py
+  executor.py   SLURM jobs: submit, run-study, states, jobs, cancel
 tests/test_cfd.py      examples/studies.json      planning.md (session context)
 ```
 
@@ -267,6 +308,14 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.18.2 | SLURM execution (llm-translators docs/EXECUTION.md):
+- `CFDT_EXECUTOR=slurm` submits each study as a job (`job.sh`, `job.json`), run by `cfdt run-study`.
+- States queued / running / timed_out / out_of_memory / cancelled / failed, from squeue, sacct or job.log; finished failures are kept as results.
+- `jobs` and `cancel` tools (and CLI); the `executor` key in `tool_status`; the study key `queue`; `CFDT_SLURM_MIN_MINUTES`, `CFDT_SLURM_ARGS`, `CFDT_MPIRUN`.
+- Results are written atomically.
+- OpenFOAM runs in its own process group, killed whole on timeout or cancel; local mode can now cancel too (a flag file).
+- `cfdt bench` and `run_benchmarks` submit their cases as SLURM jobs too.
+- 16 tests against a fake SLURM. |
 | 2026.10.18.1 | Energy:
 - `energy` (OpenFOAM `fluid`): compressible perfect-gas air up to transonic, constant-density water.
 - `conditions`, and `gravity` (buoyancy, `p_rgh`).

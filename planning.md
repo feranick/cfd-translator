@@ -94,6 +94,17 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.2**: SLURM execution per llm-translators `docs/EXECUTION.md`.
+- `executor.py`: submit, `run-study`, states from squeue (one call per request), sacct or job.log; `jobs`, `cancel`.
+- `api._collect` judges SLURM studies only from files and the queue, so any process sees them. Local pool studies are unchanged.
+- OpenFOAM now runs in its own process group (killed whole on timeout or cancel); the cancel flag works in local mode.
+- Sandbox: 42 passed, including 16 against `tests/fake_slurm.py`. A result was collected by a new process; queued (reason, ahead), running, cancel, every finished state from sacct and from job.log, sbatch failure, routing, run-study by hand, process-group kill, bench through SLURM.
+- Next on mochi with `CFDT_EXECUTOR=slurm`:
+  - couette_2d;
+  - two servers at once (they should queue);
+  - disconnecting mid-run and collecting the result.
+- lmpt and feat follow the same contract.
+
 **2026.10.18.1**: energy and compressible flow.
 - `energy` (OpenFOAM `fluid`): air as a perfect gas (hePsiThermo, or heRhoThermo with gravity), water as rhoConst.
 - `gravity` gives buoyancy through `p_rgh` + `g` + `pRef`.

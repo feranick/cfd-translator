@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.18.1
+Version: 2026.10.18.2
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -376,6 +376,7 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
         if unknown:
             return {n: {"ok": False, "passed": False, "error": f"unknown benchmark; known: {list(cases)}"} for n in unknown}
     out = {}
+    todo = []
     for n, c in cases.items():
         if names and n not in names:
             continue
@@ -389,13 +390,26 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
         if missing:
             out[n] = {"skipped": f"needs {', '.join(missing)}"}
             continue
+        todo.append(n)
+    # with CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request); the chains call feat and stay here
+    queued = {}
+    from . import executor
+    if executor.kind() == "slurm":
+        from . import api
+        jobs = {n: dict(cases[n]["study"], queue=True) for n in todo if not cases[n].get("chain")}
+        if jobs:
+            req = api.start(jobs, solver)
+            print(f"[cfdt bench] {len(jobs)} SLURM jobs in {req}", file=sys.stderr, flush=True)
+            queued = api.status(str(req), 1e9)["studies"]
+    for n in todo:
+        c = cases[n]
         print(f"[cfdt bench] {n} ...", file=sys.stderr, flush=True)
         t0 = time.time()
         if c.get("chain"):
             out[n] = _chain_thermal(Path(folder), solver) if c["chain"] == "thermal" else _chain(Path(folder), solver)
             _progress(n, out[n], t0)
             continue
-        r = run_study(n, c["study"], Path(folder) / n, solver)
+        r = queued[n] if n in queued else run_study(n, c["study"], Path(folder) / n, solver)
         if not r.get("ok"):
             out[n] = {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
             _progress(n, out[n], t0)

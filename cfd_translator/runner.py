@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.1
+Version: 2026.10.18.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -41,6 +41,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out.update(ok=False, why="invalid study", errors=v["errors"])
         return _save(out, folder, name)
     warns = list(v["warnings"])
+    if (folder / "cancel").exists():
+        out.update(ok=False, state="cancelled", why="cancelled before it started")
+        return _save(out, folder, name)
     try:
         mesh, patches, selection, plan, w = prepare(study, folder)
         warns += w
@@ -115,6 +118,10 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out["seconds"] = {"mesh_case": round(t1 - t0, 3), "solve": round(t2 - t1, 3),
                           "results": round(time.perf_counter() - t2, 3)}
     except Exception as exc:  # noqa: BLE001
+        from .foam import Cancelled
+        if isinstance(exc, Cancelled):
+            out.update(ok=False, state="cancelled", why="cancelled while running", warnings=warns)
+            return _save(out, folder, name)
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
         out["trace"] = traceback.format_exc()[-2000:]
     return _save(out, folder, name)
@@ -151,5 +158,7 @@ def _archive(case: Path, path: Path) -> str | None:
 
 
 def _save(out: dict, folder: Path, name: str) -> dict:
-    (folder / f"{name}.json").write_text(json.dumps(out, indent=1, default=float))
+    """Atomically (temporary file, then rename): study_status never reads half a result."""
+    from .executor import write_atomic
+    write_atomic(folder / f"{name}.json", json.dumps(out, indent=1, default=float))
     return out

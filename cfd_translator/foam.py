@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.18.1
+Version: 2026.10.18.2
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,10 @@ from . import foamio
 
 class FoamError(Exception):
     pass
+
+
+class Cancelled(FoamError):
+    """The study's cancel flag (<request>/<name>/cancel) appeared while OpenFOAM ran."""
 
 
 _FOUND = {}
@@ -59,10 +64,38 @@ def find_foam() -> dict | None:
     return res
 
 
-def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False):
+def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None):
+    """Runs cmd in a bash that sources OpenFOAM. Long commands (not capture) run in their own process group,
+    which a timeout or the cancel flag kills as a whole (mpirun and every rank, not only bash)."""
     src = f"source '{foam['bashrc']}' >/dev/null 2>&1; " if foam.get("bashrc") else ""
-    return subprocess.run(["bash", "-c", src + cmd], cwd=str(cwd), timeout=timeout,
-                          capture_output=capture, text=True)
+    if capture:
+        return subprocess.run(["bash", "-c", src + cmd], cwd=str(cwd), timeout=timeout, capture_output=True, text=True)
+    p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True)
+    t0 = time.time()
+    while True:
+        try:
+            return subprocess.CompletedProcess(p.args, p.wait(timeout=1.0))
+        except subprocess.TimeoutExpired:
+            cancelled = cancel_file is not None and Path(cancel_file).exists()
+            if cancelled or time.time() - t0 > timeout:
+                _kill_group(p)
+                if cancelled:
+                    raise Cancelled("cancelled") from None
+                raise subprocess.TimeoutExpired(cmd, timeout) from None
+
+
+def _kill_group(p) -> None:
+    import signal
+    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            p.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _tail(path: Path, n: int = 40) -> str:
@@ -74,7 +107,8 @@ def _tail(path: Path, n: int = 40) -> str:
 
 def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_on_error: bool = True) -> int:
     try:
-        rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout).returncode
+        rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
+                   cancel_file=Path(case).parent / "cancel").returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
     if rc != 0 and raise_on_error:
@@ -104,7 +138,8 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
             "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
             f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
         _step(foam, "decomposePar -force", "log.decomposePar", case, timeout)
-        steps = [(f"mpirun -np {procs} foamRun -parallel", "log.foamRun"), ("reconstructPar -latestTime", "log.reconstructPar")]
+        mpirun = os.environ.get("CFDT_MPIRUN", "mpirun")       # inside a SLURM job it uses the allocation
+        steps = [(f"{mpirun} -np {procs} foamRun -parallel", "log.foamRun"), ("reconstructPar -latestTime", "log.reconstructPar")]
     else:
         steps = [("foamRun", "log.foamRun")]
     for i, (cmd, logname) in enumerate(steps):

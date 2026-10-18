@@ -1,11 +1,13 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.18.1
+Version: 2026.10.18.2
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
   validate_studies  static checks of {name: study} (fast; fix errors before running)
   run_studies       meshes, solves and checks {name: study} (returns within ~45 s; long studies stay pending)
-  study_status      collects the pending studies of a run_studies request
+  study_status      collects the pending studies of a run_studies request (states: queued, running, ...)
+  jobs              recent and active SLURM runs on this machine (from any conversation), the queue
+  cancel            stops a request's studies
   get_case          the OpenFOAM case of one study (dictionaries as text), without solving
   run_benchmarks    the benchmark studies with known answers (is the toolchain right?)
   get_image         a PNG (flow slices, streamlines, wall pressure) as an image
@@ -52,6 +54,10 @@ Heat and compressible gas: "energy": true (OpenFOAM fluid; air becomes a perfect
 speeds, water keeps constant density; temperatures in degrees C; walls with T, q, power or h + T_inf;
 "gravity" for natural convection); results add heat.<wall bc>, flow.<bc>.mdot/T_mean_C/mach, max_mach,
 checks.energy_balance and feat_thermal (bcs for fea-translator's thermal analysis, external flow).
+Long studies run as SLURM jobs on the machine (when CFDT_EXECUTOR=slurm): run_studies returns them
+pending with job ids. They do not depend on this conversation. Report the expected finish time and
+stop; do not poll. Later, study_status(request) collects them; jobs() lists recent and active runs
+(also those started in other conversations); cancel(request) stops them.
 Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
 get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""
@@ -102,6 +108,21 @@ def run_benchmarks(names: list[str] | None = None, solver: str = "auto") -> dict
     Ghia, Hagen-Poiseuille pipe, Schaefer-Turek cylinder; slow ones by name: cavity_re1000,
     pipe_turbulent; chain_plate with build123d-translator and fea-translator) and reports pass or fail."""
     return api.bench(names, solver)
+
+
+@server.tool()
+def jobs(limit: int = 20, active: bool = False) -> dict:
+    """Recent requests with SLURM jobs on this machine (from any conversation): each study's state
+    (queued, running, done, timed_out, out_of_memory, cancelled, failed), job id and ETA; the queue of
+    this translator's jobs and the machine's CPUs. active=True: only requests still queued or running."""
+    return api.jobs(int(limit), bool(active))
+
+
+@server.tool()
+def cancel(request: str, names: list[str] | None = None) -> dict:
+    """Stops a request's studies (or the named ones): scancel for SLURM jobs, a cancel flag for local
+    ones. Returns their states."""
+    return api.cancel(request, names)
 
 
 @server.tool()

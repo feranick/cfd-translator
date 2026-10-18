@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.10.17.1
+Version: 2026.10.18.2
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -9,6 +9,9 @@ Version: 2026.10.17.1
     cfdt case studies.json NAME          write the OpenFOAM case of one study (no solve)
     cfdt bench [NAMES...] [--solver S]   the benchmark studies with known answers
     cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
+    cfdt jobs [--limit N] [--active]     recent requests with SLURM jobs, their states; the queue
+    cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
+    cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
 
 '-' reads the studies from stdin.
 """
@@ -42,10 +45,21 @@ def main(argv=None) -> None:
     p = sub.add_parser("images")
     p.add_argument("folder")
     p.add_argument("images", nargs="?")
+    p = sub.add_parser("jobs")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--active", action="store_true")
+    p = sub.add_parser("cancel")
+    p.add_argument("request")
+    p.add_argument("names", nargs="*")
+    p = sub.add_parser("run-study")
+    p.add_argument("request")
+    p.add_argument("name")
     p = sub.add_parser("bench")
     p.add_argument("names", nargs="*")
     p.add_argument("--solver", default=None)
     a = ap.parse_args(argv)
+    if a.cmd == "run-study":
+        sys.exit(api.run_study_job(a.request, a.name))
     if a.cmd == "status":
         out = api.status(a.request) if a.request else api.tool_status()
     elif a.cmd == "format":
@@ -57,6 +71,10 @@ def main(argv=None) -> None:
     elif a.cmd == "case":
         st = _load(a.studies)
         out = api.case(st[a.name], a.name)
+    elif a.cmd == "jobs":
+        out = api.jobs(a.limit, a.active)
+    elif a.cmd == "cancel":
+        out = api.cancel(a.request, a.names or None)
     elif a.cmd == "images":
         out = api.render_images(a.folder, _load(a.images) if a.images else True)
     else:

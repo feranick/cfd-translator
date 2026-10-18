@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.1
+Version: 2026.10.18.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -157,6 +157,8 @@ STUDY_KEYS = {
     "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
                   "it) and initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
+    "queue": "true: always a SLURM job; false: always in the server's own workers (when CFDT_EXECUTOR=slurm; "
+             "default: by the study's time estimate)",
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
@@ -567,6 +569,8 @@ def validate_study(st: dict) -> dict:
         rl = s["relax"]
         if not isinstance(rl, dict) or not all(k in ("U", "other") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
             errs.append("solve.relax: {U: 0..1, other: 0..1}")
+    if "queue" in st and not isinstance(st["queue"], bool):
+        errs.append("queue: true (always a SLURM job) or false (always local)")
     # energy, conditions, gravity
     energy = st.get("energy", False)
     if not isinstance(energy, bool):

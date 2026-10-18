@@ -1,12 +1,14 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.17.1
+Version: 2026.10.18.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
     run(studies, solver, wait)       meshes, solves and checks each study in a request folder; with wait,
                                      returns after that many seconds with the rest pending
     start(studies, solver)           the same in the background: returns the request folder
-    status(request, wait)            finished studies with results, the others pending
+    status(request, wait)            finished studies with results, the others pending (with state)
+    jobs(limit, active)              recent requests with SLURM jobs and their states; the queue
+    cancel(request, names)           scancel / cancel flag for the request's studies
     case(study, name)                mesh and OpenFOAM case of one study, without solving (file texts)
     render_images(folder, images)    new pictures of a finished study from its saved mesh and fields
     bench(names, solver)             the benchmark studies with known answers
@@ -51,8 +53,9 @@ def _solver(solver: str | None) -> str:
 def tool_status() -> dict:
     from .foam import find_foam
 
+    from . import executor
     out = {"translator": __version__, "openfoam": find_foam(), "default_solver": _solver(None),
-           "procs": int(os.environ.get("CFDT_PROCS", "1"))}
+           "procs": int(os.environ.get("CFDT_PROCS", "1")), "executor": executor.status()}
     for mod, key in (("gmsh", "gmsh"), ("build123d_translator", "build123d_translator"), ("fea_translator", "fea_translator")):
         try:
             m = __import__(mod)
@@ -106,10 +109,17 @@ def _request_dir(prefix: str) -> Path:
 
 
 def _collect(folder: Path) -> dict:
+    """Every study of a request: results, or pending with progress and a state. SLURM studies (job.json)
+    are judged from their files and the queue, so any process sees them; local ones from this process's pool."""
+    from . import executor
+
     meta = json.loads((folder / "request.json").read_text())
     handles = _POOL.jobs.get(str(folder), {})
-    out, pending = dict(meta.get("invalid", {})), []
-    for name in meta["names"]:
+    names = meta["names"]
+    studies = meta.get("studies", {})
+    slurm = executor.slurm_states(folder, names, studies)
+    out, pending, progress, job_ids = dict(meta.get("invalid", {})), [], {}, {}
+    for name in names:
         f = folder / name / f"{name}.json"
         h = handles.get(name)
         if f.is_file() and (h is None or h.ready()):
@@ -118,16 +128,30 @@ def _collect(folder: Path) -> dict:
                 continue
             except json.JSONDecodeError:
                 pass
+        if name in slurm:
+            st = slurm[name]
+            job_ids[name] = st.get("job_id")
+            if st["state"] in executor.FINAL:
+                out[name] = st
+            else:
+                pending.append(name)
+                progress[name] = st
+            continue
         if h is not None and h.ready():
             try:
                 out[name] = h.get()
             except Exception as exc:  # noqa: BLE001
                 out[name] = {"ok": False, "why": "worker failed", "error": str(exc)[:500]}
         elif h is None:
-            out[name] = {"ok": False, "why": "not finished and not running here (the server restarted?); run it again"}
+            out[name] = {"ok": False, "state": "failed",
+                         "why": "not finished and not running here (the server restarted?); run it again"}
         else:
             pending.append(name)
-    progress = {n: _progress(folder / n, meta.get("studies", {}).get(n, {})) for n in pending}
+            pr = _progress(folder / name, studies.get(name, {}))
+            pr["state"] = "running" if (folder / name / "case").exists() else "queued"
+            if pr["state"] == "queued":
+                pr["reason"] = "waiting for a worker of this server (CFDT_WORKERS)"
+            progress[name] = pr
     for v in out.values():
         if isinstance(v, dict):
             v.pop("trace", None)
@@ -136,8 +160,16 @@ def _collect(folder: Path) -> dict:
     if pending:
         res["progress"] = progress
         eta = max((p.get("eta_min_max") or 0) for p in progress.values()) if progress else 0
-        res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
-                       f"(now {eta:.0f} min) is more than about 5 min, tell the user when to come back and stop polling")
+        sl = [job_ids[n] for n in pending if n in job_ids]
+        if sl:
+            when = (f"the slowest has at most {eta:.0f} min left once running" if eta > 0 else
+                    "no estimate yet: the time per iteration shows once OpenFOAM iterates (CFDT_TIMEOUT bounds a run)")
+            res["next"] = (f"The studies are SLURM jobs on this machine (ids {', '.join(map(str, sl))}). They keep running "
+                           f"without this conversation. Tell the user when they should finish ({when}) and stop; "
+                           f"collect them later with study_status(request='{folder}') or find them with jobs().")
+        else:
+            res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
+                           f"(now {eta:.0f} min) is more than about 5 min, tell the user when to come back and stop polling")
     else:
         (folder / "results.json").write_text(json.dumps(res, indent=1, default=float))
     return res
@@ -148,7 +180,7 @@ def _progress(d: Path, study: dict) -> dict:
     import re as _re
     log = d / "case" / "log.foamRun"
     if not log.is_file():
-        return {"stage": "meshing / writing the case" if (d / "case").exists() or d.exists() else "queued"}
+        return {"stage": "meshing / writing the case" if (d / "case").exists() else "starting"}
     try:
         text = log.read_text(errors="replace")[-200000:]
     except OSError:
@@ -178,11 +210,19 @@ def start(studies: dict, solver: str | None = None) -> Path:
             invalid[n] = {"ok": False, "why": "invalid study", "errors": v["errors"]}
         else:
             jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s})
+    from . import executor as _ex
     (folder / "request.json").write_text(json.dumps({"names": [j["name"] for j in jobs], "invalid": invalid,
-                                                     "solver": s, "started": time.time(),
+                                                     "solver": s, "started": time.time(), "executor": _ex.kind(),
                                                      "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
-    if jobs:
-        _POOL.submit(folder, jobs)
+    from . import executor
+    local = []
+    for j in jobs:
+        if executor.use_slurm(j["study"], s):
+            executor.submit(folder, j["name"], j["study"])
+        else:
+            local.append(j)
+    if local:
+        _POOL.submit(folder, local)
     return folder
 
 
@@ -190,12 +230,17 @@ def status(request: str, wait: float = 0.0) -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
-    t_end = time.time() + max(0.0, float(wait))
+    t0 = time.time()
+    t_end = t0 + max(0.0, float(wait))
     while True:
         res = _collect(folder)
         if res["done"] or time.time() >= t_end:
             return res
-        time.sleep(1.0)
+        # SLURM jobs do not need this process: give quick ones up to 15 s, then return them pending
+        prog = res.get("progress", {})
+        if prog and all("job_id" in v for v in prog.values()) and time.time() - t0 >= 15:
+            return res
+        time.sleep(2.0)
 
 
 def run(studies: dict, solver: str | None = None, wait: float | None = None) -> dict:
@@ -203,6 +248,86 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None) -> 
     case with logs and results), <name>_case.tgz, <name>.json; and studies.json, results.json."""
     folder = start(studies, solver)
     return status(str(folder), 1e9 if wait is None else wait)
+
+
+def _requests(limit: int):
+    root = out_root()
+    if not root.is_dir():
+        return []
+    reqs = [p for p in root.iterdir() if p.is_dir() and (p / "request.json").is_file()]
+    return sorted(reqs, key=lambda p: p.stat().st_mtime, reverse=True)[: max(limit * 5, limit)]
+
+
+def jobs(limit: int = 20, active: bool = False) -> dict:
+    """The newest requests with SLURM jobs (any server process, any chat), each study's state, job id and ETA;
+    the queue of this translator's jobs and the machine's CPUs."""
+    from . import executor
+
+    out = []
+    for req in _requests(limit):
+        meta = json.loads((req / "request.json").read_text())
+        names = meta.get("names", [])
+        if not any((req / n / "job.json").is_file() for n in names):
+            continue
+        st = executor.slurm_states(req, names, meta.get("studies", {}))
+        studies = {}
+        for n in names:
+            jf = req / n / "job.json"
+            jid = json.loads(jf.read_text()).get("job_id") if jf.is_file() else None
+            if n in st:
+                s_ = st[n]
+                studies[n] = {k: s_.get(k) for k in ("state", "job_id", "reason", "expected_start", "ahead", "iteration",
+                                                      "max_iterations", "eta_min_max", "job_elapsed_min", "why")
+                              if s_.get(k) is not None}
+            elif (req / n / f"{n}.json").is_file():
+                r = json.loads((req / n / f"{n}.json").read_text())
+                studies[n] = {"state": r.get("state", "done" if r.get("ok") else "failed"), "job_id": jid,
+                              "ok": r.get("ok"), **({"reliable": r["reliable"]} if "reliable" in r else {})}
+            else:
+                studies[n] = {"state": "local", "job_id": jid}
+        live = any(v.get("state") in ("queued", "running") for v in studies.values())
+        if active and not live:
+            continue
+        out.append({"request": str(req), "started": meta.get("started"), "active": live, "studies": studies})
+        if len(out) >= limit:
+            break
+    return {"translator": __version__, "executor": executor.status(), **executor.queue_summary(), "requests": out}
+
+
+def cancel(request: str, names: list[str] | None = None) -> dict:
+    """Stops the request's studies (or the named ones): scancel for SLURM jobs; for local studies a cancel
+    flag that the running solver (in whatever process runs it) checks every second."""
+    from . import executor
+
+    folder = Path(request).expanduser()
+    if not (folder / "request.json").is_file():
+        return {"error": f"no request {folder}"}
+    meta = json.loads((folder / "request.json").read_text())
+    names = names or meta["names"]
+    unknown = [n for n in names if n not in meta["names"]]
+    if unknown:
+        return {"error": f"no studies {unknown} in this request ({meta['names']})"}
+    todo = [n for n in names if not (folder / n / f"{n}.json").is_file()]
+    for n in todo:
+        (folder / n).mkdir(parents=True, exist_ok=True)
+        (folder / n / "cancel").write_text(str(time.time()))
+    ids = executor.cancel_slurm(folder, todo)
+    local = [n for n in todo if not (folder / n / "job.json").is_file()]
+    here = [n for n in local if n in _POOL.jobs.get(str(folder), {})]
+    time.sleep(1.0 if ids or here else 0.0)
+    res = status(str(folder), 3.0 if (ids or here) else 0.0)
+    out = {"request": str(folder), "cancelled_jobs": ids, "already_finished": [n for n in names if n not in todo],
+           "states": {n: (res["studies"].get(n, {}).get("state") or ("done" if n in res["studies"] else
+                          res.get("progress", {}).get(n, {}).get("state"))) for n in names}}
+    if [n for n in local if n not in here]:
+        out["note"] = ("local studies not run by this server process: a cancel flag was left; the process running "
+                       "them (if any) stops them within seconds, otherwise they are not running")
+    return out
+
+
+def run_study_job(request: str, name: str) -> int:
+    from . import executor
+    return executor.run_study_job(request, name)
 
 
 def case(study: dict, name: str = "study") -> dict:
