@@ -548,7 +548,11 @@ def test_energy_case_files(tmp_path):
     c = tmp_path / "ven" / "case"
     p = foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]
     assert p["inlet"]["type"] == "totalPressure" and p["inlet"]["p0"] == pytest.approx(111325)
-    assert foamio.read_foam((c / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "yes"
+    fv = foamio.read_foam((c / "system" / "fvSolution").read_text())
+    assert fv["PIMPLE"]["transonic"] == "no" and float(fv["relaxationFactors"]["fields"]["p"]) == 0.3   # M 0.37: subsonic
+    assert float(fv["PIMPLE"]["pMinFactor"]) == 0.5
+    mesh, patches, sel, plan, w = prepare(dict(ven, solve={"transonic": True}), tmp_path / "ven2")
+    assert foamio.read_foam((tmp_path / "ven2" / "case" / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "yes"
     assert plan["energy"]["mach_estimate"] == pytest.approx(0.369, rel=0.01)
     assert not (c / "0" / "p_rgh").exists()
     with pytest.raises(Exception, match="energy"):
@@ -680,3 +684,13 @@ def test_isothermal_energy_run_ignores_h_and_caps_gamg(tmp_path):
     fv = foamio.read_foam((tmp_path / "b" / "case" / "system" / "fvSolution").read_text())
     assert not plan["energy"]["isothermal"] and "h" in fv["PIMPLE"]["residualControl"]
     assert "h" not in zero_fields({"U": U, "p": np.linspace(1e5, 1e5 + 1, 10), "T": T}, plan)
+
+
+def test_small_velocity_components_are_judged_against_the_peak_speed():
+    from cfd_translator.runner import velocity_scaled
+    U = np.zeros((10, 3))
+    U[:, 0] = 7.5e-4
+    U[3, 1] = 1e-6                                   # heated channel: |Uy| / |U| = 1.3e-3, residual 7e-3
+    r = velocity_scaled({"Ux": 4e-7, "Uy": 7e-3, "h": 2e-6, "p": 1e-6}, {"U": U})
+    assert r["Ux"] == 4e-7 and r["Uy"] == pytest.approx(7e-3 * 1e-6 / 7.5e-4) and r["h"] == 2e-6
+    assert max(r.values()) < 1e-5

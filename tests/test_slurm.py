@@ -232,3 +232,10 @@ def test_run_record_for_an_mpi_run(monkeypatch):
     assert r["mpi"]["cores"] >= 1 and r["mpi"]["hwthreads"] >= r["mpi"]["cores"]
     monkeypatch.delenv("SLURM_JOB_ID")
     assert execution_record(1, 1)["executor"] == "local" and execution_record(1, 1)["mpi"] is None
+
+
+def test_a_job_that_never_started_counts_as_cancelled():
+    from cfd_translator.executor import final_state
+    st, why = final_state(None, "(no job.log)")
+    assert st == "cancelled" and "without starting" in why
+    assert final_state(None, "Traceback ...")[0] == "failed"

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.7
+Version: 2026.10.18.9
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -143,7 +143,8 @@ STUDY_KEYS = {
     "model": "|".join(MODELS),
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
-    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other}, procs (MPI ranks; default CFDT_PROCS or 1)}",
+    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p (energy)}, procs (MPI ranks; default CFDT_PROCS or 1), "
+             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7)}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -162,7 +163,7 @@ STUDY_KEYS = {
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
-SOLVE_KEYS = {"iterations", "residual", "relax", "procs"}
+SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 
@@ -583,8 +584,10 @@ def validate_study(st: dict) -> dict:
         errs.append("solve.procs: number of MPI ranks (integer >= 1)")
     if "relax" in s:
         rl = s["relax"]
-        if not isinstance(rl, dict) or not all(k in ("U", "other") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
-            errs.append("solve.relax: {U: 0..1, other: 0..1}")
+        if not isinstance(rl, dict) or not all(k in ("U", "other", "p") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
+            errs.append("solve.relax: {U: 0..1, other: 0..1, p: 0..1 (energy runs)}")
+    if "transonic" in s and not isinstance(s["transonic"], bool):
+        errs.append("solve.transonic: true or false (energy, gas; default: true when the estimated Mach exceeds 0.7)")
     if "queue" in st and not isinstance(st["queue"], bool):
         errs.append("queue: true (always a SLURM job) or false (always local)")
     # energy, conditions, gravity

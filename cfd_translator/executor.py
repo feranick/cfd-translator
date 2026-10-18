@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.18.6
+Version: 2026.10.18.9
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -249,6 +249,9 @@ def final_state(acct: str | None, log: str) -> tuple[str, str]:
     if a.startswith("CANCELLED") or (not acct and "CANCELLED" in log):
         who = a.split("BY", 1)[1].strip() if "BY" in a else None
         return "cancelled", "cancelled" + (f" by user {who}" if who else "")
+    if not acct and log == "(no job.log)":     # never started: scancel while queued leaves nothing behind
+        return "cancelled", ("left the queue without starting (no job.log): cancelled while queued (scancel), or "
+                             "SLURM dropped it; submit it again if it was not cancelled on purpose")
     return "failed", f"the job ended without a result ({acct or 'no accounting'}); the end of job.log:\n{log}"
 
 

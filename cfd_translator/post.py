@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.18.8
+Version: 2026.10.18.9
 
     results(study, mesh, plan, fields) -> dict
 
@@ -355,7 +355,10 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                         h["Nu"] = _r(h["h"] * float(ref["length"]) * SCALE / en["k"])
         e_err = abs(e_out - q_walls) / e_scale if e_scale > 0 else 0.0
         energy_check = {"out_W": _r(e_out), "walls_in_W": _r(q_walls), "error": _r(e_err)}
-        if e_err > 0.02:
+        if en.get("isothermal"):     # no heat put in: both sides are ~0 and the error compares tiny fluxes
+            # (pipe_air_low_mach: 1.1e-6 W net, against Q dp = 2.7e-5 W of pumping power)
+            energy_check["note"] = "no heat put in (isothermal): not judged"
+        elif e_err > 0.02:
             warns.append(f"energy balance off by {e_err:.2%} (not converged?)")
         if external and heat_faces:
             ptags = {t for t, i in mesh.tag_info.items() if i.get("on") == "part"}

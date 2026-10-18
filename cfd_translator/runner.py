@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.8
+Version: 2026.10.18.9
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -86,12 +86,19 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 out["solve"]["continuity"] = lg["continuity"]
             if not lg["converged"]:
                 zero = zero_fields(fields, plan)
-                rest = {f: r for f, r in lg["residuals"].items() if f not in zero}
-                if zero and rest and max(rest.values()) <= plan["residual"]:
+                rest = {f: r for f, r in velocity_scaled(lg["residuals"], fields).items() if f not in zero}
+                if rest and max(rest.values()) <= plan["residual"] and (zero or rest != lg["residuals"]):
                     lg["converged"] = True
                     out["solve"]["converged"] = True
-                    out["solve"]["converged_by"] = (f"residuals, ignoring {', '.join(z for z in zero if z in lg['residuals'])} "
-                                                    "(zero or uniform everywhere: their residuals are round-off)")
+                    why = []
+                    if any(z in lg["residuals"] for z in zero):
+                        why.append(f"ignoring {', '.join(z for z in zero if z in lg['residuals'])} (zero or uniform "
+                                   "everywhere: their residuals are round-off)")
+                    small = [f for f in rest if rest[f] != lg["residuals"][f]]
+                    if small:
+                        why.append(f"{', '.join(small)} scaled by their size relative to the peak speed")
+                    out["solve"]["converged_by"] = "residuals, " + "; ".join(why)
+                    out["solve"]["residuals_scaled"] = {f: float(f"{r:.3g}") for f, r in rest.items()}
             if not lg["converged"]:
                 worst = max(lg["residuals"].items(), key=lambda kv: kv[1]) if lg["residuals"] else ("?", float("nan"))
                 warns.append(f"not converged in {lg['iterations']} iterations (largest last residual: {worst[0]} "
@@ -146,6 +153,22 @@ def execution_record(procs_requested: int, procs_used: int | None = None, launch
             if launch else None}
 
 
+def velocity_scaled(residuals: dict, fields: dict) -> dict:
+    """OpenFOAM normalises each velocity component's residual by that component's own variation; for a small
+    component (heated channel: |Uy| <= 1.3e-3 of the peak speed, residual stuck at 7e-3) that is round-off.
+    Relative to the flow, the residual is smaller by max|U_i| / max|U|; other fields are left as they are."""
+    Uc = np.asarray(fields.get("U", []), float)
+    if not Uc.size:
+        return dict(residuals)
+    umax = float(np.abs(Uc).max())
+    out = dict(residuals)
+    for k, c in enumerate("xyz"):
+        f = f"U{c}"
+        if f in out and umax > 0:
+            out[f] = residuals[f] * min(1.0, float(np.abs(Uc[:, k]).max()) / umax)
+    return out
+
+
 def zero_fields(fields: dict, plan: dict) -> list[str]:
     """Solved fields that are zero (velocity components, within 1e-4 of the peak speed) or uniform (pressure,
     enthalpy, within 1e-6 of their scale) everywhere. Their normalised residuals are round-off over a near-zero
@@ -182,7 +205,8 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
     mb = ch.get("momentum_balance", {})
     if "note" not in mb and mb.get("error", 0) > 0.03:
         why.append(f"momentum balance off by {mb['error']:.2%}")
-    if ch.get("energy_balance", {}).get("error", 0) > 0.02:
+    eb = ch.get("energy_balance", {})
+    if "note" not in eb and eb.get("error", 0) > 0.02:
         why.append(f"energy balance off by {ch['energy_balance']['error']:.2%}")
     if why:
         why.append("do not report these numbers as results: rerun with more solve.iterations, lower solve.relax "

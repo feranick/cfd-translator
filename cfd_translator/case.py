@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.8
+Version: 2026.10.18.9
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -614,15 +614,20 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     iters = int(s.get("iterations", 3000))
     res = float(s.get("residual", 1e-5))
     unstructured = q["max_non_orthogonality"] > 5.0
-    transonic = bool(gas and not buoy and mach_est > 0.3)
+    s_tr = s.get("transonic")
+    # transonic (p as a convected variable) only near Mach 1: from rest it diverged on the subsonic venturi
+    # (M 0.37 to 0.57) in two iterations on mochi; a study can still ask for it
+    transonic = bool(gas and not buoy and (s_tr if s_tr is not None else mach_est > 0.7))
     relax = s.get("relax", {})
     if rho_const:          # no buoyancy coupling: enthalpy converges fast without strong relaxation
         rU, rO = float(relax.get("U", 0.7)), float(relax.get("other", 0.9))
     elif buoy:
         rU, rO = float(relax.get("U", 0.3)), float(relax.get("other", 0.3))
     else:
-        rU = float(relax.get("U", 0.7 if (unstructured or transonic) else 0.9))
-        rO = float(relax.get("other", 0.7 if (unstructured or transonic) else 0.9))
+        fast = gas and mach_est > 0.1          # compressible: start more gently
+        rU = float(relax.get("U", 0.7 if (unstructured or transonic or fast) else 0.9))
+        rO = float(relax.get("other", 0.7 if (unstructured or transonic or fast) else 0.9))
+    rP = float(relax.get("p", 0.3 if (gas and mach_est > 0.1 and not buoy and not transonic) else 1.0))
     # no heat put in anywhere and low Mach: temperature varies only by u^2/cp (kinetic energy, ~1e-4 K), so
     # h's normalised residual is round-off and stalls (pipe_air_low_mach on mochi: 1.5e-4 after 3000
     # iterations). OpenFOAM then stops on U and p alone, and 'converged' ignores h (runner.zero_fields).
@@ -632,7 +637,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
         if p["kind"] in ("inlet", "outlet", "opening")) or any("total_pressure" in p["bc"] for p in patches)
     isothermal = not heat_in and mach_est < 0.1
     plan["schemes"] = "unstructured" if unstructured else "orthogonal"
-    plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO},
+    plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO, **({"p": rP} if rP < 1 else {})},
                  "fixed_pressure": any(pp["kind"] in ("outlet", "opening") for pp in patches),
                  "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": gravity, "closed": closed, "isothermal": isothermal,
                             "density": "constant (closed, no gravity)" if rho_const else ("constant" if not gas else "perfect gas"),
@@ -681,7 +686,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                f"        tolerance       {tol:.3g};\n        relTol          0.01;\n        smoother        GaussSeidel;\n"
                "        maxIter         50;\n    }\n\n"
                "    \"(U|h|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
-               f"        tolerance       {tol:.3g};\n        relTol          0.1;\n    }}\n}}\n\n")
+               f"        tolerance       {tol:.3g};\n        relTol          0.1;\n        maxIter         100;\n    }}\n}}\n\n")
     rc = (f"    residualControl\n    {{\n        {pname:<15} {res:.3g};\n        U               {res:.3g};\n"
           + ("" if isothermal else f"        h               {res:.3g};\n")
           + f"        \"(k|omega)\"       {res:.3g};\n    }}\n")
@@ -692,9 +697,11 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                f"    equations\n    {{\n        U               {rU:g};\n        h               {rO:g};\n"
                "        \"(k|omega)\"       0.7;\n    }\n}")
     else:
+        # pMin/MaxFactor: OpenFOAM clips p to [0.5, 2] x its boundary range, so a bad start cannot make it negative
         pim = (f"PIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    transonic       {'yes' if transonic else 'no'};\n"
-               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
-               "relaxationFactors\n{\n    fields\n    {\n        p               1;\n    }\n"
+               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n"
+               f"    pMinFactor      0.5;\n    pMaxFactor      2;\n\n{rc}}}\n\n"
+               f"relaxationFactors\n{{\n    fields\n    {{\n        p               {rP:g};\n    }}\n"
                f"    equations\n    {{\n        p               1;\n        U               {rU:g};\n"
                f"        h               {rO:g};\n        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", solvers + pim))

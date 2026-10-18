@@ -94,6 +94,11 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.9**: mochi run of .8 (request run_20261018_203019_cbfc51, --mem=16G now in CFDT_SLURM_ARGS).
+- pass: taylor_couette_mrf, swirl_pipe, natural_cavity_ra1e4 (reliable), conduction_slab_2d (in the .7 run). pipe_air_low_mach: converged in 177 iterations, 20 s, dp -0.8 %, but 'unreliable' from the energy balance of an isothermal run: no longer judged.
+- heated_channel_2d: Nu +1.7 %, outlet T ok, energy 0.2 %, but Uy (|Uy| <= 1e-6 m/s, 1.3e-3 of the speed) stalled at 7e-3: residuals now scaled by component size.
+- venturi_subsonic: builds now; diverged at iteration 2 (continuity errors 1e4, then MachNo sqrt of negative T), also with relax 0.3. Now: transonic off below Mach 0.7, p relaxed 0.3, pMin/MaxFactor. Unverified: if it still fails, try solve.transonic and solve.relax.p on mochi with queue: false.
+
 **2026.10.18.7/.8**: fixes from the mochi energy rerun (.8: GAMG cap, isothermal h, per-axis angular balance, benchmark fixes; .7 was pinned without them) (request run_20261018_182109_c20fd9, 2026.10.18.5).
 - conduction_slab_2d: p_rgh GAMG diverged at iteration 3 (final residual 6.5e43), then T inversion failed. Closed + no gravity now uses rhoConst; the same slab with water (rhoConst, 18.5 code, run locally on mochi) gave Q = 0.04794 W (k dT/H: 0.0479) and mid T 39.987 C in 6 s.
 - venturi_subsonic: outline not closed (b3dt BuildError); cfdt validation now runs b3dt's validate_goal.
