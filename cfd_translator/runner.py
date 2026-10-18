@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.3
+Version: 2026.10.18.4
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -85,7 +85,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 # round-off over a near-zero normalisation that never meets the target: leave it out
                 Uc = np.asarray(fields["U"], float)
                 umax = float(np.abs(Uc).max()) if Uc.size else 0.0
-                tiny = [f"U{c}" for k, c in enumerate("xyz") if Uc.size and float(np.abs(Uc[:, k]).max()) <= 1e-9 * umax]
+                tiny = [f"U{c}" for k, c in enumerate("xyz") if Uc.size and float(np.abs(Uc[:, k]).max()) <= 1e-6 * umax]
                 rest = {f: r for f, r in lg["residuals"].items() if f not in tiny}
                 if tiny and rest and max(rest.values()) <= plan["residual"]:
                     lg["converged"] = True

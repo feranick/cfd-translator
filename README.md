@@ -309,6 +309,7 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.18.4 | A velocity component counts as zero everywhere (and its residual is ignored for 'converged') below 1e-6 of the largest velocity, not 1e-9: OpenFOAM's round-off in Couette's Uy is above 1e-9. On mochi (SLURM, OpenMPI 5): 47 tests pass; couette_2d (1 rank) and pipe_poiseuille_mpi (4 ranks in a job, 0.8 %) pass. |
 | 2026.10.18.3 | From mochi (OpenMPI 5, 20 cores × 2 threads, `CFDT_PROCS=9`), where `mpirun -np 9` failed with 'allocation-overload':
 - Jobs ask `--ntasks-per-core=1`, and `mpirun --map-by hwthread` is used when a job's cpuset has fewer cores than ranks.
 - Ranks are capped at one per 5000 cells (`CFDT_CELLS_PER_RANK`), with a warning.

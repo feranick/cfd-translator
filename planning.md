@@ -94,6 +94,15 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.4**: mochi with SLURM works.
+- `llmt test cfdt`: 47 passed.
+- couette_2d and pipe_poiseuille_mpi pass. pipe_poiseuille_mpi ran on 4 ranks in a job: 17 s solve, against 41 s serial on carbonio.
+- The zero-component convergence rule now uses 1e-6.
+- Still to test on mochi:
+  - jobs queueing when they ask for more cores than the machine has;
+  - disconnecting Claude mid-run and collecting the result;
+  - the energy and rotation benchmarks.
+
 **2026.10.18.3** (mochi, first SLURM run): the jobs were submitted and collected, but OpenFOAM's `mpirun -np 9` failed with OpenMPI 5 'allocation-overload'.
 - Cause: with hyperthreads, `--ntasks=9` gets fewer physical cores than ranks.
 - Fix: `--ntasks-per-core=1` in job.sh, the `--map-by hwthread` fallback, and ranks capped by cells (`CFDT_CELLS_PER_RANK` 5000).
