@@ -94,7 +94,7 @@ Works **together** with b3dt and feat:
 
 ## State
 
-**2026.10.18.7**: fixes from the mochi energy rerun (request run_20261018_182109_c20fd9, 2026.10.18.5).
+**2026.10.18.7/.8**: fixes from the mochi energy rerun (.8: GAMG cap, isothermal h, per-axis angular balance, benchmark fixes; .7 was pinned without them) (request run_20261018_182109_c20fd9, 2026.10.18.5).
 - conduction_slab_2d: p_rgh GAMG diverged at iteration 3 (final residual 6.5e43), then T inversion failed. Closed + no gravity now uses rhoConst; the same slab with water (rhoConst, 18.5 code, run locally on mochi) gave Q = 0.04794 W (k dT/H: 0.0479) and mid T 39.987 C in 6 s.
 - venturi_subsonic: outline not closed (b3dt BuildError); cfdt validation now runs b3dt's validate_goal.
 - heated_channel_2d: Nu 8.36 (ref 8.235), outlet T 23.826 (ref 23.833), but not converged (Uy) and a false inlet-flow warning (mass vs volume): both fixed.

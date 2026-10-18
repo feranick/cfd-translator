@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.18.7
+Version: 2026.10.18.8
 
     results(study, mesh, plan, fields) -> dict
 

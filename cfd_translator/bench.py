@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.18.7
+Version: 2026.10.18.8
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 

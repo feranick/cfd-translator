@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.7
+Version: 2026.10.18.8
 
     write_case(study, mesh, patches, case_dir) -> plan
 
