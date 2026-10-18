@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.17.1
+Version: 2026.10.18.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -22,9 +22,12 @@ from __future__ import annotations
 import re
 
 FLUIDS = {
-    "air": {"rho": 1.204, "mu": 1.825e-5, "note": "20 degrees C, 1 atm"},
-    "water": {"rho": 998.2, "mu": 1.002e-3, "note": "20 degrees C"},
+    "air": {"rho": 1.204, "mu": 1.825e-5, "cp": 1005.0, "pr": 0.71, "molar_mass": 28.96,
+            "note": "20 degrees C, 1 atm; with energy: perfect gas (density from p and T)"},
+    "water": {"rho": 998.2, "mu": 1.002e-3, "cp": 4182.0, "pr": 7.0,
+              "note": "20 degrees C; with energy: constant density, temperature solved"},
 }
+R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST")
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
@@ -39,15 +42,26 @@ BC_KINDS = {
                "intensity": "turbulence intensity (kOmegaSST; default 0.05)",
                "length_scale": "mm, turbulence length scale (default 0.07 x hydraulic diameter)",
                "swirl": "{axis: [x, y, z], center: [x, y, z] mm, rpm (solid body: omega r) or tangential (m/s, "
-                        "uniform)}: tangential velocity added face by face (impeller exits, swirlers)"},
+                        "uniform)}: tangential velocity added face by face (impeller exits, swirlers)",
+               "mass_flow": "kg/s (energy only; instead of velocity)",
+               "temperature": "degrees C (energy only; default conditions.T)",
+               "total_pressure": "Pa gauge (energy, gases: instead of velocity; isentropic total-pressure inlet; with "
+                                 "total_temperature in degrees C, default conditions.T)",
+               "total_temperature": "degrees C (with total_pressure)"},
               "Fixed velocity in (pressure zero-gradient)."),
-    "outlet": ({"faces": ""}, {"pressure": "Pa (static, default 0)"},
+    "outlet": ({"faces": ""}, {"pressure": "Pa (static, default 0; gauge to conditions.p with energy)",
+                               "temperature": "degrees C of any backflow (energy; default conditions.T)"},
                "Fixed static pressure; velocity zero-gradient, no backflow."),
-    "opening": ({"faces": ""}, {"pressure": "Pa (static, default 0)"},
+    "opening": ({"faces": ""}, {"pressure": "Pa (static, default 0; gauge to conditions.p with energy)",
+                                "temperature": "degrees C of inflow (energy; default conditions.T)"},
                 "Fixed static pressure; flow may go in or out (open ends, far-field)."),
     "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part used; default at rest)",
                              "rotation": "a rotating zone's name (impeller faces inside it) or {axis: [x, y, z], "
-                                         "center: [x, y, z] mm, rpm}: rotating wall (u = omega x r, right-handed)"},
+                                         "center: [x, y, z] mm, rpm}: rotating wall (u = omega x r, right-handed)",
+                             "T": "energy: wall temperature, degrees C", "q": "energy: heat flux into the fluid, W/m2",
+                             "power": "energy: total heat into the fluid, W (spread over the area)",
+                             "h": "energy: film coefficient to an outside temperature T_inf, W/(m2 K)",
+                             "T_inf": "energy: outside temperature for h, degrees C"},
              "No-slip wall (every face no bc takes is a wall)."),
     "slip": ({"faces": ""}, {}, "Free-slip wall: no friction, no flow through (far-field sides)."),
     "symmetry": ({"faces": ""}, {}, "Symmetry plane."),
@@ -91,6 +105,13 @@ CONVENTIONS = [
     "reference.velocity and area); probes.<name>.ux/uy/uz/p/u; max_velocity; wall_shear; y_plus; "
     "feat_loads (external: per part face, as fea-translator force bcs); checks (mass and momentum balance, "
     "convergence, mesh).",
+    "energy: true solves temperature with OpenFOAM's fluid solver (steady, subsonic to transonic): air is a perfect "
+    "gas (density from p and T), water has constant density. Temperatures in degrees C; pressures stay gauge "
+    "(relative to conditions.p, default 101325 Pa). Walls are adiabatic unless given T, q (W/m2 into the fluid), "
+    "power (W) or h with T_inf. gravity [gx, gy, gz] adds buoyancy (natural convection). Results add "
+    "heat.<wall bc>.Q_W/q_mean/T_mean_C (and h, Nu with reference.T and length), flow.<bc>.mdot/T_mean_C/mach, "
+    "max_mach, T_min_C/T_max_C, checks.energy_balance, and for external flow feat_thermal (convection and "
+    "heat-flux bcs per part face for fea-translator's thermal analysis).",
     "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
     "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
     "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
@@ -117,7 +138,8 @@ STUDY_KEYS = {
     "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': [r_in, r_out, h]}",
     "domain": "{'kind': 'internal'} (default) | {'kind': 'external', 'box': [x0, y0, z0, x1, y1, z1]}",
     "2d": "true: one cell along Z, empty front/back",
-    "fluid": f"one of {sorted(FLUIDS)} or {{rho, mu}} (or a name plus overrides)",
+    "fluid": f"one of {sorted(FLUIDS)} or {{rho, mu}}; with energy {{mu, cp, pr (or k), molar_mass (gas) or rho "
+             "(liquid)}} (or a name plus overrides)",
     "model": "|".join(MODELS),
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
@@ -130,11 +152,17 @@ STUDY_KEYS = {
     "images": "true (default pictures) or [{name, slice: {axis: x|y|z, at: mm}, field: u|ux|uy|uz|p, streamlines, "
               "window: [a0, a1, b0, b1] mm} | {name, surface: part|walls|<wall bc>, field: p|wall_shear, view: "
               "[elev, azim]}]: PNGs after the solve (get_image shows them; render_images makes more later)",
+    "energy": "true: solve temperature (OpenFOAM fluid): gases (air) are compressible perfect gases (to "
+              "transonic), liquids (water) keep constant density; walls can be heated; default false",
+    "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
+                  "it) and initial/ambient temperature (energy)",
+    "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs"}
-REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p"}
+REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
+THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 
 
 def study_format() -> dict:
@@ -221,22 +249,69 @@ def image_errors(im, two_d: bool = False) -> list[str]:
                 errs.append(f"{w}.slice: {{axis: x | y | z, at: coordinate in mm}}")
             elif two_d and sl["axis"] != "z":
                 errs.append(f"{w}.slice: a 2d study has only the z slice")
-            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p"):
-                errs.append(f"{w}.field: u, ux, uy, uz or p")
+            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p", "T", "mach"):
+                errs.append(f"{w}.field: u, ux, uy, uz, p, T or mach (T and mach with energy)")
             if "window" in sp and (not _vec(sp["window"], 4) or sp["window"][0] >= sp["window"][1]
                                    or sp["window"][2] >= sp["window"][3]):
                 errs.append(f"{w}.window: [a0, a1, b0, b1] in mm along the slice's two in-plane axes")
         else:
             if not isinstance(sp["surface"], str):
                 errs.append(f"{w}.surface: part, walls or a wall bc's name")
-            if sp.get("field", "p") not in ("p", "wall_shear"):
-                errs.append(f"{w}.field: p or wall_shear")
+            if sp.get("field", "p") not in ("p", "wall_shear", "T", "q"):
+                errs.append(f"{w}.field: p, wall_shear, T or q (T and q with energy)")
             if "view" in sp and not _vec(sp["view"], 2):
                 errs.append(f"{w}.view: [elevation, azimuth] in degrees")
         if "streamlines" in sp and not isinstance(sp["streamlines"], bool):
             errs.append(f"{w}.streamlines: true or false")
     if len([n for n in names if n]) != len({n for n in names if n}):
         errs.append("images: names must be unique")
+    return errs
+
+
+def _energy_bc_errors(b: dict, w: str, st: dict) -> list[str]:
+    errs = []
+    energy = bool(st.get("energy"))
+    kind = b.get("kind")
+    ek = {"inlet": ("mass_flow", "temperature", "total_pressure", "total_temperature"),
+          "outlet": ("temperature",), "opening": ("temperature",), "wall": THERMAL_KEYS}.get(kind, ())
+    used = [k for k in ek if k in b]
+    if used and not energy:
+        return [f"{w}: {used} need energy: true"]
+    if not energy:
+        return errs
+    for k in ("temperature", "total_temperature", "T", "T_inf"):
+        if k in b and (not _num(b[k]) or b[k] <= -273.15):
+            errs.append(f"{w}: {k} in degrees C")
+    if kind == "inlet":
+        if "mass_flow" in b and (not _num(b["mass_flow"]) or b["mass_flow"] <= 0):
+            errs.append(f"{w}: mass_flow is a positive number (kg/s)")
+        if "total_pressure" in b:
+            if not _num(b["total_pressure"]):
+                errs.append(f"{w}: total_pressure is a number (Pa gauge)")
+            if "gravity" in st:
+                errs.append(f"{w}: total_pressure inlets are not available with gravity; give a velocity or mass_flow")
+            try:
+                gas = "molar_mass" in fluid_props(st["fluid"])
+            except (KeyError, TypeError, AttributeError):
+                gas = True                        # the fluid's own error is reported elsewhere
+            if not gas:
+                errs.append(f"{w}: total_pressure inlets are for gases")
+            for k in ("profile", "swirl", "temperature"):
+                if k in b:
+                    errs.append(f"{w}: {k} does not go with total_pressure (use total_temperature)")
+        elif "total_temperature" in b:
+            errs.append(f"{w}: total_temperature goes with total_pressure (else use temperature)")
+    if kind == "wall":
+        th = [k for k in ("T", "q", "power", "h") if k in b]
+        if len(th) > 1 and not (set(th) <= {"h"}):
+            errs.append(f"{w}: give one of T, q, power, or h with T_inf")
+        if ("h" in b) != ("T_inf" in b):
+            errs.append(f"{w}: h and T_inf go together")
+        for k in ("q", "power"):
+            if k in b and not _num(b[k]):
+                errs.append(f"{w}: {k} is a number")
+        if "h" in b and (not _num(b["h"]) or b["h"] < 0):
+            errs.append(f"{w}: h is a film coefficient (W/(m2 K), >= 0)")
     return errs
 
 
@@ -258,8 +333,31 @@ def fluid_props(f) -> dict:
     if isinstance(f, str):
         return dict(FLUIDS[f])
     base = dict(FLUIDS.get(f.get("name"), {})) if f.get("name") else {}
-    base.update({k: v for k, v in f.items() if k != "name"})
+    over = {k: v for k, v in f.items() if k != "name"}
+    if "rho" in over and "molar_mass" not in over:
+        base.pop("molar_mass", None)          # a given density makes it a liquid
+    if "molar_mass" in over:
+        base.pop("rho", None)
+    base.update(over)
     return base
+
+
+def thermo_props(study: dict) -> dict:
+    """Thermal properties of the study's fluid at its conditions: kind (gas/liquid), cp, mu, k, pr, R or rho,
+    and the reference density (gas: p / (R T) at conditions)."""
+    f = fluid_props(study["fluid"])
+    c = study.get("conditions", {})
+    p0, T0 = float(c.get("p", 101325.0)), float(c.get("T", 20.0)) + 273.15
+    mu, cp = float(f["mu"]), float(f["cp"])
+    pr = float(f["pr"]) if "pr" in f else mu * cp / float(f["k"])
+    out = {"mu": mu, "cp": cp, "pr": pr, "k": mu * cp / pr, "p_op": p0, "T_op": T0}
+    if "molar_mass" in f:
+        R = R_UNIVERSAL / float(f["molar_mass"])
+        out.update(kind="gas", molar_mass=float(f["molar_mass"]), R=R, rho=p0 / (R * T0),
+                   gamma=cp / (cp - R))
+    else:
+        out.update(kind="liquid", rho=float(f["rho"]))
+    return out
 
 
 def bc_names(study: dict) -> list[str]:
@@ -330,11 +428,16 @@ def validate_study(st: dict) -> dict:
         if f.get("name") and f["name"] not in FLUIDS:
             errs.append(f"fluid.name: {f['name']!r} unknown")
         p = fluid_props(f)
-        for k in ("rho", "mu"):
+        energy = bool(st.get("energy"))
+        need = ("mu", "cp") + (("molar_mass",) if "molar_mass" in p else ("rho",)) if energy else ("rho", "mu")
+        for k in need:
             if not _num(p.get(k)) or p[k] <= 0:
-                errs.append(f"fluid.{k}: a positive number ({'kg/m3' if k == 'rho' else 'Pa s'})")
-        for k in set(f) - {"name", "rho", "mu"}:
-            errs.append(f"fluid: unknown key {k!r} (rho, mu, name)")
+                errs.append(f"fluid.{k}: a positive number")
+        if energy and not (_num(p.get("pr")) or _num(p.get("k"))):
+            errs.append("fluid: give pr (Prandtl number) or k (W/(m K)) with energy")
+        allowed = {"name", "rho", "mu"} | ({"cp", "pr", "k", "molar_mass"} if energy else set())
+        for k in set(f) - allowed:
+            errs.append(f"fluid: unknown key {k!r} (allowed: {sorted(allowed)})")
     else:
         errs.append("fluid: a name or {'rho', 'mu'}")
     model = st.get("model", "laminar")
@@ -364,9 +467,9 @@ def validate_study(st: dict) -> dict:
         if names and names[i] in RESERVED:
             errs.append(f"{w}: name {names[i]!r} is reserved")
         if b["kind"] == "inlet":
-            given = [k for k in ("velocity", "flow_rate", "flow_rate_lpm") if k in b]
+            given = [k for k in ("velocity", "flow_rate", "flow_rate_lpm", "mass_flow", "total_pressure") if k in b]
             if len(given) != 1:
-                errs.append(f"{w}: give exactly one of velocity, flow_rate, flow_rate_lpm")
+                errs.append(f"{w}: give exactly one of velocity, flow_rate, flow_rate_lpm, mass_flow, total_pressure")
             v = b.get("velocity")
             if v is not None and not (_num(v) or _vec(v)):
                 errs.append(f"{w}: velocity is a number (m/s, normal into the domain) or [vx, vy, vz]")
@@ -393,12 +496,15 @@ def validate_study(st: dict) -> dict:
             errs += _rotation_errors(b["rotation"], f"{w}.rotation", ("rpm",))
             if "velocity" in b:
                 errs.append(f"{w}: give velocity or rotation, not both")
+        errs += _energy_bc_errors(b, w, st)
     if len(set(names)) != len(names):
         errs.append(f"bcs: names must be unique (got {names})")
     kinds = [b.get("kind") for b in bcs if isinstance(b, dict)]
     moving = any(b.get("kind") == "wall" and (b.get("velocity") or b.get("rotation")) for b in bcs if isinstance(b, dict))
-    if bcs and not ({"inlet", "opening"} & set(kinds)) and not moving:
-        errs.append("bcs: nothing drives the flow (add an inlet, an opening or a moving wall)")
+    heated = bool(st.get("energy")) and any(b.get("kind") == "wall" and any(k in b for k in THERMAL_KEYS)
+                                             for b in bcs if isinstance(b, dict))
+    if bcs and not ({"inlet", "opening"} & set(kinds)) and not moving and not heated:
+        errs.append("bcs: nothing drives the flow (add an inlet, an opening, a moving wall, or with energy a heated wall)")
     if "inlet" in kinds and not ({"outlet", "opening"} & set(kinds)):
         errs.append("bcs: an inlet needs an outlet or an opening for the flow to leave")
     if model == "kOmegaSST" and "inlet" not in kinds:
@@ -461,6 +567,28 @@ def validate_study(st: dict) -> dict:
         rl = s["relax"]
         if not isinstance(rl, dict) or not all(k in ("U", "other") and _num(v) and 0 < v <= 1 for k, v in rl.items()):
             errs.append("solve.relax: {U: 0..1, other: 0..1}")
+    # energy, conditions, gravity
+    energy = st.get("energy", False)
+    if not isinstance(energy, bool):
+        errs.append("energy: true or false")
+    c = st.get("conditions")
+    if c is not None:
+        if not isinstance(c, dict) or set(c) - {"p", "T"}:
+            errs.append("conditions: {p: Pa absolute, T: degrees C}")
+        else:
+            if "p" in c and (not _num(c["p"]) or c["p"] <= 0):
+                errs.append("conditions.p: absolute pressure in Pa (> 0)")
+            if "T" in c and (not _num(c["T"]) or c["T"] <= -273.15):
+                errs.append("conditions.T: degrees C (> -273.15)")
+        if not energy and c and "T" in c:
+            warns.append("conditions.T is used only with energy: true")
+    if "gravity" in st:
+        if not _vec(st["gravity"]):
+            errs.append("gravity: [gx, gy, gz] in m/s2")
+        if not energy:
+            errs.append("gravity (buoyancy) needs energy: true")
+    if energy and st.get("rotating"):
+        errs.append("rotating zones (MRF) are incompressible only for now; remove energy or the zone")
     # rotating zones
     rot = st.get("rotating", [])
     znames = []

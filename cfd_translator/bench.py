@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.16.6
+Version: 2026.10.18.1
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -12,6 +12,14 @@ Version: 2026.10.16.6
   taylor_couette_mrf  the same with the inner region as a rotating zone (MRF): same answers, power = T omega
   swirl_pipe       solid-body swirl at an inlet: exact angular momentum inflow, angular momentum balance (Gmsh)
   pipe_poiseuille_mpi  pipe_poiseuille on 4 MPI ranks (solve.procs)
+  conduction_slab_2d   energy: still air between plates at 60 and 20 C, q = k dT / H (exact)
+  heated_channel_2d    energy: water, uniform wall heat flux, fully developed Nu = 8.235
+  natural_cavity_ra1e4 energy + gravity: de Vahl Davis (1983) square cavity, mean Nu 2.243
+  venturi_subsonic     energy, compressible: 2D venturi vs quasi-1D isentropic mass flow and throat pressure
+                       (b3dt outline, Gmsh)
+  pipe_air_low_mach    energy, air at Mach 0.0015: Hagen-Poiseuille as in the incompressible pipe (Gmsh)
+  chain_thermal        CFD heat per face -> fea-translator thermal: a copper block comes out at the CFD wall
+                       temperature (needs Gmsh, b3dt, feat)
   cavity_re1000    lid-driven cavity, Re 1000 vs Ghia (slow; OpenFOAM)
   pipe_turbulent   turbulent pipe, Re 5e4, kOmegaSST: friction factor vs Colebrook (slow; Gmsh)
   chain_plate      build123d-translator plate -> cfd-translator -> fea-translator: the FEA support
@@ -178,6 +186,98 @@ def _cases() -> dict:
         "ref": False, "needs": ["gmsh"]}
     C["pipe_poiseuille_mpi"] = dict(C["pipe_poiseuille"], study=dict(C["pipe_poiseuille"]["study"],
                                     solve={"residual": 1e-7, "procs": 4}))
+    # ---- energy (OpenFOAM fluid) ----
+    from .format import thermo_props
+    air = thermo_props({"fluid": "air"})
+    water = thermo_props({"fluid": "water"})
+    # conduction across still air between plates 10 mm apart at 60 and 20 C: q = k dT / H
+    C["conduction_slab_2d"] = {
+        "study": {"geometry": {"box": [20, 10, 1]}, "2d": True, "fluid": "air", "energy": True,
+                  "bcs": [{"kind": "wall", "name": "hot", "faces": {"ny": -1}, "T": 60},
+                          {"kind": "wall", "name": "cold", "faces": {"ny": 1}, "T": 20}],
+                  "mesh": {"cells": [4, 20, 1]}, "solve": {"iterations": 3000, "residual": 1e-8},
+                  "probes": [{"name": "mid", "at": [0, 0, 0.5]}]},
+        "checks": lambda r: [("heat into the fluid at the hot wall = k dT / H x area", air["k"] * 40 / 0.01 * 0.02 * 0.001,
+                              r["heat"]["hot"]["Q_W"], {"tol": 0.01}),
+                             ("mid-plane temperature (linear profile)", 40.0, r["probes"]["mid"]["T"], {"abs": 0.2}),
+                             ("energy balance", 0.0, r["checks"]["energy_balance"]["error"], {"abs": 0.01})],
+        "ref": False, "needs": []}
+    # water between plates 10 mm apart, both walls 100 W/m2, fully developed laminar: Nu = 8.235 (Dh = 2 H)
+    Uw, Hc, qw, xw = 5e-4, 0.01, 100.0, 0.3
+    Tb = 20 + 2 * qw * xw / (water["rho"] * Uw * Hc * water["cp"])
+    C["heated_channel_2d"] = {
+        "study": {"geometry": {"box": [400, 10, 1]}, "2d": True, "fluid": "water", "energy": True,
+                  "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": Uw, "profile": "parabolic", "temperature": 20},
+                          {"kind": "outlet", "faces": {"nx": 1}},
+                          {"kind": "wall", "name": "heated", "faces": [{"ny": 1}, {"ny": -1}], "q": qw}],
+                  "mesh": {"cells": [200, 20, 1]}, "solve": {"iterations": 4000, "residual": 1e-8},
+                  "probes": [{"name": "wall", "at": [100, 5, 0.5]}]},
+        "checks": lambda r: [("Nu at 300 mm (fully developed, both walls heated) = 8.235", 8.235,
+                              qw * 2 * Hc / (water["k"] * (r["probes"]["wall"]["T"] - Tb)), {"tol": 0.03}),
+                             ("outlet bulk temperature = inlet + heat / (m cp)",
+                              20 + 2 * qw * 0.4 / (water["rho"] * Uw * Hc * water["cp"]), r["flow"]["outlet"]["T_mean_C"], {"abs": 0.05}),
+                             ("energy balance", 0.0, r["checks"]["energy_balance"]["error"], {"abs": 0.01})],
+        "ref": False, "needs": []}
+    # de Vahl Davis (1983) square cavity, Ra = 1e4, air (Pr 0.71): mean Nu on the hot wall 2.243
+    dT, Tm = 10.0, 293.15
+    nu_a = air["mu"] / air["rho"]
+    L = (1e4 * nu_a * (nu_a / air["pr"]) * Tm / (9.81 * dT)) ** (1 / 3)          # m
+    Lmm = L * 1000
+    C["natural_cavity_ra1e4"] = {
+        "study": {"geometry": {"box": [Lmm, Lmm, Lmm / 10]}, "2d": True, "fluid": "air", "energy": True,
+                  "gravity": [0, -9.81, 0],
+                  "bcs": [{"kind": "wall", "name": "hot", "faces": {"nx": -1}, "T": 25},
+                          {"kind": "wall", "name": "cold", "faces": {"nx": 1}, "T": 15}],
+                  "mesh": {"cells": [48, 48, 1]}, "solve": {"iterations": 6000, "residual": 1e-6}},
+        "checks": lambda r: [("mean Nu on the hot wall (de Vahl Davis 1983: 2.243)", 2.243,
+                              r["heat"]["hot"]["q_mean"] * L / (air["k"] * dT), {"tol": 0.02}),
+                             ("energy balance (hot in = cold out)", 0.0, r["checks"]["energy_balance"]["error"], {"abs": 0.01})],
+        "ref": False, "needs": []}
+    # subsonic venturi (2D, slip walls): quasi-1D isentropic flow from p0 = conditions + 10 kPa, T0 = 20 C
+    g_ = air["gamma"]
+    p0, T0, pe = 101325 + 10000, 293.15, 101325.0
+    Me = math.sqrt(2 / (g_ - 1) * ((p0 / pe) ** ((g_ - 1) / g_) - 1))
+
+    def area_ratio(M):     # A / A*
+        return (1 / M) * ((2 / (g_ + 1)) * (1 + (g_ - 1) / 2 * M * M)) ** ((g_ + 1) / (2 * (g_ - 1)))
+    Ae, At_ = 20e-3 * 2e-3, 14e-3 * 2e-3
+    mdot_v = Ae * p0 * math.sqrt(g_ / (air["R"] * T0)) * Me * (1 + (g_ - 1) / 2 * Me * Me) ** (-(g_ + 1) / (2 * (g_ - 1)))
+    target = At_ / (Ae / area_ratio(Me))
+    lo, hi = 1e-4, 1.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    Mt = 0.5 * (lo + hi)
+    pt_g = p0 * (1 + (g_ - 1) / 2 * Mt * Mt) ** (-g_ / (g_ - 1)) - 101325
+    xs = list(range(-60, 81, 20))
+    bump = [[x, -(10 - 3 * (1 + math.cos(math.pi * x / 80)) / 2)] for x in xs]
+    top = [[x, 10 - 3 * (1 + math.cos(math.pi * x / 80)) / 2] for x in reversed(xs[:-1])] + [[-80, 10]]
+    venturi = {"features": [{"kind": "profile_base", "params": {"h": 2, "outline": {
+        "start": [-150, -10], "segs": [["L", -80, -10], ["S", bump], ["L", 150, -10], ["L", 150, 10], ["L", 80, 10],
+                                       ["S", top], ["L", -150, 10]]}}}]}
+    C["venturi_subsonic"] = {
+        "study": {"geometry": {"goal": venturi}, "2d": True, "fluid": "air", "energy": True,
+                  "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "total_pressure": 10000, "total_temperature": 20},
+                          {"kind": "outlet", "faces": {"nx": 1}},
+                          {"kind": "slip", "name": "walls_slip", "faces": {"all": True}}],
+                  "mesh": {"size": 1.0}, "solve": {"iterations": 4000, "residual": 1e-7},
+                  "probes": [{"name": "throat", "at": [0, 0, 1]}]},
+        "checks": lambda r: [("mass flow (isentropic, M_exit %.3f)" % Me, mdot_v, r["flow"]["inlet"]["mdot"], {"tol": 0.02}),
+                             ("throat pressure, gauge (M_throat %.3f)" % Mt, pt_g, r["probes"]["throat"]["p"], {"tol": 0.03}),
+                             ("energy balance", 0.0, r["checks"]["energy_balance"]["error"], {"abs": 0.01})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    # low-Mach air pipe with energy on: must reproduce Hagen-Poiseuille (R 5 mm, 0.5 m/s mean)
+    C["pipe_air_low_mach"] = {
+        "study": {"geometry": {"cylinder": [5, 200]}, "fluid": "air", "energy": True,
+                  "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "velocity": 0.5, "profile": "parabolic"},
+                          {"kind": "outlet", "faces": {"nz": 1}}],
+                  "mesh": {"size": 0.5, "extrude": 100}, "solve": {"residual": 1e-7},
+                  "probes": [{"name": "a", "at": [0, 0, 50]}, {"name": "b", "at": [0, 0, 150]}]},
+        "checks": lambda r: [("dp over 0.1 m = 8 mu L U / R^2", 8 * air["mu"] * 0.1 * 0.5 / 0.005 ** 2,
+                              r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.02})],
+        "ref": False, "needs": ["gmsh"]}
+    C["chain_thermal"] = {"study": None, "chain": "thermal", "ref": False,
+                          "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     C["chain_plate"] = {"study": None, "chain": True, "ref": False, "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     return C
 
@@ -225,6 +325,42 @@ def _chain(folder: Path, solver: str) -> dict:
             "feat_loads": len(loads), "warnings": r.get("warnings", []) + s.get("warnings", [])}
 
 
+BLOCK_GOAL = {"features": [{"kind": "base_box", "params": {"w": 20, "d": 20, "h": 20}}]}
+
+
+def _chain_thermal(folder: Path, solver: str) -> dict:
+    """A 20 mm block at 60 C on the floor of a 0.1 m/s, 20 C air stream: its CFD heat per face becomes
+    fea-translator convection bcs (h per face, T_inf), and a heater under the block puts the same total heat
+    in. A copper block must then come out at the CFD wall temperature, 60 C (one-way coupling consistent)."""
+    study = {"geometry": {"goal": BLOCK_GOAL}, "domain": {"kind": "external", "box": [-60, -50, 0, 140, 50, 60]},
+             "fluid": "air", "energy": True,
+             "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 0.1, "temperature": 20},
+                     {"kind": "outlet", "faces": {"box": "xmax"}},
+                     {"kind": "slip", "name": "farfield", "faces": {"box": ["ymin", "ymax", "zmax", "zmin"]}},
+                     {"kind": "wall", "name": "block", "faces": {"all": True}, "T": 60}],
+             "mesh": {"size": 8, "refine": [{"at": [0, 0, 10], "r": 25, "size": 2}]},
+             "solve": {"iterations": 3000, "residual": 1e-6}, "reference": {"T": 20}}
+    r = run_study("chain_thermal", study, folder / "chain_thermal", solver)
+    if not r.get("ok"):
+        return {"ok": False, "passed": False, "error": r.get("error"), "why": r.get("why")}
+    ft = r["results"]["feat_thermal"]
+    from fea_translator import api as feat
+    fstudy = {"part": {"goal": BLOCK_GOAL}, "material": "copper", "analysis": "thermal", "mesh": {"size": 2},
+              "bcs": ft["convection"] + [{"kind": "heat", "name": "heater", "faces": {"nz": -1}, "power": ft["total_W"]}]}
+    fr = feat.run({"block": fstudy})
+    s = fr["studies"]["block"]
+    if not s.get("ok"):
+        return {"ok": False, "passed": False, "error": s.get("error") or s.get("errors"), "cfd_heat_W": ft["total_W"]}
+    checks = []
+    for key in ("T_max", "T_min"):
+        got = s.get(key)
+        checks.append({"what": f"FEA {key} = CFD wall temperature 60 C", "expected": 60.0, "got": got,
+                       "error": None if got is None else abs(got - 60.0),
+                       "passed": got is not None and abs(got - 60.0) <= 1.0})
+    return {"ok": True, "passed": all(c["passed"] for c in checks), "checks": checks, "cfd_heat_W": ft["total_W"],
+            "convection_bcs": len(ft["convection"]), "warnings": r.get("warnings", []) + s.get("warnings", [])}
+
+
 def _available(mod: str) -> bool:
     try:
         __import__(mod)
@@ -256,7 +392,7 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
         print(f"[cfdt bench] {n} ...", file=sys.stderr, flush=True)
         t0 = time.time()
         if c.get("chain"):
-            out[n] = _chain(Path(folder), solver)
+            out[n] = _chain_thermal(Path(folder), solver) if c["chain"] == "thermal" else _chain(Path(folder), solver)
             _progress(n, out[n], t0)
             continue
         r = run_study(n, c["study"], Path(folder) / n, solver)

@@ -1,5 +1,5 @@
 """refsolver.py — an independent 2D steady Navier-Stokes solver that runs the written OpenFOAM case.
-Version: 2026.10.16.6
+Version: 2026.10.18.1
 
     solve_case(case_dir) -> fields (same layout as the OpenFOAM reader's)
 
@@ -37,6 +37,8 @@ def _read(case: Path):
     U = foamio.read_foam((case / "0" / "U").read_text())
     p = foamio.read_foam((case / "0" / "p").read_text())
     pp = foamio.read_foam((case / "constant" / "physicalProperties").read_text())
+    if (case / "0" / "T").exists():
+        raise RefUnsupported("the reference solver is isothermal and incompressible (no energy)")
     if (case / "constant" / "MRFProperties").exists():
         raise RefUnsupported("the reference solver has no rotating zones (MRF)")
     mt = case / "constant" / "momentumTransport"

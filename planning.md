@@ -94,6 +94,16 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.1**: energy and compressible flow.
+- `energy` (OpenFOAM `fluid`): air as a perfect gas (hePsiThermo, or heRhoThermo with gravity), water as rhoConst.
+- `gravity` gives buoyancy through `p_rgh` + `g` + `pRef`.
+- Walls: `T`/`q`/`power`/`h` (externalTemperature). Inlets: temperature, mass_flow, total_pressure/total_temperature.
+- Results: heat, mdot, Mach number, energy balance, `feat_thermal`; images of T, Mach number and q.
+- The OpenFOAM 14 keywords were researched in the sources by an agent: externalTemperature, prghPressure, totalPressure/totalTemperature, wallHeatFlux sign, phi mass flux, buoyancy switched on by `0/p_rgh`, default Prt 1 (we write 0.85).
+- Sandbox: 26 passed. The energy post-processing was verified on the exact conduction solution written in OpenFOAM's format.
+- Next on carbonio: `cfdt bench conduction_slab_2d heated_channel_2d natural_cavity_ra1e4 venturi_subsonic pipe_air_low_mach chain_thermal`.
+- Open: supersonic (shockFluid), conjugate heat transfer (solid regions), radiation, energy with MRF, transient.
+
 **2026.10.17.1**: images.
 - `render.py` (matplotlib/Agg): slices with streamlines and masked solids; wall surfaces.
 - `state.npz` + `state.json` per study for re-rendering.

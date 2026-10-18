@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.17.1
+Version: 2026.10.18.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -48,6 +48,10 @@ with rotation: the zone's name; results give rotating.<zone>.torque_Nm, power_W 
 efficiency. Long runs: set solve.procs (MPI ranks). Pending studies report 'progress' with eta_min_max:
 polling costs tokens, so when a run needs more than about 5 minutes, tell the user when it should
 finish and stop; collect it later with study_status.
+Heat and compressible gas: "energy": true (OpenFOAM fluid; air becomes a perfect gas up to transonic
+speeds, water keeps constant density; temperatures in degrees C; walls with T, q, power or h + T_inf;
+"gravity" for natural convection); results add heat.<wall bc>, flow.<bc>.mdot/T_mean_C/mach, max_mach,
+checks.energy_balance and feat_thermal (bcs for fea-translator's thermal analysis, external flow).
 Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
 get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""

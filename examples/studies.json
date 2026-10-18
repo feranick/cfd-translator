@@ -1,50 +1,445 @@
 {
  "pipe_laminar": {
-  "geometry": {"cylinder": [5, 200]},
+  "geometry": {
+   "cylinder": [
+    5,
+    200
+   ]
+  },
   "fluid": "water",
   "model": "laminar",
-  "bcs": [{"kind": "inlet", "name": "inlet", "faces": {"nz": -1}, "flow_rate_lpm": 0.5, "profile": "parabolic"},
-          {"kind": "outlet", "name": "outlet", "faces": {"nz": 1}, "pressure": 0}],
-  "mesh": {"size": 0.8, "extrude": 80},
-  "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]
+  "bcs": [
+   {
+    "kind": "inlet",
+    "name": "inlet",
+    "faces": {
+     "nz": -1
+    },
+    "flow_rate_lpm": 0.5,
+    "profile": "parabolic"
+   },
+   {
+    "kind": "outlet",
+    "name": "outlet",
+    "faces": {
+     "nz": 1
+    },
+    "pressure": 0
+   }
+  ],
+  "mesh": {
+   "size": 0.8,
+   "extrude": 80
+  },
+  "expect": [
+   {
+    "quantity": "pressure_drop",
+    "value": 6.8,
+    "tol": 0.03
+   }
+  ]
  },
  "cavity_re100": {
-  "geometry": {"box": [1000, 1000, 100]},
+  "geometry": {
+   "box": [
+    1000,
+    1000,
+    100
+   ]
+  },
   "2d": true,
-  "fluid": {"rho": 1.0, "mu": 0.01},
-  "bcs": [{"kind": "wall", "name": "lid", "faces": {"ny": 1}, "velocity": [1, 0, 0]}],
-  "mesh": {"cells": [64, 64, 1]},
-  "probes": [{"name": "centre", "at": [0, 0, 50]},
-             {"name": "vline", "line": {"from": [0, -500, 50], "to": [0, 500, 50], "n": 21}}],
-  "expect": [{"quantity": "probes.centre.ux", "value": -0.20581, "abs": 0.02}]
+  "fluid": {
+   "rho": 1.0,
+   "mu": 0.01
+  },
+  "bcs": [
+   {
+    "kind": "wall",
+    "name": "lid",
+    "faces": {
+     "ny": 1
+    },
+    "velocity": [
+     1,
+     0,
+     0
+    ]
+   }
+  ],
+  "mesh": {
+   "cells": [
+    64,
+    64,
+    1
+   ]
+  },
+  "probes": [
+   {
+    "name": "centre",
+    "at": [
+     0,
+     0,
+     50
+    ]
+   },
+   {
+    "name": "vline",
+    "line": {
+     "from": [
+      0,
+      -500,
+      50
+     ],
+     "to": [
+      0,
+      500,
+      50
+     ],
+     "n": 21
+    }
+   }
+  ],
+  "expect": [
+   {
+    "quantity": "probes.centre.ux",
+    "value": -0.20581,
+    "abs": 0.02
+   }
+  ]
  },
  "pin_channel_2d": {
-  "geometry": {"goal": {"features": [
-    {"kind": "base_box", "params": {"w": 200, "d": 40, "h": 5}},
-    {"kind": "hole", "params": {"r": 4, "x": -40, "y": 0}}]}},
+  "geometry": {
+   "goal": {
+    "features": [
+     {
+      "kind": "base_box",
+      "params": {
+       "w": 200,
+       "d": 40,
+       "h": 5
+      }
+     },
+     {
+      "kind": "hole",
+      "params": {
+       "r": 4,
+       "x": -40,
+       "y": 0
+      }
+     }
+    ]
+   }
+  },
   "2d": true,
-  "fluid": {"name": "water", "mu": 0.01},
-  "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.02, "profile": "parabolic"},
-          {"kind": "outlet", "faces": {"nx": 1}},
-          {"kind": "wall", "name": "pin", "faces": {"cyl_r": 4}}],
-  "mesh": {"size": 1.5, "refine": [{"at": [-40, 0, 2.5], "r": 15, "size": 0.4}],
-           "layers": {"n": 5, "first": 0.08, "growth": 1.2}},
-  "reference": {"velocity": 0.02, "area": 40},
-  "probes": [{"name": "wake", "at": [-25, 0, 2.5]}]
+  "fluid": {
+   "name": "water",
+   "mu": 0.01
+  },
+  "bcs": [
+   {
+    "kind": "inlet",
+    "faces": {
+     "nx": -1
+    },
+    "velocity": 0.02,
+    "profile": "parabolic"
+   },
+   {
+    "kind": "outlet",
+    "faces": {
+     "nx": 1
+    }
+   },
+   {
+    "kind": "wall",
+    "name": "pin",
+    "faces": {
+     "cyl_r": 4
+    }
+   }
+  ],
+  "mesh": {
+   "size": 1.5,
+   "refine": [
+    {
+     "at": [
+      -40,
+      0,
+      2.5
+     ],
+     "r": 15,
+     "size": 0.4
+    }
+   ],
+   "layers": {
+    "n": 5,
+    "first": 0.08,
+    "growth": 1.2
+   }
+  },
+  "reference": {
+   "velocity": 0.02,
+   "area": 40
+  },
+  "probes": [
+   {
+    "name": "wake",
+    "at": [
+     -25,
+     0,
+     2.5
+    ]
+   }
+  ]
  },
  "bracket_in_air": {
-  "geometry": {"goal": {"features": [
-    {"kind": "base_box", "params": {"w": 100, "d": 20, "h": 10}},
-    {"kind": "hole", "params": {"r": 4, "x": 35, "y": 0}}]}},
-  "domain": {"kind": "external", "box": [-250, -150, 0, 650, 150, 150]},
+  "geometry": {
+   "goal": {
+    "features": [
+     {
+      "kind": "base_box",
+      "params": {
+       "w": 100,
+       "d": 20,
+       "h": 10
+      }
+     },
+     {
+      "kind": "hole",
+      "params": {
+       "r": 4,
+       "x": 35,
+       "y": 0
+      }
+     }
+    ]
+   }
+  },
+  "domain": {
+   "kind": "external",
+   "box": [
+    -250,
+    -150,
+    0,
+    650,
+    150,
+    150
+   ]
+  },
   "fluid": "air",
   "model": "kOmegaSST",
-  "bcs": [{"kind": "inlet", "faces": {"box": "ymin"}, "velocity": [0, 10, 0]},
-          {"kind": "outlet", "faces": {"box": "ymax"}},
-          {"kind": "slip", "name": "farfield", "faces": {"box": ["xmin", "xmax", "zmax"]}},
-          {"kind": "wall", "name": "ground", "faces": {"box": "zmin"}},
-          {"kind": "wall", "name": "bracket", "faces": {"all": true}}],
-  "mesh": {"size": 25, "refine": [{"at": [0, 0, 5], "r": 80, "size": 3}]},
-  "reference": {"velocity": 10, "area": 1000, "drag_dir": [0, 1, 0], "lift_dir": [0, 0, 1]}
+  "bcs": [
+   {
+    "kind": "inlet",
+    "faces": {
+     "box": "ymin"
+    },
+    "velocity": [
+     0,
+     10,
+     0
+    ]
+   },
+   {
+    "kind": "outlet",
+    "faces": {
+     "box": "ymax"
+    }
+   },
+   {
+    "kind": "slip",
+    "name": "farfield",
+    "faces": {
+     "box": [
+      "xmin",
+      "xmax",
+      "zmax"
+     ]
+    }
+   },
+   {
+    "kind": "wall",
+    "name": "ground",
+    "faces": {
+     "box": "zmin"
+    }
+   },
+   {
+    "kind": "wall",
+    "name": "bracket",
+    "faces": {
+     "all": true
+    }
+   }
+  ],
+  "mesh": {
+   "size": 25,
+   "refine": [
+    {
+     "at": [
+      0,
+      0,
+      5
+     ],
+     "r": 80,
+     "size": 3
+    }
+   ]
+  },
+  "reference": {
+   "velocity": 10,
+   "area": 1000,
+   "drag_dir": [
+    0,
+    1,
+    0
+   ],
+   "lift_dir": [
+    0,
+    0,
+    1
+   ]
+  }
+ },
+ "natural_convection_box": {
+  "geometry": {
+   "box": [
+    100,
+    100,
+    10
+   ]
+  },
+  "2d": true,
+  "fluid": "air",
+  "energy": true,
+  "gravity": [
+   0,
+   -9.81,
+   0
+  ],
+  "bcs": [
+   {
+    "kind": "wall",
+    "name": "heater",
+    "faces": {
+     "nx": -1
+    },
+    "T": 40
+   },
+   {
+    "kind": "wall",
+    "name": "cooler",
+    "faces": {
+     "nx": 1
+    },
+    "T": 20
+   }
+  ],
+  "mesh": {
+   "cells": [
+    60,
+    60,
+    1
+   ]
+  },
+  "solve": {
+   "iterations": 6000,
+   "residual": 1e-06
+  },
+  "reference": {
+   "T": 20,
+   "length": 100
+  },
+  "images": true
+ },
+ "hot_block_in_air": {
+  "geometry": {
+   "goal": {
+    "features": [
+     {
+      "kind": "base_box",
+      "params": {
+       "w": 20,
+       "d": 20,
+       "h": 20
+      }
+     }
+    ]
+   }
+  },
+  "domain": {
+   "kind": "external",
+   "box": [
+    -60,
+    -50,
+    0,
+    140,
+    50,
+    60
+   ]
+  },
+  "fluid": "air",
+  "energy": true,
+  "bcs": [
+   {
+    "kind": "inlet",
+    "faces": {
+     "box": "xmin"
+    },
+    "velocity": 0.5,
+    "temperature": 20
+   },
+   {
+    "kind": "outlet",
+    "faces": {
+     "box": "xmax"
+    }
+   },
+   {
+    "kind": "slip",
+    "name": "farfield",
+    "faces": {
+     "box": [
+      "ymin",
+      "ymax",
+      "zmax"
+     ]
+    }
+   },
+   {
+    "kind": "wall",
+    "name": "floor",
+    "faces": {
+     "box": "zmin"
+    }
+   },
+   {
+    "kind": "wall",
+    "name": "block",
+    "faces": {
+     "all": true
+    },
+    "power": 5
+   }
+  ],
+  "mesh": {
+   "size": 8,
+   "refine": [
+    {
+     "at": [
+      0,
+      0,
+      10
+     ],
+     "r": 25,
+     "size": 2
+    }
+   ]
+  },
+  "reference": {
+   "T": 20,
+   "length": 20
+  },
+  "images": true
  }
 }

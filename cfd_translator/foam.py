@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.16.6
+Version: 2026.10.18.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -134,6 +134,7 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
     if U is None or p is None or phi is None:
         raise FoamError(f"{t.name}: U, p or phi missing")
     wss, nut, yp = load("wallShearStress"), load("nut"), load("yPlus")
+    T, rho, whf, alphat = load("T"), load("rho"), load("wallHeatFlux"), load("alphat")
     nc = mesh.ncells
 
     def internal(f, width):
@@ -143,6 +144,8 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
             a = np.tile(a, (nc, 1)) if width == 3 else np.full(nc, float(a))
         return a
     Uc, pc = internal(U, 3), internal(p, 1)
+    Tc = internal(T, 1) if T else None
+    rc = internal(rho, 1) if rho else None
     g = mesh.geometry()
     patches = {}
     notes = []
@@ -182,5 +185,13 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
         rec["wss"] = bval(wss, 3, None) if (wss and P["type"] == "wall" and nm in wss["boundaryField"]) else None
         rec["nut"] = bval(nut, 1, None) if nut and nm in nut["boundaryField"] else None
         rec["yPlus"] = bval(yp, 1, None) if (yp and P["type"] == "wall" and nm in yp["boundaryField"]) else None
+        if T:
+            rec["T"] = bval(T, 1, Tc)
+            rec["rho"] = bval(rho, 1, rc) if rho else None
+            rec["whf"] = bval(whf, 1, None) if (whf and P["type"] == "wall" and nm in whf["boundaryField"]) else None
+            rec["alphat"] = bval(alphat, 1, None) if alphat and nm in alphat["boundaryField"] else None
         patches[nm] = rec
-    return {"U": Uc, "p": pc, "patches": patches, "time": t.name, "notes": notes, "source": "openfoam"}
+    out = {"U": Uc, "p": pc, "patches": patches, "time": t.name, "notes": notes, "source": "openfoam"}
+    if T:
+        out["T"], out["rho"] = Tc, rc
+    return out

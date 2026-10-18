@@ -499,3 +499,123 @@ def test_slice_masks_solid_parts(tmp_path):
     finder = tri.get_trifinder()
     assert finder(0.0, 0.0) == -1 and finder(1.0, 1.0) == -1          # inside the cylinder: no triangle
     assert finder(20.0, 0.0) >= 0                                     # in the fluid: covered
+
+
+# ---- energy: compressible gas, heat transfer, buoyancy (2026.10.18.1) -----------------------------
+SLAB = {"geometry": {"box": [20, 10, 1]}, "2d": True, "fluid": "air", "energy": True,
+        "bcs": [{"kind": "wall", "name": "hot", "faces": {"ny": -1}, "T": 60},
+                {"kind": "wall", "name": "cold", "faces": {"ny": 1}, "T": 20}],
+        "mesh": {"cells": [4, 20, 1]}, "probes": [{"name": "mid", "at": [0, 0, 0.5]}]}
+
+
+def test_energy_validation():
+    from cfd_translator.format import thermo_props
+    assert validate_study(SLAB)["ok"]
+    e = validate_study(dict(SLAB, energy=False))["errors"]
+    assert any("need energy" in x for x in e)
+    assert not validate_study(dict(SLAB, gravity=[0, -9.81]))["ok"]
+    bad = dict(SLAB, bcs=[{"kind": "wall", "faces": {"ny": -1}, "T": 60, "q": 5}])
+    assert any("one of T, q, power" in x for x in validate_study(bad)["errors"])
+    tp = dict(SLAB, fluid="water", bcs=[{"kind": "inlet", "faces": {"nx": -1}, "total_pressure": 100}, {"kind": "outlet", "faces": {"nx": 1}}])
+    assert any("for gases" in x for x in validate_study(tp)["errors"])
+    a = thermo_props(SLAB)
+    assert a["kind"] == "gas" and a["rho"] == pytest.approx(1.204, rel=2e-3) and a["gamma"] == pytest.approx(1.4, rel=1e-3)
+    assert thermo_props({"fluid": {"name": "water", "mu": 0.01}})["kind"] == "liquid"
+
+
+def test_energy_case_files(tmp_path):
+    cav = {"geometry": {"box": [21, 21, 2]}, "2d": True, "fluid": "air", "energy": True, "gravity": [0, -9.81, 0],
+           "bcs": [{"kind": "wall", "name": "hot", "faces": {"nx": -1}, "T": 25}, {"kind": "wall", "name": "cold", "faces": {"nx": 1}, "q": -5}],
+           "mesh": {"cells": [8, 8, 1]}}
+    mesh, patches, sel, plan, w = prepare(cav, tmp_path / "cav")
+    c = tmp_path / "cav" / "case"
+    pr = foamio.read_foam((c / "0" / "p_rgh").read_text())["boundaryField"]
+    assert pr["hot"]["type"] == "fixedFluxPressure"
+    assert foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]["hot"]["type"] == "calculated"
+    T = foamio.read_foam((c / "0" / "T").read_text())["boundaryField"]
+    assert T["hot"]["value"] == pytest.approx(298.15) and T["cold"]["type"] == "externalTemperature" and T["cold"]["q"] == "constant -5"
+    assert (c / "constant" / "g").exists() and (c / "constant" / "pRef").exists()
+    pp = foamio.read_foam((c / "constant" / "physicalProperties").read_text())
+    assert pp["thermoType"]["type"] == "heRhoThermo" and pp["thermoType"]["equationOfState"] == "perfectGas"
+    fv = foamio.read_foam((c / "system" / "fvSolution").read_text())
+    assert "p_rgh" in fv["PIMPLE"]["residualControl"]
+    cd = foamio.read_foam((c / "system" / "controlDict").read_text())
+    assert cd["solver"] == "fluid" and "wallHeatFlux" in cd["functions"]
+    ven = {"geometry": {"box": [300, 20, 2]}, "2d": True, "fluid": "air", "energy": True,
+           "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "total_pressure": 10000}, {"kind": "outlet", "faces": {"nx": 1}},
+                   {"kind": "slip", "faces": {"all": True}}], "mesh": {"cells": [30, 4, 1]}}
+    mesh, patches, sel, plan, w = prepare(ven, tmp_path / "ven")
+    c = tmp_path / "ven" / "case"
+    p = foamio.read_foam((c / "0" / "p").read_text())["boundaryField"]
+    assert p["inlet"]["type"] == "totalPressure" and p["inlet"]["p0"] == pytest.approx(111325)
+    assert foamio.read_foam((c / "system" / "fvSolution").read_text())["PIMPLE"]["transonic"] == "yes"
+    assert plan["energy"]["mach_estimate"] == pytest.approx(0.369, rel=0.01)
+    assert not (c / "0" / "p_rgh").exists()
+    with pytest.raises(Exception, match="energy"):
+        solve_case(c)
+
+
+def _foam_energy_fixture(case: Path, mesh, plan):
+    """The exact conduction-slab solution (linear T, no flow) written as OpenFOAM writes fields."""
+    def lst(a, typ):
+        a = np.asarray(a, float)
+        items = [f"({x:.12g} {y:.12g} {z:.12g})" for x, y, z in a] if typ == "vector" else [f"{x:.12g}" for x in a]
+        return f"nonuniform List<{typ}> \n{len(items)}\n(\n" + "\n".join(items) + "\n)\n"
+
+    def write(name, typ, internal, per):
+        s = ["FoamFile\n{\n    format ascii;\n    object %s;\n}\n" % name, "dimensions [0 0 0 1 0 0 0];\n",
+             f"internalField   {lst(internal, typ)};\n", "boundaryField\n{"]
+        for pn, (t, v) in per.items():
+            s.append(f"    {pn}\n    {{\n        type {t};" + (f"\n        value {lst(v, typ)};" if v is not None else "") + "\n    }")
+        (d / name).write_text("\n".join(s) + "\n}\n")
+    d = case / "100"
+    d.mkdir()
+    en = plan["energy"]
+    g = mesh.geometry()
+    Tc = 333.15 - 40 * (g["C"][:, 1] * 1e-3 + 0.005) / 0.01
+    per = {k: {} for k in ("U", "p", "phi", "T", "rho", "wallHeatFlux")}
+    for p in mesh.patches:
+        f = np.arange(p["start"], p["start"] + p["n"])
+        if p["type"] == "empty":
+            for k in per:
+                per[k][p["name"]] = ("empty", None)
+            continue
+        Tf = 333.15 - 40 * (g["Cf"][f, 1] * 1e-3 + 0.005) / 0.01
+        q = {"hot": en["k"] * 4000, "cold": -en["k"] * 4000}.get(p["name"], 0.0)
+        per["U"][p["name"]] = ("noSlip", None)
+        per["p"][p["name"]] = ("zeroGradient", None)
+        per["phi"][p["name"]] = ("calculated", np.zeros(len(f)))
+        per["T"][p["name"]] = ("calculated", Tf)
+        per["rho"][p["name"]] = ("calculated", en["p_op"] / (en["R"] * Tf))
+        per["wallHeatFlux"][p["name"]] = ("calculated", np.full(len(f), q))
+    nc = mesh.ncells
+    write("U", "vector", np.zeros((nc, 3)), per["U"])
+    write("p", "scalar", np.full(nc, en["p_op"]), per["p"])
+    write("phi", "scalar", np.zeros(mesh.ninternal), per["phi"])
+    write("T", "scalar", Tc, per["T"])
+    write("rho", "scalar", en["p_op"] / (en["R"] * Tc), per["rho"])
+    write("wallHeatFlux", "scalar", np.zeros(nc), per["wallHeatFlux"])
+
+
+def test_energy_results_from_openfoam_files(tmp_path):
+    from cfd_translator.foam import read_fields
+    from cfd_translator.render import render
+    mesh, patches, sel, plan, w = prepare(SLAB, tmp_path)
+    _foam_energy_fixture(tmp_path / "case", mesh, plan)
+    fields = read_fields(tmp_path / "case", mesh, plan)
+    res, warns = results(SLAB, mesh, plan, fields)
+    k = plan["energy"]["k"]
+    assert res["heat"]["hot"]["Q_W"] == pytest.approx(k * 4000 * 0.02 * 0.001, rel=1e-5)
+    assert res["heat"]["cold"]["Q_W"] == pytest.approx(-k * 4000 * 0.02 * 0.001, rel=1e-5)
+    assert res["heat"]["hot"]["T_mean_C"] == pytest.approx(60) and res["probes"]["mid"]["T"] == pytest.approx(40, abs=1e-6)
+    assert res["checks"]["energy_balance"]["error"] < 1e-9 and warns == []
+    imgs, w2 = render(SLAB, mesh, plan, fields, tmp_path / "img", [{"name": "T", "slice": {"axis": "z", "at": 0.5}, "field": "T"},
+                                                                    {"name": "q", "surface": "walls", "field": "q"}])
+    assert w2 == [] and imgs["T"]["min"] == pytest.approx(20) and imgs["T"]["max"] == pytest.approx(60)
+    assert imgs["q"]["max"] == pytest.approx(k * 4000, rel=1e-6)
+
+
+def test_energy_benchmarks_are_valid_studies():
+    C = bench._cases()
+    for n in ("conduction_slab_2d", "heated_channel_2d", "natural_cavity_ra1e4", "venturi_subsonic", "pipe_air_low_mach"):
+        assert validate_study(C[n]["study"])["ok"], n

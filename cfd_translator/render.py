@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.17.1
+Version: 2026.10.18.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
     default_images(study, mesh) -> specs (for "images": true)
@@ -21,13 +21,34 @@ import numpy as np
 from .polymesh import SCALE, PolyMesh
 
 AXES = {"x": 0, "y": 1, "z": 2}
-FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa)",
-          "wall_shear": "wall shear (Pa)"}
+FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa, gauge)",
+          "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)"}
+
+
+def _pa(plan, p):
+    """Gauge pressure in Pa: incompressible fields are kinematic, energy fields absolute."""
+    en = plan.get("energy")
+    return np.asarray(p, float) - en["p_op"] if en else np.asarray(p, float) * plan["rho"]
 
 
 def default_images(study: dict, mesh) -> list[dict]:
     """Two-dimensional: |U| with streamlines and p on the plane. 3D: |U| with streamlines on a plane through
-    the middle (external: mid-height of the part, and a side view), and the pressure on the walls."""
+    the middle (external: mid-height of the part, and a side view), and the pressure on the walls. Energy
+    studies add the temperature on the first slice (and the Mach number for gases)."""
+    out = _default_images(study, mesh)
+    if study.get("energy"):
+        sl = next(s for s in out if "slice" in s)
+        out.append({"name": "temperature", "slice": dict(sl["slice"]), "field": "T"})
+        try:
+            from .format import thermo_props
+            if thermo_props(study)["kind"] == "gas" and not study.get("gravity"):
+                out.append({"name": "mach", "slice": dict(sl["slice"]), "field": "mach"})
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _default_images(study: dict, mesh) -> list[dict]:
     if study.get("2d"):
         zm = float(mesh.points[:, 2].mean())
         return [{"name": "velocity", "slice": {"axis": "z", "at": zm}, "field": "u", "streamlines": True},
@@ -64,7 +85,6 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     import matplotlib.tri as mtri
 
     two_d = bool(study.get("2d"))
-    rho = plan["rho"]
     a = AXES[spec["slice"]["axis"]]
     if two_d and a != 2:
         raise ValueError("a 2D study has only the z slice")
@@ -78,8 +98,10 @@ def _slice(study, mesh, plan, fields, spec, title, path):
         raise ValueError(f"no cells near {spec['slice']['axis']} = {s:g} mm")
     X = [C[sel][:, [i, j]]]
     U = [np.asarray(fields["U"], float)[sel]]
-    P = [np.asarray(fields["p"], float)[sel] * rho]
+    P = [_pa(plan, fields["p"])[sel]]
     H = [h[sel]]
+    has_T = fields.get("T") is not None
+    T = [np.asarray(fields["T"], float)[sel] if has_T else np.zeros(int(sel.sum()))]
     for patch in mesh.patches:
         pf = fields["patches"].get(patch["name"])
         if patch["type"] == "empty" or pf is None or pf.get("U") is None:
@@ -90,20 +112,32 @@ def _slice(study, mesh, plan, fields, spec, title, path):
         if m.any():
             X.append(g["Cf"][f[m]][:, [i, j]])
             U.append(np.asarray(pf["U"], float).reshape(-1, 3)[m])
-            P.append(np.asarray(pf["p"], float)[m] * rho)
+            P.append(_pa(plan, pf["p"])[m])
             H.append(hf[m])
-    X, U, P, H = (np.concatenate(v) for v in (X, U, P, H))
+            T.append(np.asarray(pf["T"], float)[m] if has_T and pf.get("T") is not None
+                     else (np.asarray(fields["T"], float)[mesh.owner[f[m]]] if has_T else np.zeros(int(m.sum()))))
+    X, U, P, H, T = (np.concatenate(v) for v in (X, U, P, H, T))
     X, idx = np.unique(np.round(X, 9), axis=0, return_index=True)
-    U, P, H = U[idx], P[idx], H[idx]
+    U, P, H, T = U[idx], P[idx], H[idx], T[idx]
     tri = mtri.Triangulation(X[:, 0], X[:, 1])
     e = X[tri.triangles]
     L = np.max(np.linalg.norm(e - np.roll(e, 1, axis=1), axis=2), axis=1)
     tri.set_mask(L > 2.0 * H[tri.triangles].max(axis=1))
     field = spec.get("field", "u")
-    val = {"u": np.linalg.norm(U, axis=1), "ux": U[:, 0], "uy": U[:, 1], "uz": U[:, 2], "p": P}[field]
+    vals = {"u": np.linalg.norm(U, axis=1), "ux": U[:, 0], "uy": U[:, 1], "uz": U[:, 2], "p": P}
+    en = plan.get("energy")
+    if field in ("T", "mach"):
+        if not has_T:
+            raise ValueError(f"field {field!r} needs an energy study")
+        vals["T"] = T - 273.15
+        if field == "mach":
+            if en.get("kind") != "gas":
+                raise ValueError("Mach number is for gases")
+            vals["mach"] = np.linalg.norm(U, axis=1) / np.sqrt(en["gamma"] * en["R"] * T)
+    val = vals[field]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=130)
     win = spec.get("window")
-    cmap = "coolwarm" if field == "p" else "viridis"
+    cmap = {"p": "coolwarm", "T": "inferno", "mach": "magma"}.get(field, "viridis")
     tp = ax.tripcolor(tri, val, shading="gouraud", cmap=cmap)
     fig.colorbar(tp, ax=ax, label=FIELDS[field], shrink=0.85)
     if spec.get("streamlines"):
@@ -157,15 +191,23 @@ def _surface(study, mesh, plan, fields, spec, title, path):
         if spec.get("field", "p") == "wall_shear":
             w = pf.get("wss")
             if w is not None:
-                v = np.linalg.norm(np.asarray(w, float).reshape(-1, 3)[loc], axis=1) * rho
+                v = np.linalg.norm(np.asarray(w, float).reshape(-1, 3)[loc], axis=1) * (1.0 if plan.get("energy") else rho)
             else:                                      # our estimate: nu (U_f - U_P) deltaCoeff, tangential
                 Sf = g["Sf"][f]
                 n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
                 dU = np.asarray(pf["U"], float).reshape(-1, 3)[loc] - np.asarray(fields["U"], float)[mesh.owner[f]]
                 dU -= np.einsum("ij,ij->i", dU, n)[:, None] * n
-                v = rho * plan["nu"] * np.linalg.norm(dU, axis=1) * (mesh.delta_coeffs_boundary()[f - mesh.ninternal] / SCALE)
+                v = plan["mu"] * np.linalg.norm(dU, axis=1) * (mesh.delta_coeffs_boundary()[f - mesh.ninternal] / SCALE)
+        elif spec.get("field", "p") == "T":
+            if pf.get("T") is None:
+                raise ValueError("field 'T' needs an energy study")
+            v = np.asarray(pf["T"], float)[loc] - 273.15
+        elif spec.get("field", "p") == "q":
+            if pf.get("whf") is None:
+                raise ValueError("field 'q' needs an energy study with wall heat flux")
+            v = np.asarray(pf["whf"], float)[loc]
         else:
-            v = np.asarray(pf["p"], float)[loc] * rho
+            v = _pa(plan, pf["p"])[loc]
         for r in mesh.faces[f]:
             polys.append(mesh.points[r[r >= 0]])
         vals.append(v)
@@ -176,7 +218,7 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     import matplotlib.colors as mcolors
     hi_ = float(vals.max()) if vals.max() > vals.min() else float(vals.min()) + 1e-12
     norm = mcolors.Normalize(vmin=float(vals.min()), vmax=hi_)
-    cmap = matplotlib.colormaps["coolwarm" if spec.get("field", "p") == "p" else "viridis"]
+    cmap = matplotlib.colormaps[{"p": "coolwarm", "T": "inferno", "q": "inferno"}.get(spec.get("field", "p"), "viridis")]
     fig = plt.figure(figsize=(9, 7), dpi=130)
     ax = fig.add_subplot(projection="3d")
     ax.add_collection3d(Poly3DCollection(polys, facecolors=cmap(norm(vals)), edgecolors="none"))
@@ -231,9 +273,12 @@ def save_state(folder: Path, mesh, plan: dict, fields: dict, study: dict | None 
     arr = {"points": mesh.points, "faces": mesh.faces, "owner": mesh.owner, "neighbour": mesh.neighbour,
            "btag": mesh.btag, "U": np.asarray(fields["U"], float), "p": np.asarray(fields["p"], float)}
     for nm, pf in fields["patches"].items():
-        for k in ("U", "p", "phi", "wss"):
+        for k in ("U", "p", "phi", "wss", "T", "rho", "whf"):
             if pf.get(k) is not None:
                 arr[f"patch/{nm}/{k}"] = np.asarray(pf[k], float)
+    for k in ("T", "rho"):
+        if fields.get(k) is not None:
+            arr[k] = np.asarray(fields[k], float)
     for nm, cells in (mesh.zones or {}).items():
         arr[f"zone/{nm}"] = np.asarray(cells)
     np.savez_compressed(folder / "state.npz", **arr)
@@ -253,7 +298,8 @@ def load_state(folder: Path):
     patches = {}
     for p in meta["patches"]:
         rec = {k: (z[f"patch/{p['name']}/{k}"] if f"patch/{p['name']}/{k}" in z.files else None)
-               for k in ("U", "p", "phi", "wss")}
+               for k in ("U", "p", "phi", "wss", "T", "rho", "whf")}
         patches[p["name"]] = rec
-    fields = {"U": z["U"], "p": z["p"], "patches": patches}
+    fields = {"U": z["U"], "p": z["p"], "patches": patches,
+              "T": z["T"] if "T" in z.files else None, "rho": z["rho"] if "rho" in z.files else None}
     return mesh, meta["plan"], fields, meta.get("study", {})

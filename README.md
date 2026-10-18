@@ -4,7 +4,15 @@ Turns a **CFD study** (a geometry, a fluid, a turbulence model, boundary conditi
 
 It is the CFD counterpart of [build123d-translator](https://github.com/feranick/build123d-translator) and [fea-translator](https://github.com/feranick/fea-translator). An LLM writes the study (the flexible part). The translator computes everything else: the mesh and its polyMesh files, which faces form which patch, inlet profiles face by face, turbulence inlet values, the case dictionaries. A checker then confirms the result with closed-form and published benchmarks, mass and momentum balance on every run, solver convergence, and expected values. Geometries are build123d-translator goals or STEP files, so the same face selectors name CAD features, CFD boundary conditions and FEA loads. External-flow results include the wall forces as fea-translator loads.
 
-Scope (first version): **steady incompressible flow**, laminar or k-ω SST (wall functions), internal flow (the geometry is the fluid) or external flow (a domain box minus the part), 3D or 2D.
+Scope:
+- **Steady flow**, laminar or k-ω SST (wall functions).
+- Internal flow (the geometry is the fluid) or external flow (a domain box minus the part), 3D or 2D.
+- Incompressible by default (OpenFOAM `incompressibleFluid`).
+- With `"energy": true`, temperature is solved too (OpenFOAM `fluid`):
+  - air is a compressible perfect gas, from low speed to transonic;
+  - water keeps a constant density;
+  - walls can be heated or cooled;
+  - `gravity` adds buoyancy (natural convection).
 
 ## Install
 
@@ -36,7 +44,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 25 tests: 22 run anywhere, 3 need Gmsh or OpenFOAM
+pytest -q                   # 29 tests: 26 run anywhere, 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -70,6 +78,15 @@ Every run writes `<request>/<study>/case` (an ordinary OpenFOAM case: open `case
 - **domain**: `internal` (default) means the geometry is the fluid. `{"kind": "external", "box": [x0, y0, z0, x1, y1, z1]}` means the fluid is that box minus the geometry.
 - **2d**: `true` gives a one-cell-thick mesh along Z with `empty` front and back. The domain must be a prism along Z.
 - **fluid**: `air`, `water`, `{"rho", "mu"}`, or a name with overrides. **model**: `laminar` or `kOmegaSST`.
+- **energy** (heat transfer and compressible gas): `"energy": true` switches to OpenFOAM's `fluid` solver.
+  - **Fluids:** `air` is a perfect gas (M 28.96, cp 1005, μ 1.825e-5, Pr 0.71), with density from p and T. `water` has constant density (cp 4182, Pr 7). Custom fluids are `{mu, cp, pr or k}` plus `molar_mass` for a gas or `rho` for a liquid.
+  - **conditions:** `{p, T}` sets the operating pressure (Pa absolute, default 101325) and the initial or ambient temperature (°C, default 20). All study pressures stay gauge, relative to `conditions.p`; temperatures are in °C.
+  - **gravity:** `[gx, gy, gz]` (m/s²) adds buoyancy. OpenFOAM then solves `p_rgh`, with `constant/g` and `pRef` written for it.
+  - **Inlets:** a `temperature`, plus velocity or flow rate as before, or `mass_flow` (kg/s). Gases can instead use `total_pressure` (Pa gauge) with `total_temperature` (isentropic `totalPressure`/`totalTemperature`).
+  - **Outlets and openings:** a backflow `temperature`.
+  - **Walls:** `T` (°C), `q` (W/m² into the fluid), `power` (W), or `h` with `T_inf`, the same names as fea-translator's thermal bcs. Otherwise they're adiabatic.
+  - **Transonic formulation:** switched on when the inlet's estimated Mach number exceeds 0.3.
+  - **Not yet combined with energy:** rotating zones and the reference solver.
 - **bcs**: the kinds are listed below. Faces use the selectors of b3dt and feat: `nx/ny/nz` (+ `at`), `pts`, `cyl_r` (+ `side`), `all`, lists for a union. External studies add `{"box": "xmin" … "zmax"}` for the domain sides. For external flow the normals are the solid part's, so one selector names the same face in b3dt, feat and here. A face is taken by at most one bc (`all` yields to the others). Faces no bc takes become the no-slip patch `walls`.
 
 | kind | parameters | OpenFOAM (U / p) |
@@ -122,7 +139,10 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 | `max_velocity` | largest cell velocity and where it is |
 | `feat_loads` | external flow: one fea-translator `force` bc per part face (`pts` selector, N), ready to paste into a feat study of the same part |
 | `images.<name>.path`, `what`, `min`, `max` | the PNGs (show them with the MCP tool `get_image`) |
-| `checks` | `mass_balance`, `momentum_balance`, `angular_momentum_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
+| `heat.<wall bc>.Q_W`, `q_mean`, `T_mean_C` (+ `h`, `Nu` with `reference.T` and `length`) | energy: heat into the fluid through each wall (OpenFOAM's `wallHeatFlux`), wall temperatures |
+| `flow.<bc>.mdot`, `T_mean_C`, `mach`; `max_mach`, `T_min_C`, `T_max_C`; `probes.<name>.T`, `mach` | energy: mass flow, flow-weighted temperature, Mach number |
+| `feat_thermal` | energy, external flow: fea-translator thermal bcs per part face. `convection` gives h from the CFD heat and wall temperature, with `T_inf`; `heat_flux` is the heat into the part; plus the total |
+| `checks` | `mass_balance`, `momentum_balance`, `angular_momentum_balance`, `energy_balance` (energy), `inlet_flow_error`, `wall_shear_vs_ours` |
 
 Each study's result has **`reliable`**. It is false, with `unreliable_because`, when the solver did not converge, or the mass balance is off by more than 0.1%, or the momentum balance by more than 3%. Those numbers must not be reported as results.
 
@@ -164,6 +184,12 @@ It also has `selection` (what every bc took: face kind, area, normal, radius, si
 | taylor_couette_mrf | the same with a rotating zone (MRF) around the inner cylinder; power = Tω | 2 % | — | to run |
 | swirl_pipe | solid-body swirl inlet: angular momentum in = ρUωπR⁴/2, flow unchanged, balance | 2 % / 1e-6 / 3 % | — | to run |
 | pipe_poiseuille_mpi | pipe_poiseuille on 4 MPI ranks (`solve.procs`) | 2 % | — | to run |
+| conduction_slab_2d | still air between plates at 60/20 °C: q = kΔT/H, linear T | 1 % / 0.2 K | — | to run |
+| heated_channel_2d | water, both walls 100 W/m², fully developed: Nu = 8.235; outlet bulk T from the energy balance | 3 % / 0.05 K | — | to run |
+| natural_cavity_ra1e4 | de Vahl Davis (1983) square cavity, Ra 10⁴, air: mean hot-wall Nu 2.243 | 2 % | — | to run |
+| venturi_subsonic | 2D venturi (b3dt spline outline), slip walls: quasi-1D isentropic mass flow and throat pressure (M_t ≈ 0.60) | 2 % / 3 % | — | to run |
+| pipe_air_low_mach | air with energy at Mach 0.0015: Hagen–Poiseuille | 2 % | — | to run |
+| chain_thermal | b3dt block at 60 °C in 20 °C air → `feat_thermal` convection + heater with the CFD heat → copper block at 60 °C | 1 K | — | to run |
 | chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass (reaction = −CFD force to 2e-5; feat 2026.10.16.8; 58 s) |
 
 The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
@@ -175,12 +201,20 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 3. **What `phi` contains.** Its boundary values are outward volumetric fluxes (m³/s) at the last time. → `inlet_flow_error` on every run.
 4. **Function-object fields.** `wallShearStress` and `yPlus` (in controlDict, `writeControl writeTime`) write their fields at the converged time, which `writeAndEnd` writes (from the v14 source). If they are missing, our snGrad estimate is used and `wall_shear_vs_ours` is absent. → channel_2d.
 5. **Accepted input syntax.** Numeric dimension sets, `nu` without dimensions, and `simulationType laminar;` alone (Stokes, from the v14 source) are accepted. → any run.
+7. **Energy (2026.10.18.1, checked against the OpenFOAM 14 sources, not yet run):**
+   - `externalTemperature` takes `q`/`Q` as Function1s (`constant x`) and `h`/`Ta` for convection.
+   - `prghPressure` takes `p` (absolute).
+   - `totalPressure` takes `p0`, `psi`, `gamma`; `totalTemperature` takes `T0`, `gamma`.
+   - `wallHeatFlux` is positive from the wall into the fluid.
+   - `phi` is a mass flux.
+   - Buoyancy is switched on by `0/p_rgh`.
+   - Inferred, not seen in a tutorial: the `constant/pRef` file format, and `pressureInletOutletVelocity` paired with `prghPressure`. → conduction_slab_2d, natural_cavity_ra1e4, venturi_subsonic and the energy balance on every run.
 6. **Gmsh details.** Boundary layers in 2D come from the `BoundaryLayer` field. After the side faces are removed, the bottom face's curves are matched by bounding box. → the Gmsh tests and cylinder_2d1.
 
 **Limits:**
 
 - Plain 3D meshes are tetrahedra without boundary layers, so turbulent external flow needs fine meshes. y⁺ is reported, with a warning outside 30–300.
-- Steady flow only; no heat transfer.
+- Steady flow only. No supersonic shocks (no density-based solver), no conjugate heat transfer inside solids (one-way to feat via `feat_thermal`), and no radiation.
 - Rotating zones are frozen rotor: the impeller's position relative to the volute is fixed, and blade-passing effects are absent.
 
 ## How it works
@@ -233,6 +267,14 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.18.1 | Energy:
+- `energy` (OpenFOAM `fluid`): compressible perfect-gas air up to transonic, constant-density water.
+- `conditions`, and `gravity` (buoyancy, `p_rgh`).
+- Thermal walls (`T`, `q`, `power`, `h` + `T_inf`).
+- Inlets by temperature, mass flow, or total pressure/temperature.
+- Results: heat, mass flow, Mach number, `T` probes, energy balance, `feat_thermal`.
+- Images of `T`, Mach number, and wall heat flux `q`.
+- Benchmarks: conduction_slab_2d, heated_channel_2d, natural_cavity_ra1e4, venturi_subsonic, pipe_air_low_mach, chain_thermal. |
 | 2026.10.17.1 | Images: `images` in a study (slices of velocity or pressure with streamlines, wall-surface pressure or shear; solid parts masked); each run saves its mesh and fields (`state.npz`) for `render_images` / `cfdt images` without solving again; MCP `get_image` returns PNGs as images. matplotlib becomes a dependency. |
 | 2026.10.16.6 | Rotating zones (MRF): `rotating`, walls with `rotation` (zone name or axis/rpm), torque, power, pump head and efficiency; `swirl` at inlets; `annulus` geometry; `solve.procs` (MPI); `reliable` verdict; `head_loss_m`; angular momentum flux and balance; pending studies report progress and ETA, and the MCP instructions stop long polling; benchmarks taylor_couette_2d, taylor_couette_mrf, swirl_pipe, pipe_poiseuille_mpi. |
 | 2026.10.16.5 | Linux ARM (aarch64): the `mesh` extra skips Gmsh (no PyPI wheels); README: Ubuntu's python3-gmsh linked into the venv, as in fea-translator. |

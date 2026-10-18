@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.17.1
+Version: 2026.10.18.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -131,6 +131,8 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
     mb = ch.get("momentum_balance", {})
     if "note" not in mb and mb.get("error", 0) > 0.03:
         why.append(f"momentum balance off by {mb['error']:.2%}")
+    if ch.get("energy_balance", {}).get("error", 0) > 0.02:
+        why.append(f"energy balance off by {ch['energy_balance']['error']:.2%}")
     if why:
         why.append("do not report these numbers as results: rerun with more solve.iterations, lower solve.relax "
                    "(e.g. 0.5) or a better mesh, and check that the quantities of interest stop changing")

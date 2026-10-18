@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.16.6
+Version: 2026.10.18.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .format import fluid_props
+from .format import fluid_props, thermo_props
 from .polymesh import SCALE, MeshError, header
 
 CMU = 0.09
@@ -166,8 +166,10 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     case = Path(case)
     for d in ("system", "constant", "0"):
         (case / d).mkdir(parents=True, exist_ok=True)
+    energy = bool(study.get("energy"))
+    th = thermo_props(study) if energy else None
     fl = fluid_props(study["fluid"])
-    rho, mu = float(fl["rho"]), float(fl["mu"])
+    rho, mu = (th["rho"], th["mu"]) if energy else (float(fl["rho"]), float(fl["mu"]))
     nu = mu / rho
     model = study.get("model", "laminar")
     turb = model != "laminar"
@@ -213,6 +215,25 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         Am2 = float(A.sum()) * SCALE ** 2
         rel, dh, desc = inlet_shape(mesh, f, two_d, b.get("profile", "uniform"))
         v = b.get("velocity")
+        if energy and "total_pressure" in b:
+            # isentropic total-pressure inlet: OpenFOAM sets the velocity; estimate it for the turbulence values
+            outs = [float(pp["bc"].get("pressure", 0.0)) for pp in patches if pp["kind"] in ("outlet", "opening")]
+            dp = max(float(b["total_pressure"]) - (min(outs) if outs else 0.0), 0.0)
+            vmean = float(np.sqrt(2 * dp / rho)) if dp > 0 else 1.0
+            I = float(b.get("intensity", 0.05))
+            L = float(b["length_scale"]) * SCALE if "length_scale" in b else 0.07 * dh
+            k = float(1.5 * (vmean * I) ** 2)
+            om = float(np.sqrt(k) / (CMU ** 0.25 * L))
+            kin[p["name"]] = (k, om)
+            plan["inlets"][p["name"]] = {"total_pressure_Pa": float(b["total_pressure"]),
+                                         "total_temperature_C": float(b.get("total_temperature", th["T_op"] - 273.15)),
+                                         "U_estimate": vmean, "area_m2": Am2, "hydraulic_diameter_m": dh, **desc,
+                                         **({"k": k, "omega": om} if turb else {})}
+            continue
+        if energy and "mass_flow" in b:
+            Tin = float(b.get("temperature", th["T_op"] - 273.15)) + 273.15
+            rin = th["p_op"] / (th["R"] * Tin) if th["kind"] == "gas" else th["rho"]
+            v = float(b["mass_flow"]) / (rin * Am2)
         if isinstance(v, (list, tuple)):
             Uf = np.tile(np.asarray(v, float), (len(f), 1))
             vmean = float(np.linalg.norm(v))
@@ -248,13 +269,15 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     if kin:
         k0 = max(v[0] for v in kin.values())
         om0 = max(v[1] for v in kin.values())
-        uref = max(pl["U_mean"] for pl in plan["inlets"].values())
+        uref = max(pl.get("U_mean", pl.get("U_estimate", 1.0)) for pl in plan["inlets"].values())
     else:
         uref = float(study.get("reference", {}).get("velocity", 1.0))
         k0 = 1.5 * (uref * 0.05) ** 2
         Lr = float(study.get("reference", {}).get("length", 0)) * SCALE or mesh.info.get("diag", 1.0) * SCALE * 0.07
         om0 = float(np.sqrt(k0) / (CMU ** 0.25 * Lr))
     plan["U_ref"] = uref
+    if energy:
+        return _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, external)
     # fields
     Ub, pb, kb, wb, nb = {}, {}, {}, {}, {}
     has_fixed_p = False
@@ -407,5 +430,245 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
           f"        p               {res:.3g};\n        U               {res:.3g};\n        \"(k|omega)\"       {res:.3g};\n    }}\n}}\n\n"
           f"relaxationFactors\n{{\n    equations\n    {{\n        U               {rU:g};\n        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", fv))
+    (case / "case.foam").write_text("")
+    return plan
+
+
+# ---- energy (OpenFOAM's fluid solver) -------------------------------------------------------------
+def _thermal_wall(b: dict, T_op: float) -> dict:
+    """The T boundary condition of a wall: fixed T, heat flux, power, convection, or adiabatic."""
+    if "T" in b:
+        return {"type": "fixedValue", "value": _uniform(float(b["T"]) + 273.15)}
+    if "q" in b:
+        return {"type": "externalTemperature", "q": f"constant {float(b['q']):.12g}", "value": _uniform(T_op)}
+    if "power" in b:
+        return {"type": "externalTemperature", "Q": f"constant {float(b['power']):.12g}", "value": _uniform(T_op)}
+    if "h" in b:
+        return {"type": "externalTemperature", "h": _uniform(float(b["h"])),
+                "Ta": f"constant {float(b['T_inf']) + 273.15:.12g}", "value": _uniform(T_op)}
+    return {"type": "zeroGradient"}
+
+
+def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, external) -> dict:
+    g = mesh.geometry()
+    q = plan["quality"]
+    p_op, T_op = th["p_op"], th["T_op"]
+    gas = th["kind"] == "gas"
+    buoy = study.get("gravity") is not None
+    Ub, pb, prb, Tb, kb, wb, nb, ab = ({} for _ in range(8))
+    mach_est = 0.0
+    for p in patches:
+        nm, kind, b = p["name"], p["kind"], p["bc"]
+        if kind in ("empty", "symmetry"):
+            for d in (Ub, pb, prb, Tb, kb, wb, nb, ab):
+                d[nm] = {"type": kind}
+            continue
+        if kind == "inlet":
+            if "total_pressure" in b:
+                p0 = p_op + float(b["total_pressure"])
+                T0 = float(b.get("total_temperature", T_op - 273.15)) + 273.15
+                Ub[nm] = {"type": "pressureInletOutletVelocity", "value": _uniform([0, 0, 0])}
+                pb[nm] = {"type": "totalPressure", "p0": _uniform(p0), "psi": "psi",
+                          "gamma": f"{th['gamma']:.12g}", "value": _uniform(p0)}
+                Tb[nm] = {"type": "totalTemperature", "T0": _uniform(T0), "gamma": f"{th['gamma']:.12g}",
+                          "value": _uniform(T0)}
+                outs = [float(pp["bc"].get("pressure", 0.0)) for pp in patches if pp["kind"] in ("outlet", "opening")]
+                if gas and outs:
+                    ratio = p0 / (p_op + min(outs))
+                    g_ = th["gamma"]
+                    mach_est = max(mach_est, float(np.sqrt(max(2 / (g_ - 1) * (ratio ** ((g_ - 1) / g_) - 1), 0))))
+            else:
+                Uf = U[nm]
+                same = np.allclose(Uf, Uf[0], rtol=0, atol=1e-14 * max(1.0, float(np.abs(Uf).max())))
+                Ub[nm] = {"type": "fixedValue", "value": _uniform(Uf[0]) if same else _nonuniform(Uf)}
+                pb[nm] = {"type": "zeroGradient"}
+                prb[nm] = {"type": "fixedFluxPressure", "value": _uniform(0)}
+                Tin = float(b.get("temperature", T_op - 273.15)) + 273.15
+                Tb[nm] = {"type": "fixedValue", "value": _uniform(Tin)}
+                if gas:
+                    c = np.sqrt(th["gamma"] * th["R"] * Tin)
+                    mach_est = max(mach_est, float(np.linalg.norm(Uf, axis=1).max() / c))
+                plan["inlets"][nm]["temperature_C"] = Tin - 273.15
+            k, om = kin[nm]
+            kb[nm] = {"type": "fixedValue", "value": _uniform(k)}
+            wb[nm] = {"type": "fixedValue", "value": _uniform(om)}
+            nb[nm] = {"type": "calculated", "value": _uniform(0)}
+            ab[nm] = {"type": "calculated", "value": _uniform(0)}
+        elif kind in ("outlet", "opening"):
+            pabs = p_op + float(b.get("pressure", 0.0))
+            pb[nm] = {"type": "fixedValue", "value": _uniform(pabs)}
+            prb[nm] = {"type": "prghPressure", "p": _uniform(pabs), "value": _uniform(0)}
+            if kind == "outlet":
+                Ub[nm] = {"type": "inletOutlet", "inletValue": _uniform([0, 0, 0]), "value": _uniform([0, 0, 0])}
+            else:
+                Ub[nm] = {"type": "pressureInletOutletVelocity", "value": _uniform([0, 0, 0])}
+            Tback = float(b.get("temperature", T_op - 273.15)) + 273.15
+            Tb[nm] = {"type": "inletOutlet", "inletValue": _uniform(Tback), "value": _uniform(Tback)}
+            kb[nm] = {"type": "inletOutlet", "inletValue": _uniform(k0), "value": _uniform(k0)}
+            wb[nm] = {"type": "inletOutlet", "inletValue": _uniform(om0), "value": _uniform(om0)}
+            nb[nm] = {"type": "calculated", "value": _uniform(0)}
+            ab[nm] = {"type": "calculated", "value": _uniform(0)}
+        elif kind == "wall":
+            vw = b.get("velocity")
+            if b.get("rotation") or (vw and np.linalg.norm(vw) > 0):
+                f = mesh.patch_faces(nm)
+                Sf = g["Sf"][f]
+                n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
+                Ut = swirl_velocity(g["Cf"][f], b["rotation"]) if b.get("rotation") else \
+                    _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
+                same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * max(float(np.abs(Ut).max()), 1e-300))
+                Ub[nm] = {"type": "fixedValue", "value": _uniform(Ut[0]) if same else _nonuniform(Ut)}
+                plan["patches"][nm]["moving"] = True
+            else:
+                Ub[nm] = {"type": "noSlip"}
+            pb[nm] = {"type": "zeroGradient"}
+            prb[nm] = {"type": "fixedFluxPressure", "value": _uniform(0)}
+            Tb[nm] = _thermal_wall(b, T_op)
+            plan["patches"][nm]["thermal"] = {k: b[k] for k in ("T", "q", "power", "h", "T_inf") if k in b} or "adiabatic"
+            kb[nm] = {"type": "kqRWallFunction", "value": _uniform(k0)}
+            wb[nm] = {"type": "omegaWallFunction", "value": _uniform(om0)}
+            nb[nm] = {"type": "nutkWallFunction", "value": _uniform(0)}
+            ab[nm] = {"type": "compressible::alphatWallFunction", "Prt": "0.85", "value": _uniform(0)}
+        elif kind == "slip":
+            Ub[nm] = {"type": "slip"}
+            pb[nm] = {"type": "zeroGradient"}
+            prb[nm] = {"type": "fixedFluxPressure", "value": _uniform(0)}
+            Tb[nm] = {"type": "zeroGradient"}
+            kb[nm] = {"type": "zeroGradient"}
+            wb[nm] = {"type": "zeroGradient"}
+            nb[nm] = {"type": "calculated", "value": _uniform(0)}
+            ab[nm] = {"type": "calculated", "value": _uniform(0)}
+        else:
+            raise MeshError(f"unknown bc kind {kind}")
+    U0 = [0.0, 0.0, 0.0]
+    if external and len(U) == 1:
+        U0 = next(iter(U.values())).mean(axis=0).tolist()
+    P = "[1 -1 -2 0 0 0 0]"
+    (case / "0" / "U").write_text(_field("volVectorField", "U", "[0 1 -1 0 0 0 0]", _uniform(U0), Ub))
+    (case / "0" / "T").write_text(_field("volScalarField", "T", "[0 0 0 1 0 0 0]", _uniform(T_op), Tb))
+    if buoy:
+        (case / "0" / "p").write_text(_field("volScalarField", "p", P, _uniform(p_op),
+                                             {k: ({"type": v["type"]} if v["type"] in ("empty", "symmetry")
+                                                  else {"type": "calculated", "value": _uniform(p_op)})
+                                              for k, v in prb.items()}))
+        (case / "0" / "p_rgh").write_text(_field("volScalarField", "p_rgh", P, _uniform(0), prb))
+    else:
+        (case / "0" / "p").write_text(_field("volScalarField", "p", P, _uniform(p_op), pb))
+        pr_file = case / "0" / "p_rgh"
+        if pr_file.exists():
+            pr_file.unlink()
+    if turb:
+        (case / "0" / "k").write_text(_field("volScalarField", "k", "[0 2 -2 0 0 0 0]", _uniform(k0), kb))
+        (case / "0" / "omega").write_text(_field("volScalarField", "omega", "[0 0 -1 0 0 0 0]", _uniform(om0), wb))
+        (case / "0" / "nut").write_text(_field("volScalarField", "nut", "[0 2 -1 0 0 0 0]", _uniform(0), nb))
+        (case / "0" / "alphat").write_text(_field("volScalarField", "alphat", "[1 -1 -1 0 0 0 0]", _uniform(0), ab))
+    # constant
+    if gas:
+        thermo_type, eos, eos_block = ("heRhoThermo" if buoy else "hePsiThermo"), "perfectGas", ""
+        M = th["molar_mass"]
+    else:
+        thermo_type, eos, eos_block = "heRhoThermo", "rhoConst", f"    equationOfState\n    {{\n        rho             {th['rho']:.12g};\n    }}\n"
+        M = 18.02
+    pp = (f"thermoType\n{{\n    type            {thermo_type};\n    mixture         pureMixture;\n"
+          f"    transport       const;\n    thermo          hConst;\n    equationOfState {eos};\n"
+          "    specie          specie;\n    energy          sensibleEnthalpy;\n}\n\n"
+          f"mixture\n{{\n    specie\n    {{\n        molWeight       {M:.12g};\n    }}\n{eos_block}"
+          f"    thermodynamics\n    {{\n        Cp              {th['cp']:.12g};\n        hf              0;\n    }}\n"
+          f"    transport\n    {{\n        mu              {th['mu']:.12g};\n        Pr              {th['pr']:.12g};\n    }}\n}}")
+    (case / "constant" / "physicalProperties").write_text(_dict("physicalProperties", "constant", pp))
+    if turb:
+        mt = "simulationType  RAS;\n\nRAS\n{\n    model           kOmegaSST;\n\n    turbulence      on;\n\n    printCoeffs     on;\n}"
+        (case / "constant" / "thermophysicalTransport").write_text(_dict("thermophysicalTransport", "constant",
+            "RAS\n{\n    model           unityLewisEddyDiffusivity;\n    Prt             0.85;\n}"))
+    else:
+        mt = "simulationType  laminar;"
+        tt = case / "constant" / "thermophysicalTransport"
+        if tt.exists():
+            tt.unlink()
+    (case / "constant" / "momentumTransport").write_text(_dict("momentumTransport", "constant", mt))
+    for f_ in ("g", "pRef", "MRFProperties"):
+        if (case / "constant" / f_).exists():
+            (case / "constant" / f_).unlink()
+    if buoy:
+        gx, gy, gz = (float(v) for v in study["gravity"])
+        (case / "constant" / "g").write_text(header("uniformDimensionedVectorField", "g", "constant") +
+                                             f"\ndimensions      [0 1 -2 0 0 0 0];\nvalue           ({gx:.12g} {gy:.12g} {gz:.12g});\n")
+        (case / "constant" / "pRef").write_text(header("uniformDimensionedScalarField", "pRef", "constant") +
+                                                f"\ndimensions      {P};\nvalue           {p_op:.12g};\n")
+    mesh.zones = {}
+    mesh.write(case)
+    # system
+    s = study.get("solve", {})
+    iters = int(s.get("iterations", 3000))
+    res = float(s.get("residual", 1e-5))
+    unstructured = q["max_non_orthogonality"] > 5.0
+    transonic = bool(gas and not buoy and mach_est > 0.3)
+    relax = s.get("relax", {})
+    if buoy:
+        rU, rO = float(relax.get("U", 0.3)), float(relax.get("other", 0.3))
+    else:
+        rU = float(relax.get("U", 0.7 if (unstructured or transonic) else 0.9))
+        rO = float(relax.get("other", 0.7 if (unstructured or transonic) else 0.9))
+    plan["schemes"] = "unstructured" if unstructured else "orthogonal"
+    plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO},
+                 "fixed_pressure": any(pp["kind"] in ("outlet", "opening") for pp in patches),
+                 "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": study.get("gravity"),
+                            "transonic": transonic, "mach_estimate": mach_est,
+                            "solver": "fluid", "thermo": thermo_type}})
+    walls = [p["name"] for p in patches if p["type"] == "wall"]
+    lib = "        libs            (\"libfieldFunctionObjects.so\");\n"
+    funcs = []
+    if walls:
+        funcs.append("    wallShearStress\n    {\n        type            wallShearStress;\n" + lib +
+                     f"        patches         ({' '.join(walls)});\n        writeControl    writeTime;\n    }}")
+        funcs.append("    wallHeatFlux\n    {\n        type            wallHeatFlux;\n" + lib +
+                     f"        patches         ({' '.join(walls)});\n        writeControl    writeTime;\n    }}")
+        if turb:
+            funcs.append("    yPlus\n    {\n        type            yPlus;\n" + lib + "        writeControl    writeTime;\n    }")
+    if gas:
+        funcs.append("    MachNo\n    {\n        type            MachNo;\n" + lib + "        writeControl    writeTime;\n    }")
+    cd = (f"solver          fluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"
+          f"stopAt          endTime;\n\nendTime         {iters};\n\ndeltaT          1;\n\nwriteControl    timeStep;\n\n"
+          f"writeInterval   {iters};\n\npurgeWrite      0;\n\nwriteFormat     ascii;\n\nwritePrecision  12;\n\n"
+          "writeCompression off;\n\ntimeFormat      general;\n\ntimePrecision   6;\n\nrunTimeModifiable false;\n\n"
+          "functions\n{\n" + "\n".join(funcs) + "\n}")
+    (case / "system" / "controlDict").write_text(_dict("controlDict", "system", cd))
+    if unstructured:
+        grad = ("default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n"
+                "    grad(h)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n"
+                "    grad(omega)     cellLimited Gauss linear 1;")
+        lap, sn, nonorth = "Gauss linear limited corrected 0.5", "limited corrected 0.5", 1
+    else:
+        grad, lap, sn, nonorth = "default         Gauss linear;", "Gauss linear corrected", "corrected", 0
+    fs = (f"ddtSchemes\n{{\n    default         steadyState;\n}}\n\ngradSchemes\n{{\n    {grad}\n}}\n\n"
+          "divSchemes\n{\n    default         Gauss linear;\n    div(phi,U)      bounded Gauss linearUpwind grad(U);\n"
+          "    div(phi,h)      bounded Gauss limitedLinear 1;\n    div(phi,K)      bounded Gauss limitedLinear 1;\n"
+          "    div(phid,p)     Gauss limitedLinear 1;\n"
+          "    div(phi,k)      bounded Gauss limitedLinear 1;\n    div(phi,omega)  bounded Gauss limitedLinear 1;\n"
+          "    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;\n}\n\n"
+          f"laplacianSchemes\n{{\n    default         {lap};\n}}\n\ninterpolationSchemes\n{{\n    default         linear;\n}}\n\n"
+          f"snGradSchemes\n{{\n    default         {sn};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}")
+    (case / "system" / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
+    pname = "p_rgh" if buoy else "p"
+    tol = res * 1e-2
+    solvers = (f"solvers\n{{\n    {pname}\n    {{\n        solver          GAMG;\n"
+               f"        tolerance       {tol:.3g};\n        relTol          0.01;\n        smoother        GaussSeidel;\n    }}\n\n"
+               "    \"(U|h|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
+               f"        tolerance       {tol:.3g};\n        relTol          0.1;\n    }}\n}}\n\n")
+    rc = (f"    residualControl\n    {{\n        {pname:<15} {res:.3g};\n        U               {res:.3g};\n"
+          f"        h               {res:.3g};\n        \"(k|omega)\"       {res:.3g};\n    }}\n")
+    if buoy:
+        pim = (f"PIMPLE\n{{\n    momentumPredictor no;\n    nNonOrthogonalCorrectors {nonorth};\n"
+               f"    pRefCell        0;\n    pRefValue       0;\n\n{rc}}}\n\n"
+               "relaxationFactors\n{\n    fields\n    {\n        rho             1;\n        p_rgh           0.7;\n    }\n"
+               f"    equations\n    {{\n        U               {rU:g};\n        h               {rO:g};\n"
+               "        \"(k|omega)\"       0.7;\n    }\n}")
+    else:
+        pim = (f"PIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    transonic       {'yes' if transonic else 'no'};\n"
+               f"    consistent      yes;\n    pRefCell        0;\n    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
+               "relaxationFactors\n{\n    fields\n    {\n        p               1;\n    }\n"
+               f"    equations\n    {{\n        p               1;\n        U               {rU:g};\n"
+               f"        h               {rO:g};\n        \".*\"            {rO:g};\n    }}\n}}")
+    (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", solvers + pim))
     (case / "case.foam").write_text("")
     return plan
