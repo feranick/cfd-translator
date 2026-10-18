@@ -78,7 +78,10 @@ def test_submit_then_collected_by_a_new_process(slurm):
         time.sleep(1)
     s = out["studies"]["couette"]
     assert out["done"] and s["ok"] and s["reliable"], s
-    assert s["executor"] == {"kind": "slurm", "job_id": "1001", "procs": 1}
+    assert s["executor"] == {"kind": "slurm", "job_id": "1001", "procs": 1}           # the former shape, kept
+    ex = s["execution"]
+    assert ex["executor"] == "slurm" and ex["slurm_job"] == "1001" and ex["procs_requested"] == 1
+    assert ex["procs_used"] == 1 and ex["mpi"] is None                               # the reference solver is serial
     assert "1001" in (req / "couette" / "job.log").read_text() or (req / "couette" / "job.log").exists()
 
 
@@ -123,6 +126,7 @@ def test_final_states_from_sacct(slurm, monkeypatch, acct, state, words):
     out = api.status(r["request"])
     s = out["studies"]["s"]
     assert out["done"] and s["ok"] is False and s["state"] == state and words in s["why"], s
+    assert s["execution"] == {"executor": "slurm", "slurm_job": "1001"}
     assert json.loads((Path(r["request"]) / "s" / "s.json").read_text())["state"] == state   # final: kept
 
 
@@ -160,6 +164,7 @@ def test_routing_queue_key_minimum_and_status(slurm, monkeypatch):
     assert executor.use_slurm({"queue": False}, "foam") is False
     r = api.run({"loc": dict(COUETTE, queue=False)}, "ref", wait=60)     # runs in this process's pool
     assert r["done"] and r["studies"]["loc"]["ok"] and not (Path(r["request"]) / "loc" / "job.json").exists()
+    assert r["studies"]["loc"]["execution"]["executor"] == "local" and r["studies"]["loc"]["execution"]["slurm_job"] is None
     monkeypatch.setenv("CFDT_EXECUTOR", "local")
     assert executor.use_slurm({"queue": True}, "foam") is False and api.tool_status()["executor"]["kind"] == "local"
 
@@ -173,6 +178,8 @@ def test_run_study_by_hand_and_procs(slurm, monkeypatch, tmp_path):
     assert p.returncode == 0, p.stderr
     res = json.loads((req / "h" / "h.json").read_text())
     assert res["ok"] and res["executor"]["kind"] == "by hand" and res["executor"]["procs"] == 3
+    assert res["execution"]["executor"] == "by hand" and res["execution"]["procs_requested"] == 3
+    assert res["execution"]["procs_used"] == 1 and res["execution"]["slurm_job"] is None
     assert not list((req / "h").glob(".h.json.*.tmp"))                  # atomic write left nothing behind
 
 
@@ -214,3 +221,14 @@ def test_job_asks_a_core_per_rank(slurm, monkeypatch):
     r = api.run({"m": dict(COUETTE, queue=True)}, "ref", wait=0)
     sh = (Path(r["request"]) / "m" / "job.sh").read_text()
     assert "#SBATCH --ntasks=9" in sh and "#SBATCH --ntasks-per-core=1" in sh
+
+
+def test_run_record_for_an_mpi_run(monkeypatch):
+    from cfd_translator.runner import execution_record
+    monkeypatch.setenv("SLURM_JOB_ID", "77")
+    r = execution_record(9, 4, "mpirun --map-by hwthread -np 4", "hwthread")
+    assert r["executor"] == "slurm" and r["slurm_job"] == "77" and (r["procs_requested"], r["procs_used"]) == (9, 4)
+    assert r["mpi"]["launch"] == "mpirun --map-by hwthread -np 4" and r["mpi"]["binding"] == "hwthread"
+    assert r["mpi"]["cores"] >= 1 and r["mpi"]["hwthreads"] >= r["mpi"]["cores"]
+    monkeypatch.delenv("SLURM_JOB_ID")
+    assert execution_record(1, 1)["executor"] == "local" and execution_record(1, 1)["mpi"] is None

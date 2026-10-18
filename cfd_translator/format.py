@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.2
+Version: 2026.10.18.7
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -331,6 +331,20 @@ def _rotation_errors(r, where: str, speeds: tuple) -> list[str]:
     return errs
 
 
+def _goal_errors(goal: dict) -> list[str]:
+    """build123d-translator's own validation of the goal (an open outline used to fail only when meshing:
+    venturi_subsonic on mochi), when that package is installed; it is only needed to build the part."""
+    try:
+        from build123d_translator.goalformat import validate_goal
+    except ImportError:
+        return []
+    try:
+        v = validate_goal(goal)
+    except Exception as e:  # noqa: BLE001
+        return [f"geometry.goal: {type(e).__name__}: {e}"]
+    return [f"geometry.goal: {e}" for e in v.get("errors", [])]
+
+
 def fluid_props(f) -> dict:
     if isinstance(f, str):
         return dict(FLUIDS[f])
@@ -408,6 +422,8 @@ def validate_study(st: dict) -> dict:
                 errs.append("geometry.step: a path to a STEP file (mm)")
             if geo_kind == "goal" and not isinstance(g["goal"], dict):
                 errs.append("geometry.goal: a build123d-translator goal {'features': [...]}")
+            elif geo_kind == "goal":
+                errs += _goal_errors(g["goal"])
     d = st.get("domain", {"kind": "internal"})
     external = False
     if not isinstance(d, dict) or d.get("kind", "internal") not in ("internal", "external"):

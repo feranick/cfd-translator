@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.18.1
+Version: 2026.10.18.7
 
     results(study, mesh, plan, fields) -> dict
 
@@ -414,7 +414,8 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     qscale = max(inflow, plan.get("U_ref", 1.0) * vol ** (2 / 3) * 1e-3 * (rho if en else 1.0))
     mass_err = abs(net_phi) / qscale if qscale > 0 else 0.0
     mom_err = float(np.linalg.norm(totals)) / scale_m if scale_m > 0 else 0.0
-    checks = {"mass_balance": {"inflow_m3s": _r(inflow), "net_m3s": _r(net_phi), "error": _r(mass_err)},
+    checks = {"mass_balance": {"inflow_m3s": _r(inflow), "net_m3s": _r(net_phi), "error": _r(mass_err),
+                               **({"units": "kg/s (energy: phi is a mass flux)"} if en else {})},
               "momentum_balance": {"residual_N": _r(totals), "scale_N": _r(scale_m), "error": _r(mom_err)},
               **({"energy_balance": energy_check} if en else {}),
               "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(scale_a),
@@ -428,7 +429,9 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             warns.append(f"OpenFOAM's wall shear and ours (snGrad) differ by {visc_cmp[1] / visc_cmp[0]:.1%}: "
                          "check the wall cells (very coarse or skewed?)")
     for n, pl in plan.get("inlets", {}).items():
-        got = -float(np.asarray(fields["patches"][n]["phi"], float).sum())
+        # volumetric: with energy, phi is a mass flux (kg/s) and the flow entry already divides by rho
+        got = float(out["flow"][n]["Q"]) if en and n in out.get("flow", {}) else \
+            -float(np.asarray(fields["patches"][n]["phi"], float).sum())
         if abs(got - pl["Q"]) > 1e-3 * abs(pl["Q"]):
             warns.append(f"inlet {n}: flow {got:.6g} m3/s, but the case prescribes {pl['Q']:.6g}")
         checks.setdefault("inlet_flow_error", {})[n] = _r((got - pl["Q"]) / pl["Q"])

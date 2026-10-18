@@ -642,3 +642,20 @@ def test_closed_energy_domain_uses_the_p_rgh_formulation(tmp_path):
     assert (c / "0" / "p_rgh").exists() and (c / "constant" / "g").exists()
     assert foamio.read_foam((c / "constant" / "physicalProperties").read_text())["thermoType"]["type"] == "heRhoThermo"
     assert "p_rgh" in foamio.read_foam((c / "system" / "fvSolution").read_text())["PIMPLE"]["residualControl"]
+    pp = foamio.read_foam((c / "constant" / "physicalProperties").read_text())
+    # no gravity given: constant density (perfectGas diverged there on mochi, 2026.10.18.5)
+    assert pp["thermoType"]["equationOfState"] == "rhoConst"
+    assert float(pp["mixture"]["equationOfState"]["rho"]) == pytest.approx(plan["energy"]["rho"])
+    assert plan["relax"]["other"] == 0.9 and plan["energy"]["density"].startswith("constant")
+
+
+def test_venturi_outline_is_closed_and_small_velocity_components_count_as_zero():
+    from cfd_translator.runner import zero_fields
+    o = bench._cases()["venturi_subsonic"]["study"]["geometry"]["goal"]["features"][0]["params"]["outline"]
+    assert o["segs"][-1][1:] == o["start"]                      # b3dt: the last point is the start
+    U = np.zeros((10, 3))
+    U[:, 0] = 1.0
+    U[2, 1] = 5e-5                                              # heated channel: Uy round-off, residual stalls
+    assert zero_fields({"U": U, "p": np.linspace(0, 1, 10)}, {"rho": 1.0}) == ["Uy", "Uz"]
+    U[2, 1] = 1e-3                                              # a real cross flow
+    assert zero_fields({"U": U, "p": np.linspace(0, 1, 10)}, {"rho": 1.0}) == ["Uz"]

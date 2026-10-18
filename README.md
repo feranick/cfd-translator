@@ -44,7 +44,7 @@ The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or
 
 ```bash
 cfdt status                 # versions; OpenFOAM, Gmsh, b3dt, feat found?
-pytest -q                   # 49 tests: 46 run anywhere (18 with a fake SLURM), 3 need Gmsh or OpenFOAM
+pytest -q                   # 50 tests: 47 run anywhere (19 with a fake SLURM), 3 need Gmsh or OpenFOAM
 cfdt bench                  # benchmarks, pass/fail against known answers
 cfdt bench cavity_re1000 pipe_turbulent chain_plate      # the slow and chained ones, by name
 ```
@@ -99,6 +99,10 @@ The four finished-failure states are written as the study's result, so they stay
 **Tools:**
 - `jobs(limit, active)`: the newest requests with jobs, from any conversation, with the queue of cfdt jobs and the machine's CPUs.
 - `cancel(request, names)`: `scancel`, plus a `cancel` flag file. In local mode the flag stops the OpenFOAM run, in whatever process runs it, within a second. The solver's whole process group is killed, mpirun and every rank, on cancel and on timeout.
+
+**The run record.** Every study result, local or SLURM, has the `execution` block of EXECUTION.md: `{executor: slurm | local | by hand, slurm_job, procs_requested, procs_used, mpi: {launch, binding, cores, hwthreads} | null}`.
+- `procs_used` can be lower than `procs_requested` (the cell cap), and `launch` is the command as run.
+- The former `executor: {kind, job_id, procs}` block of `run-study` results stays for now.
 
 `tool_status()` / `cfdt status` reports `executor: {kind, sbatch, min_minutes, procs, time_limit_min}`, which `llmt status` reads. The CLI has `cfdt jobs [--active]`, `cfdt cancel REQUEST [NAMES...]` and `cfdt run-study REQUEST NAME`.
 
@@ -309,6 +313,8 @@ tests/test_cfd.py      examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.18.7 | From the energy benchmarks on mochi: a closed domain without gravity takes the fluid's density as constant (`rhoConst`; perfectGas diverged in p_rgh in 3 iterations, then enthalpy -> T failed), with relaxation 0.9 on h. With energy, `inlet_flow_error` compares volumetric flow (phi is a mass flux there; heated_channel showed a factor of rho), and `mass_balance` says its units are kg/s. A velocity component below 1e-4 of the peak speed counts as zero for 'converged' (heated channel: Uy's residual stalled at 7e-3). A `goal` geometry is checked by build123d-translator's validator when installed (venturi_subsonic's outline was not closed: fixed). Benchmark residual targets: heated_channel 1e-6, natural_cavity 1e-5, conduction_slab 1e-7. |
+| 2026.10.18.6 | The run record of EXECUTION.md in every study result: `execution: {executor, slurm_job, procs_requested, procs_used, mpi: {launch, binding, cores, hwthreads}}`, also on failures (`could not submit`, timed_out ...); `run-study`'s former `executor` block kept as an alias. |
 | 2026.10.18.5 | Closed energy domains (no inlet, outlet or opening) use the p_rgh formulation of OpenFOAM's closed-cavity tutorial (heRhoThermo, reference cell, relaxation 0.3), with zero gravity when none is given: on mochi the conduction slab diverged at iteration 4 with the open-flow settings (psiThermo, consistent). Also: 'converged' ignores a pressure that is uniform everywhere (spread below 1e-6 of ½ρu²) and, with energy, an enthalpy of a uniform temperature: their normalised residuals are round-off. Seen on mochi: Couette's p residual 0.05 with p ≈ 1e-19 Pa; the 18.4 change alone (Uy) could not fix it. |
 | 2026.10.18.4 | A velocity component counts as zero everywhere (and its residual is ignored for 'converged') below 1e-6 of the largest velocity, not 1e-9: OpenFOAM's round-off in Couette's Uy is above 1e-9. On mochi (SLURM, OpenMPI 5): 47 tests pass; couette_2d (1 rank) and pipe_poiseuille_mpi (4 ranks in a job, 0.8 %) pass. |
 | 2026.10.18.3 | From mochi (OpenMPI 5, 20 cores × 2 threads, `CFDT_PROCS=9`), where `mpirun -np 9` failed with 'allocation-overload':

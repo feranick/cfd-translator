@@ -94,6 +94,17 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.7**: fixes from the mochi energy rerun (request run_20261018_182109_c20fd9, 2026.10.18.5).
+- conduction_slab_2d: p_rgh GAMG diverged at iteration 3 (final residual 6.5e43), then T inversion failed. Closed + no gravity now uses rhoConst; the same slab with water (rhoConst, 18.5 code, run locally on mochi) gave Q = 0.04794 W (k dT/H: 0.0479) and mid T 39.987 C in 6 s.
+- venturi_subsonic: outline not closed (b3dt BuildError); cfdt validation now runs b3dt's validate_goal.
+- heated_channel_2d: Nu 8.36 (ref 8.235), outlet T 23.826 (ref 23.833), but not converged (Uy) and a false inlet-flow warning (mass vs volume): both fixed.
+- natural_cavity_ra1e4: Nu 2.253 (ref 2.243), p_rgh 1.18e-6 vs 1e-6 at 6000 iterations: target now 1e-5.
+- Still to read on mochi: the rotation benchmarks' checks and pipe_air_low_mach.
+
+**2026.10.18.6**: the run record (`execution` in every result), as added to EXECUTION.md together with lmpt's `slurm_job`/`mpi` fields.
+- The former `executor` block of run-study results is kept as an alias; drop it once llmt and lmpt read `execution`.
+- 47 passed in the sandbox.
+
 **2026.10.18.5**: on mochi, conduction_slab_2d diverged at iteration 4 (p GAMG 4.9e65, then SIGFPE in MachNo): closed energy domains now use the p_rgh/heRhoThermo closed-cavity formulation with g = 0. Queueing confirmed on mochi: 15-rank jobs take 30 CPUs (whole cores) and the rest wait (Resources, then Priority, with ahead). Also: Couette's 'not converged' came from p (zero everywhere, residual 0.05), not only Uy. `zero_fields` now covers U components, p/p_rgh and h.
 
 **2026.10.18.4**: mochi with SLURM works.

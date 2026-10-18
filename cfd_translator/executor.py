@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.18.3
+Version: 2026.10.18.6
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -126,7 +126,8 @@ def submit(request: Path, name: str, study: dict) -> dict:
     except (OSError, subprocess.TimeoutExpired) as exc:
         ok, msg = False, str(exc)
     if not ok:
-        res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}"}
+        res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}",
+               "execution": {"executor": "slurm", "slurm_job": None}}
         write_atomic(d / f"{name}.json", json.dumps(res, indent=1))
         return res
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
@@ -147,13 +148,17 @@ def run_study_job(request: str, name: str) -> int:
     procs = int(n) if n and n.isdigit() else procs_of(study)
     if procs != procs_of(study) or "procs" not in (study.get("solve") or {}):
         study["solve"] = dict(study.get("solve") or {}, procs=procs)
+    if not os.environ.get("SLURM_JOB_ID"):
+        os.environ["CFDT_EXECUTION"] = "by hand"            # the run record's executor
     t0 = time.perf_counter()
     r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s())
     r.setdefault("seconds", {})
     if isinstance(r["seconds"], dict):
         r["seconds"]["wall"] = round(time.perf_counter() - t0, 3)
-    r["executor"] = {"kind": "slurm" if os.environ.get("SLURM_JOB_ID") else "by hand",
-                     "job_id": os.environ.get("SLURM_JOB_ID"), "procs": procs}
+    ex = r.get("execution") or {}
+    # 'executor' is the record's former shape, kept for a while for readers of 2026.10.18.2-.5
+    r["executor"] = {"kind": ex.get("executor", "slurm" if os.environ.get("SLURM_JOB_ID") else "by hand"),
+                     "job_id": ex.get("slurm_job", os.environ.get("SLURM_JOB_ID")), "procs": procs}
     write_atomic(req / name / f"{name}.json", json.dumps(r, indent=1, default=float))
     return 0
 
@@ -290,7 +295,8 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
         state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"))
         if state == "failed" and (request / n / "cancel").exists():
             state, why = "cancelled", "cancelled with cancel(request) (it left the queue before running)"
-        res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid}
+        res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid,
+               "execution": {"executor": "slurm", "slurm_job": jid}}
         if write:
             write_atomic(request / n / f"{n}.json", json.dumps(res, indent=1))
         out[n] = res

@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.5
+Version: 2026.10.18.7
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -460,6 +460,10 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     closed = not any(p["kind"] in ("inlet", "outlet", "opening") for p in patches)
     gravity = study.get("gravity") or ([0.0, 0.0, 0.0] if closed else None)
     buoy = gravity is not None
+    # closed and no gravity: nothing couples density to the flow, so take air's density as constant
+    # (rhoConst). With perfectGas there, p_rgh's solver diverged in 3 iterations and enthalpy -> T failed
+    # (mochi, conduction slab, 2026.10.18.5); the same case with rhoConst runs in seconds.
+    rho_const = bool(closed and not study.get("gravity"))
     Ub, pb, prb, Tb, kb, wb, nb, ab = ({} for _ in range(8))
     mach_est = 0.0
     for p in patches:
@@ -568,8 +572,11 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
         (case / "0" / "nut").write_text(_field("volScalarField", "nut", "[0 2 -1 0 0 0 0]", _uniform(0), nb))
         (case / "0" / "alphat").write_text(_field("volScalarField", "alphat", "[1 -1 -1 0 0 0 0]", _uniform(0), ab))
     # constant
-    if gas:
+    if gas and not rho_const:
         thermo_type, eos, eos_block = ("heRhoThermo" if buoy else "hePsiThermo"), "perfectGas", ""
+        M = th["molar_mass"]
+    elif gas:
+        thermo_type, eos, eos_block = "heRhoThermo", "rhoConst", f"    equationOfState\n    {{\n        rho             {th['rho']:.12g};\n    }}\n"
         M = th["molar_mass"]
     else:
         thermo_type, eos, eos_block = "heRhoThermo", "rhoConst", f"    equationOfState\n    {{\n        rho             {th['rho']:.12g};\n    }}\n"
@@ -609,7 +616,9 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     unstructured = q["max_non_orthogonality"] > 5.0
     transonic = bool(gas and not buoy and mach_est > 0.3)
     relax = s.get("relax", {})
-    if buoy:
+    if rho_const:          # no buoyancy coupling: enthalpy converges fast without strong relaxation
+        rU, rO = float(relax.get("U", 0.7)), float(relax.get("other", 0.9))
+    elif buoy:
         rU, rO = float(relax.get("U", 0.3)), float(relax.get("other", 0.3))
     else:
         rU = float(relax.get("U", 0.7 if (unstructured or transonic) else 0.9))
@@ -618,6 +627,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
     plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO},
                  "fixed_pressure": any(pp["kind"] in ("outlet", "opening") for pp in patches),
                  "energy": {**{k: v for k, v in th.items()}, "buoyancy": buoy, "gravity": gravity, "closed": closed,
+                            "density": "constant (closed, no gravity)" if rho_const else ("constant" if not gas else "perfect gas"),
                             "transonic": transonic, "mach_estimate": mach_est,
                             "solver": "fluid", "thermo": thermo_type}})
     walls = [p["name"] for p in patches if p["type"] == "wall"]
