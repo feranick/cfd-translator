@@ -167,6 +167,8 @@ with local runs (as for the venturi). README: format, results, the new checks, v
 
 ## State
 
+**2026.10.19.3/.4**: run_benchmarks submits and returns, bench_status collects (all six new benchmarks pass on mochi with .3). Jobs ask for ranks from an upper cell estimate before meshing (executor.cell_estimate / procs_for_job).
+
 **2026.10.19.2**: the six tracer/age/porous benchmarks pass on mochi; OpenFOAM 14 took every new keyword (scalarTransport, semiImplicitSource cellZone all, porosityForce fixedCoeff + axesRotation). Fixed: age_cavity selectors; porous Δp −2.6 % from the collocated-grid velocity dip at zone faces (20 cells) → 100 cells: −0.4 %, plus face_cell_fraction warning.
 
 **2026.10.19.1**: tracers, mean age (scalars.py) and porous zones (porous.py), per the plan above. OpenFOAM 14 sources read: scalarTransport (keys field, diffusivity none|constant|viscosity, D, alphal, alphat; sources via fvModels; it writes every iteration unless writeControl writeTime); semiImplicitSource (volumeMode, sources {f {explicit; implicit}}, cellZone); porosityForce (tutorial fluid/angledDuct: type porosityForce; porosityForce {cellZone; type DarcyForchheimer|fixedCoeff; ...; coordinateSystem}). fixedCoeff chosen: DarcyForchheimer looks up nu/mu fields, which incompressibleFluid may not register; fixedCoeff's rhoRef must be 1 for the kinematic equation. Unverified on OpenFOAM: `cellZone all` for the age source, scalarTransport inside the fluid solver (rho lookup), fixedCoeff's rotation (e1/e3). Benchmarks to run on mochi (all small, < 1 min): mixing_layer_2d, tracer_two_streams, age_cavity_2d, porous_channel_1d, ergun_bed, porous_anisotropic.

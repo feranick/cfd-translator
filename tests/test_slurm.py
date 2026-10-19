@@ -173,7 +173,7 @@ def test_run_study_by_hand_and_procs(slurm, monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_PENDING", "1")
     r = api.run({"h": dict(COUETTE, queue=True, solve={"procs": 3})}, "ref", wait=0)
     req = Path(r["request"])
-    assert "#SBATCH --ntasks=3" in (req / "h" / "job.sh").read_text()
+    assert "#SBATCH --ntasks=1" in (req / "h" / "job.sh").read_text()    # 200 cells: one rank's worth
     p = _cli("run-study", str(req), "h")
     assert p.returncode == 0, p.stderr
     res = json.loads((req / "h" / "h.json").read_text())
@@ -218,6 +218,7 @@ def test_mpirun_maps_by_hwthread_when_the_job_has_fewer_cores(monkeypatch):
 def test_job_asks_a_core_per_rank(slurm, monkeypatch):
     monkeypatch.setenv("FAKE_PENDING", "1")
     monkeypatch.setenv("CFDT_PROCS", "9")
+    monkeypatch.setenv("CFDT_CELLS_PER_RANK", "10")                  # 200 cells: enough for 9 ranks here
     r = api.run({"m": dict(COUETTE, queue=True)}, "ref", wait=0)
     sh = (Path(r["request"]) / "m" / "job.sh").read_text()
     assert "#SBATCH --ntasks=9" in sh and "#SBATCH --ntasks-per-core=1" in sh
@@ -258,3 +259,18 @@ def test_benchmarks_from_the_mcp_tool_return_at_once_and_are_collected(slurm, mo
     res = api.bench_status(out["bench"], 1)
     assert res["done"] and res["passed"] == ["couette_2d"], res
     assert (Path(out["bench"]) / "bench.json").exists()
+
+
+def test_jobs_ask_only_for_the_ranks_their_mesh_can_use(monkeypatch):
+    from cfd_translator import bench
+    monkeypatch.setenv("CFDT_PROCS", "9")
+    monkeypatch.delenv("CFDT_CELLS_PER_RANK", raising=False)
+    C = bench._cases()
+    assert executor.cell_estimate(C["porous_channel_1d"]["study"]) == 1600
+    assert executor.procs_for_job(C["porous_channel_1d"]["study"]) == 1
+    est = executor.cell_estimate(C["pipe_poiseuille"]["study"])          # swept disk: an upper estimate
+    assert est and executor.procs_for_job(C["pipe_poiseuille"]["study"]) == min(9, int(-(-est // 5000)))
+    big = dict(C["porous_channel_1d"]["study"], mesh={"cells": [400, 400, 1]})
+    assert executor.procs_for_job(big) == 9                              # 160k cells: the study's 9
+    assert executor.procs_for_job(dict(big, solve={"procs": 4})) == 4
+    assert executor.cell_estimate({"geometry": {"step": "x.step"}, "mesh": {"size": 1}}) is None

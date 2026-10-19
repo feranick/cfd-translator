@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.18.9
+Version: 2026.10.19.4
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -60,6 +60,64 @@ def procs_of(study: dict) -> int:
     return int(p) if p else int(os.environ.get("CFDT_PROCS", "1") or 1)
 
 
+def cell_estimate(study: dict) -> float | None:
+    """An upper estimate of the mesh's cell count before meshing, or None when it cannot be told cheaply.
+    Box cells are exact; Gmsh meshes: 2D/swept sections ~1.3 cells per size^2 with quads (2.5 with
+    triangles), tetrahedra ~10 per size^3, plus every refine sphere at its size. A goal is built with
+    build123d-translator for its volume (a second or so)."""
+    import math
+    g, m = study.get("geometry") or {}, study.get("mesh") or {}
+    if m.get("cells"):
+        return float(math.prod(int(c) for c in m["cells"]))
+    h = m.get("size")
+    if not h:
+        return None
+    h = float(h)
+    dom = study.get("domain") or {}
+    vol = thick = None
+    if dom.get("kind") == "external" and dom.get("box"):
+        b = [float(v) for v in dom["box"]]
+        vol, thick = (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]), b[5] - b[2]
+    elif "box" in g:
+        lx, ly, lz = (float(v) for v in g["box"])
+        vol, thick = lx * ly * lz, lz
+    elif "cylinder" in g:
+        r, hh = (float(v) for v in g["cylinder"])
+        vol, thick = math.pi * r * r * hh, hh
+    elif "annulus" in g:
+        ri, ro, hh = (float(v) for v in g["annulus"])
+        vol, thick = math.pi * (ro * ro - ri * ri) * hh, hh
+    elif "goal" in g:
+        try:
+            from build123d_translator import translate as T
+            solid, _ = T.build(g["goal"])
+            bb = solid.bounding_box()
+            vol, thick = float(solid.volume), float(bb.max.Z - bb.min.Z)
+        except Exception:  # noqa: BLE001
+            return None
+    if not vol or not thick or thick <= 0:
+        return None
+    layers = 1 if study.get("2d") else (int(m["extrude"]) if m.get("extrude") else None)
+    refine = m.get("refine") or []
+    if layers:                                        # a 2D section, swept into layers
+        per = 1.3 if m.get("quads", True) else 2.5
+        n = vol / thick / h ** 2 * per + sum(math.pi * float(r["r"]) ** 2 / float(r["size"]) ** 2 * per for r in refine)
+        return n * layers
+    return vol / h ** 3 * 10 + sum(4 / 3 * math.pi * float(r["r"]) ** 3 / float(r["size"]) ** 3 * 10 for r in refine)
+
+
+def procs_for_job(study: dict) -> int:
+    """The ranks a SLURM job asks for: the study's (or CFDT_PROCS), but no more than the cell estimate allows
+    at CFDT_CELLS_PER_RANK, so small studies do not hold cores they cannot use (the benchmarks on mochi held
+    18 CPUs each for 1-3 ranks)."""
+    procs = procs_of(study)
+    est = cell_estimate(study)
+    if est is None:
+        return procs
+    per = int(os.environ.get("CFDT_CELLS_PER_RANK", "5000") or 5000)
+    return max(1, min(procs, int(math.ceil(est / max(per, 1)))))
+
+
 def estimate_minutes(study: dict, solver: str) -> float | None:
     """The study's own time estimate, or None (cfdt cannot tell an OpenFOAM run's length before meshing;
     the 2D reference solver takes seconds)."""
@@ -115,7 +173,7 @@ def submit(request: Path, name: str, study: dict) -> dict:
     {"ok": false, "why": "could not submit: ..."} (never falls back to local)."""
     d = request / name
     d.mkdir(parents=True, exist_ok=True)
-    procs = procs_of(study)
+    procs = procs_for_job(study)
     script = d / "job.sh"
     script.write_text(job_script(request, name, procs))
     script.chmod(0o755)
