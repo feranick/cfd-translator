@@ -239,3 +239,22 @@ def test_a_job_that_never_started_counts_as_cancelled():
     st, why = final_state(None, "(no job.log)")
     assert st == "cancelled" and "without starting" in why
     assert final_state(None, "Traceback ...")[0] == "failed"
+
+
+def test_benchmarks_from_the_mcp_tool_return_at_once_and_are_collected(slurm, monkeypatch):
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    out = api.bench(["couette_2d", "chain_plate", "nope"], "ref", wait_s=0)
+    assert out["done"] is False and out["pending"] == ["couette_2d"] and "bench_status" in out["next"]
+    assert "chain_plate" in out["skipped"]
+    meta = json.loads((Path(out["bench"]) / "bench_request.json").read_text())
+    assert meta["unknown"] == ["nope"] and meta["cases"] == ["couette_2d"]
+    monkeypatch.delenv("FAKE_PENDING")
+    for i in [p.stem for p in slurm.glob("1*.json")]:              # the queued jobs start now (as SLURM would)
+        r = _job(slurm, i)
+        _set(slurm, i, pending=False, final=None)
+        subprocess.Popen(["bash", r["script"]], cwd=str(Path(r["script"]).parent),
+                         env=dict(os.environ, SLURM_JOB_ID=str(i), SLURM_NTASKS="1"),
+                         stdout=open(r["output"], "a"), stderr=subprocess.STDOUT).wait(timeout=120)
+    res = api.bench_status(out["bench"], 1)
+    assert res["done"] and res["passed"] == ["couette_2d"], res
+    assert (Path(out["bench"]) / "bench.json").exists()

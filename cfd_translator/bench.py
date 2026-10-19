@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.19.2
+Version: 2026.10.19.3
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -506,29 +506,60 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             _progress(n, out[n], t0)
             continue
         r = queued[n] if n in queued else run_study(n, c["study"], Path(folder) / n, solver)
-        if not r.get("ok"):
-            out[n] = {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
-            _progress(n, out[n], t0)
-            continue
-        checks = []
-        for what, exp, got, tol in c["checks"](r["results"]):
-            if got is None:
-                checks.append({"what": what, "expected": exp, "got": None, "passed": False})
-                continue
-            if "abs" in tol:
-                err = abs(got - exp)
-                ok = err <= tol["abs"]
-            else:
-                err = abs(got - exp) / abs(exp)
-                ok = err <= tol["tol"]
-            checks.append({"what": what, "expected": round(exp, 8), "got": round(float(got), 8), "error": float(f"{err:.3g}"),
-                           **tol, "passed": bool(ok)})
-        out[n] = {"ok": True, "passed": all(c_["passed"] for c_ in checks), "checks": checks,
-                  "solve": r.get("solve", {}).get("converged"), "cells": r["mesh"]["cells"],
-                  "invariants": {k: r["results"]["checks"][k].get("error") for k in ("mass_balance", "momentum_balance")},
-                  "warnings": r.get("warnings", []), "seconds": r.get("seconds")}
+        out[n] = evaluate(n, r, cases)
         _progress(n, out[n], t0, r)
     return out
+
+
+def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:
+    """A benchmark's verdict from its study result: every check against its tolerance."""
+    c = (cases or _cases())[n]
+    if not r.get("ok"):
+        return {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
+    checks = []
+    try:
+        triples = c["checks"](r["results"])
+    except (KeyError, TypeError, ZeroDivisionError) as e:
+        return {"ok": True, "passed": False, "error": f"a check could not be evaluated: {type(e).__name__}: {e}"}
+    for what, exp, got, tol in triples:
+        if got is None:
+            checks.append({"what": what, "expected": exp, "got": None, "passed": False})
+            continue
+        if "abs" in tol:
+            err = abs(got - exp)
+            ok = err <= tol["abs"]
+        else:
+            err = abs(got - exp) / abs(exp)
+            ok = err <= tol["tol"]
+        checks.append({"what": what, "expected": round(exp, 8), "got": round(float(got), 8), "error": float(f"{err:.3g}"),
+                       **tol, "passed": bool(ok)})
+    return {"ok": True, "passed": all(c_["passed"] for c_ in checks), "checks": checks,
+            "solve": r.get("solve", {}).get("converged"), "cells": r["mesh"]["cells"],
+            "invariants": {k: r["results"]["checks"][k].get("error") for k in ("mass_balance", "momentum_balance")},
+            "warnings": r.get("warnings", []), "seconds": r.get("seconds")}
+
+
+def submit(solver: str, names=None) -> dict:
+    """SLURM mode for the MCP tool: submit the cases as one request and return at once (the tool call would
+    otherwise outlast the client's timeout: mochi, 2026.10.19). Returns {request, cases, skipped}; chains are
+    left out (they run fea-translator here: run them by name with the CLI)."""
+    cases = _cases()
+    skipped, todo = {}, []
+    for n, c in cases.items():
+        if names and n not in names:
+            continue
+        if (not names and c.get("slow")) or c.get("chain"):
+            skipped[n] = "slow or a chain: run it by name with the CLI (cfdt bench <name>)"
+            continue
+        missing = [m for m in c["needs"] if not _available(m)]
+        if missing:
+            skipped[n] = f"needs {', '.join(missing)}"
+            continue
+        todo.append(n)
+    unknown = [n for n in (names or []) if n not in cases]
+    from . import api
+    req = api.start({n: dict(cases[n]["study"], queue=True) for n in todo}, solver) if todo else None
+    return {"request": str(req) if req else None, "cases": todo, "skipped": skipped, "unknown": unknown}
 
 
 def _progress(name, res, t0, r=None):

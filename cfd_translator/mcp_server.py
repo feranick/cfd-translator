@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.18.2
+Version: 2026.10.19.3
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -103,11 +103,20 @@ def get_case(study: dict, name: str = "study") -> dict:
 
 
 @server.tool()
-def run_benchmarks(names: list[str] | None = None, solver: str = "auto") -> dict:
+def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s: float = 30) -> dict:
     """Runs the benchmark studies with known answers (Couette, plane Poiseuille, lid-driven cavity vs
     Ghia, Hagen-Poiseuille pipe, Schaefer-Turek cylinder; slow ones by name: cavity_re1000,
-    pipe_turbulent; chain_plate with build123d-translator and fea-translator) and reports pass or fail."""
-    return api.bench(names, solver)
+    pipe_turbulent; chain_plate with build123d-translator and fea-translator) and reports pass or fail.
+    With SLURM the cases are submitted as jobs and this returns after at most wait_s seconds: collect the
+    rest with bench_status(bench)."""
+    return api.bench(names, solver, wait_s=float(wait_s))
+
+
+@server.tool()
+def bench_status(bench: str, wait_s: float = 45) -> dict:
+    """Pass/fail of benchmarks submitted by run_benchmarks (its 'bench' folder): finished cases with their
+    checks, the others pending (SLURM jobs that keep running without this conversation)."""
+    return api.bench_status(bench, min(float(wait_s), 50.0))
 
 
 @server.tool()

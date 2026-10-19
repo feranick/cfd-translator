@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.19.1
+Version: 2026.10.19.3
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -389,10 +389,18 @@ def image_path(path: str) -> Path:
     return p
 
 
-def bench(names=None, solver: str | None = None) -> dict:
+def bench(names=None, solver: str | None = None, wait_s: float | None = None) -> dict:
+    """wait_s (the MCP tool): with SLURM, submit and return after at most wait_s; bench_status collects."""
     from . import bench as B
+    from . import executor as X
 
     s = _solver(solver)
+    if wait_s is not None and X.kind() == "slurm":
+        folder = _request_dir("bench")
+        sub = B.submit(s, names)
+        sub.update({"solver": s, "translator": __version__})
+        (folder / "bench_request.json").write_text(json.dumps(sub, indent=1))
+        return bench_status(str(folder), wait_s)
     folder = _request_dir("bench")
     r = B.run(s, names, folder)
     passed = [k for k, v in r.items() if v.get("passed")]
@@ -400,6 +408,32 @@ def bench(names=None, solver: str | None = None) -> dict:
     out = {"request": str(folder), "solver": s, "translator": __version__, "passed": passed, "failed": failed,
            "skipped": [k for k, v in r.items() if "skipped" in v], "cases": r}
     (folder / "bench.json").write_text(json.dumps(out, indent=1, default=float))
+    return out
+
+
+def bench_status(bench_folder: str, wait_s: float = 45) -> dict:
+    """The verdicts of benchmarks submitted by bench(..., wait_s): finished cases are evaluated, the rest
+    listed as pending with their progress."""
+    from . import bench as B
+    folder = Path(bench_folder)
+    meta = json.loads((folder / "bench_request.json").read_text())
+    if not meta.get("request"):
+        return {"bench": str(folder), "done": True, "passed": [], "failed": [], "skipped": meta["skipped"],
+                "unknown": meta.get("unknown", [])}
+    st = status(meta["request"], wait_s)
+    cases = B._cases()
+    res = {n: B.evaluate(n, r, cases) for n, r in st["studies"].items()}
+    out = {"bench": str(folder), "request": meta["request"], "translator": meta.get("translator"), "done": st["done"],
+           "passed": [n for n, v in res.items() if v.get("passed")],
+           "failed": [n for n, v in res.items() if not v.get("passed")],
+           "pending": st.get("pending", []), "skipped": meta["skipped"], "cases": res}
+    if st.get("progress"):
+        out["progress"] = st["progress"]
+    if not st["done"]:
+        out["next"] = (f"call bench_status(bench='{folder}') later; the cases are SLURM jobs and keep running "
+                       "without this conversation (polling costs tokens: wait for the longest eta)")
+    else:
+        (folder / "bench.json").write_text(json.dumps(out, indent=1, default=float))
     return out
 
 
