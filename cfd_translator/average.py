@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.18.15
+Version: 2026.10.18.16
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -72,11 +72,12 @@ def monitor_functions(study: dict, plan: dict, rho: float) -> tuple[list, dict]:
     ends = [n for n, k in kinds.items() if k in ("inlet", "outlet", "opening")]
     funcs, mon = [], {"pressure": {}, "torque": {}, "settings": cfg}
     if any(k == "inlet" for k in kinds.values()) and any(k in ("outlet", "opening") for k in kinds.values()):
-        # total pressure as a field (OpenFOAM's pressure function object), evaluated every iteration
+        # total pressure as a field (OpenFOAM's pressure function object), evaluated every iteration. OpenFOAM 14
+        # keys (pressure.H): calcTotal/calcCoeff, rho rhoInf (no rho field when incompressible), result; the
+        # result is in Pa, p rhoInf + 0.5 rhoInf |U|^2 (the calibration below allows a factor rho)
         funcs.append(_fo("cfdtTotalP", f"""
 type            pressure;
 libs            ("libfieldFunctionObjects.so");
-mode            total;
 calcTotal       yes;
 calcCoeff       no;
 rho             rhoInf;
@@ -88,6 +89,9 @@ executeInterval 1;
 writeControl    writeTime;"""))
         for n in ends:
             fo = f"cfdtP_{n}"
+            # OpenFOAM 14 (surfaceFieldValue.C): the selection follows from the key given (patch); there is no
+            # weightedAverage: 'average' with weightField phi is sum(phi v) / sum(phi), the flow-weighted mean
+            # (phi's sign cancels on one inlet or outlet). Any bad key here is fatal at startup (2026.10.18.15).
             funcs.append(_fo(fo, f"""
 type            surfaceFieldValue;
 libs            ("libfieldFunctionObjects.so");
@@ -96,11 +100,8 @@ writeInterval   1;
 log             false;
 writeFields     false;
 surfaceFormat   none;
-select          patch;
 patch           {n};
-regionType      patch;
-name            {n};
-operation       weightedAverage;
+operation       average;
 weightField     phi;
 fields          (p total(p));"""))
             mon["pressure"][n] = fo

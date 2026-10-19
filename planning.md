@@ -94,6 +94,8 @@ Works **together** with b3dt and feat:
 
 ## State
 
+**2026.10.18.15/.16**: iteration averaging (average.py, monitors in controlDict). On mochi with .15: the torque monitor works (Taylor-Couette MRF, local run: torque -6.706e-7 vs 6.702e-7 analytic, settled, drift 0.14 %, scatter 0.10 %); the inlet/outlet surfaceFieldValue stopped OpenFOAM 14 at startup (weightedAverage not an operation). .16: operation average + weightField phi, patch only, no mode in the pressure FO. To check on mochi: swirl_pipe with solve.average true (cfdtP_inlet/outlet written, no dropped series, total_pressure_drop = its _last). Caveat: phi-weighted average with backflow faces on an outlet; the 5 % agreement check drops it if it goes wrong.
+
 **2026.10.18.13**: venturi variants on mochi (.12, local runs): rest / estimate / SIMPLE / relax 0.5,0.2 / ramp without transonic: all diverge (negative T or GAMG). Ramp 400 + transonic: stable, 4000 iterations, residuals ~2e-5 (h 2.4e-5). Now the default for total-pressure gas inlets. Results then failed on KeyError 'Q' (total-pressure inlet in inlet_flow_error): fixed. On mochi with .13: venturi_subsonic PASS, converged in 1889 iterations (32 s): mass flow -0.12 %, throat pressure -13795 Pa vs -13970 isentropic (1.25 %), energy balance 0.7 %. All energy benchmarks now pass on mochi (conduction_slab, heated_channel, natural_cavity, venturi, pipe_air_low_mach), as do the rotation ones.
 - Disconnect test (EXECUTION.md) PASSED on mochi (2026.10.18.13): job 2534 ran on while Claude was closed; a new server found it with jobs() and collected the full result (execution: slurm, 6 of 6 ranks, mpirun -np 6, 6 cores / 12 hwthreads). lmpt already writes the same `execution` record (lmpt 2026.10.18.5).
 

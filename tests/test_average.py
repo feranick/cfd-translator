@@ -45,10 +45,10 @@ def _case(tmp: Path, n=4000, ramp=0.0, t_amp=0.5, p_amp=1000.0):
     _write(tmp / "postProcessing" / "cfdtM_rot" / "0" / "forces.dat",
            "# Time\ttotal_x\ttotal_y\ttotal_z", [f"{i}\t(1 2 3)" for i in it])
     _write(tmp / "postProcessing" / "cfdtP_inlet" / "0" / "surfaceFieldValue.dat",
-           "# Time        \tweightedAverage(p)\tweightedAverage(total(p))",
+           "# Time        \taverage(p)\taverage(total(p))",
            [f"{i}\t{-20.0:.9g}\t{-15000.0:.9g}" for i in it])
     _write(tmp / "postProcessing" / "cfdtP_outlet" / "0" / "surfaceFieldValue.dat",
-           "# Time        \tweightedAverage(p)\tweightedAverage(total(p))",
+           "# Time        \taverage(p)\taverage(total(p))",
            [f"{i}\t{(r - 15000.0 - 4500.0) / RHO:.9g}\t{r - 15000.0:.9g}" for i, r in zip(it, rise)])
     tp_last = -float(rise[-1])
     H = -tp_last / (RHO * G0)
@@ -76,6 +76,10 @@ def test_monitor_entries_in_the_controldict(tmp_path):
         assert name in cd
     assert "patches         (spin);" in cd and "weightField     phi;" in cd and "fields          (p total(p));" in cd
     assert cd.count("{") == cd.count("}")
+    # OpenFOAM 14 rejects (fatally, at startup) weightedAverage; select/regionType/name/mode are not its keys
+    assert "operation       average;" in cd and "patch           inlet;" in cd and "calcTotal       yes;" in cd
+    for bad in ("weightedAverage", "regionType", "select ", "mode "):
+        assert bad not in cd, bad
     assert plan["monitors"]["torque"] == {"rotor": "cfdtM_rotor"}
     assert set(plan["monitors"]["pressure"]) == {"inlet", "outlet"}
     off = dict(st, solve={"average": False})
@@ -92,11 +96,11 @@ def test_monitor_entries_in_the_controldict(tmp_path):
 
 def test_read_monitor_vectors_header_and_restart(tmp_path):
     _write(tmp_path / "postProcessing" / "m" / "0" / "surfaceFieldValue.dat",
-           "# Time  weightedAverage(p)", [f"{i} {i * 0.5}" for i in range(1, 11)])
+           "# Time  average(p)", [f"{i} {i * 0.5}" for i in range(1, 11)])
     _write(tmp_path / "postProcessing" / "m" / "8" / "surfaceFieldValue.dat",
-           "# Time  weightedAverage(p)", [f"{i} {-1.0}" for i in range(9, 13)])
+           "# Time  average(p)", [f"{i} {-1.0}" for i in range(9, 13)])
     its, header, vals = read_monitor(tmp_path, "m")
-    assert list(its) == list(range(1, 13)) and header == ["Time", "weightedAverage(p)"]
+    assert list(its) == list(range(1, 13)) and header == ["Time", "average(p)"]
     assert vals[7, 0] == 4.0 and vals[8, 0] == -1.0 and vals[-1, 0] == -1.0     # the restart replaces 9, 10
     assert read_monitor(tmp_path, "missing") is None
 
