@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.13
+Version: 2026.10.18.15
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -117,7 +117,11 @@ CONVENTIONS = [
     "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
     "(hydraulic: rho g Q H / power). The zone must contain only fluid and the rotating walls; keep its "
     "cylinder clear of stationary walls.",
-    "reliable: false (with reasons) when the solver did not converge or the mass or momentum balance is off: "
+    "Averaging (solve.average, on with a rotating zone): torque and inlet/outlet total pressure are recorded "
+    "every iteration; results.averaged has mean, std, drift and scatter over the last 25 % (>= 500 its); the means "
+    "replace torque, power, head, efficiency, total_pressure_drop (final iteration: *_last). settled (drift < 1 %, "
+    "scatter < 2 %) counts as converged for reliable.",
+    "reliable: false (with reasons) when the solver neither converged nor settled, or the mass or momentum balance is off: "
     "then do not report the numbers as results; rerun with more solve.iterations, lower solve.relax, or a "
     "better mesh. Long runs: use solve.procs (MPI ranks).",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
@@ -144,7 +148,8 @@ STUDY_KEYS = {
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p (energy)}, procs (MPI ranks; default CFDT_PROCS or 1), "
-             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7 or with a total-pressure inlet), consistent (energy: SIMPLEC, default true), start ('rest' | 'estimate'), ramp (iterations; total-pressure gas inlets, default 400)}",
+             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7 or with a total-pressure inlet), consistent (energy: SIMPLEC, default true), start ('rest' | 'estimate'), ramp (iterations; total-pressure gas inlets, default 400), "
+             "average (true | false | {window, min_iterations, drift, scatter})}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -163,7 +168,8 @@ STUDY_KEYS = {
     "analysis": "steady (the only one for now)",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
-SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp"}
+SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average"}
+AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 
@@ -594,6 +600,23 @@ def validate_study(st: dict) -> dict:
         errs.append("solve.consistent: true (SIMPLEC, default) or false (SIMPLE; energy runs)")
     if "transonic" in s and not isinstance(s["transonic"], bool):
         errs.append("solve.transonic: true or false (energy, gas; default: true above an estimated Mach 0.7 or with a total-pressure inlet)")
+    if "average" in s:
+        av = s["average"]
+        if isinstance(av, dict):
+            bad = [k for k in av if k not in AVERAGE_KEYS]
+            if bad:
+                errs.append(f"solve.average: unknown key(s) {bad} (keys: {sorted(AVERAGE_KEYS)})")
+            if "window" in av and (not _num(av["window"]) or not 0 < av["window"] <= 0.9):
+                errs.append("solve.average.window: fraction of the iterations at the end of the run (0 < w <= 0.9, default 0.25)")
+            if "min_iterations" in av and (not isinstance(av["min_iterations"], int) or av["min_iterations"] < 20):
+                errs.append("solve.average.min_iterations: integer >= 20 (default 500)")
+            for k in ("drift", "scatter"):
+                if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
+                    errs.append(f"solve.average.{k}: relative tolerance between 0 and 1 (default {0.01 if k == 'drift' else 0.02})")
+        elif not isinstance(av, bool):
+            errs.append("solve.average: true, false or {window, min_iterations, drift, scatter}")
+        if av and st.get("energy"):
+            warns.append("solve.average: not available with energy (the fluid solver) yet; final-iteration values are reported")
     if "queue" in st and not isinstance(st["queue"], bool):
         errs.append("queue: true (always a SLURM job) or false (always local)")
     # energy, conditions, gravity

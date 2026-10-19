@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.13
+Version: 2026.10.18.15
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -400,6 +400,11 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         if turb:
             funcs.append("    yPlus\n    {\n        type            yPlus;\n"
                          "        libs            (\"libfieldFunctionObjects.so\");\n        writeControl    writeTime;\n    }")
+    # per-iteration monitors (torque, inlet/outlet total pressure) for window averages (average.py)
+    from .average import monitor_functions
+    mf, mon = monitor_functions(study, plan, float(plan["rho"]))
+    funcs += mf
+    plan["monitors"] = mon
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {iters};\n\ndeltaT          1;\n\nwriteControl    timeStep;\n\n"
           f"writeInterval   {iters};\n\npurgeWrite      0;\n\nwriteFormat     ascii;\n\nwritePrecision  12;\n\n"

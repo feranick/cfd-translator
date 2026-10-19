@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.18.6
+Version: 2026.10.18.15
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -129,6 +129,7 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
                 shutil.rmtree(p)
         except ValueError:
             pass
+    shutil.rmtree(case / "postProcessing", ignore_errors=True)     # monitors of an earlier run (average.py)
     _step(foam, "checkMesh", "log.checkMesh", case, min(timeout, 900), raise_on_error=False)
     out["checkMesh"] = foamio.parse_checkmesh((case / "log.checkMesh").read_text(errors="replace"))
     procs = int(procs or os.environ.get("CFDT_PROCS", "1"))

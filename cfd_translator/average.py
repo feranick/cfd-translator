@@ -1,0 +1,408 @@
+"""average.py — per-iteration monitors, window averages and the 'settled' criterion.
+Version: 2026.10.18.15
+
+Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
+blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
+mean. The final iteration is then one snapshot of that wobble. Here OpenFOAM function objects record, every
+iteration, the torque on the rotating walls and the flow-weighted (total) pressure on every inlet and outlet;
+the last part of the run (the window) gives means, scatter and drift, and a study whose monitored quantities
+neither drift nor scatter is 'settled' (an alternative to residual convergence in the reliability verdict).
+
+    monitor_functions(study, plan, patches) -> (controlDict entries, monitors)   (case.py; plan["monitors"])
+    read_monitor(case, name) -> (iterations, header, rows)                        (postProcessing/<name>/*/*.dat)
+    window_stats(values, cfg) -> {mean, std, min, max, drift, scatter, n, ...}
+    average_results(case, plan, res, study) -> (averaged block, warnings)         (updates res in place)
+
+Settings (study.solve.average): true / false / {window: 0.25 (last fraction of the iterations), min_iterations:
+500 (at least this many in the window), drift: 0.01, scatter: 0.02}. Default: on with a rotating zone, off
+otherwise. drift = |mean of the window's second half - mean of its first half| / |mean|; scatter = std / |mean|.
+Every monitored quantity must meet both for 'settled'.
+
+Each series is checked against the final-iteration value computed from the fields (post.results): the monitor's
+last value must agree within 5 % (after a units factor of 1 or rho, since function objects may or may not scale
+kinematic pressure). A series that does not agree is dropped with a warning, so a monitor that OpenFOAM wrote
+differently from what is assumed here cannot change the results silently.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import numpy as np
+
+G0 = 9.80665
+DEFAULTS = {"window": 0.25, "min_iterations": 500, "drift": 0.01, "scatter": 0.02}
+AGREE = 0.05
+
+
+def _r(x, n=6):
+    x = float(x)
+    return float(f"{x:.{n}g}") if np.isfinite(x) else x
+
+
+def settings(study: dict, plan: dict | None = None) -> dict | None:
+    """The averaging settings, or None when off."""
+    a = (study.get("solve") or {}).get("average")
+    if a is False:
+        return None
+    if a is None:
+        has_zones = bool((plan or {}).get("zones")) if plan is not None else bool(study.get("rotating"))
+        if not has_zones:
+            return None
+        a = True
+    cfg = dict(DEFAULTS)
+    if isinstance(a, dict):
+        cfg.update({k: a[k] for k in DEFAULTS if k in a})
+    return cfg
+
+
+# ---- controlDict entries ----------------------------------------------------------------------------
+def _fo(name: str, body: str) -> str:
+    lines = "\n".join("        " + l for l in body.strip().splitlines())
+    return f"    {name}\n    {{\n{lines}\n    }}"
+
+
+def monitor_functions(study: dict, plan: dict, rho: float) -> tuple[list, dict]:
+    """controlDict function objects that write every iteration: total pressure on every inlet and outlet
+    (flow-weighted, with the static pressure beside it) and the moment on each rotating zone's walls."""
+    cfg = settings(study, plan)
+    if cfg is None:
+        return [], {}
+    kinds = {n: v["kind"] for n, v in plan["patches"].items()}
+    ends = [n for n, k in kinds.items() if k in ("inlet", "outlet", "opening")]
+    funcs, mon = [], {"pressure": {}, "torque": {}, "settings": cfg}
+    if any(k == "inlet" for k in kinds.values()) and any(k in ("outlet", "opening") for k in kinds.values()):
+        # total pressure as a field (OpenFOAM's pressure function object), evaluated every iteration
+        funcs.append(_fo("cfdtTotalP", f"""
+type            pressure;
+libs            ("libfieldFunctionObjects.so");
+mode            total;
+calcTotal       yes;
+calcCoeff       no;
+rho             rhoInf;
+rhoInf          {rho:.12g};
+pRef            0;
+result          total(p);
+executeControl  timeStep;
+executeInterval 1;
+writeControl    writeTime;"""))
+        for n in ends:
+            fo = f"cfdtP_{n}"
+            funcs.append(_fo(fo, f"""
+type            surfaceFieldValue;
+libs            ("libfieldFunctionObjects.so");
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+writeFields     false;
+surfaceFormat   none;
+select          patch;
+patch           {n};
+regionType      patch;
+name            {n};
+operation       weightedAverage;
+weightField     phi;
+fields          (p total(p));"""))
+            mon["pressure"][n] = fo
+    for zn, zp in (plan.get("zones") or {}).items():
+        if not zp.get("rotating_walls"):
+            continue
+        c = np.asarray(zp["center_mm"], float) * 1e-3
+        fo = f"cfdtM_{zn}"
+        funcs.append(_fo(fo, f"""
+type            forces;
+libs            ("libforces.so");
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+patches         ({' '.join(zp['rotating_walls'])});
+rho             rhoInf;
+rhoInf          {rho:.12g};
+pRef            0;
+CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
+        mon["torque"][zn] = fo
+    if not mon["pressure"] and not mon["torque"]:
+        return [], {}
+    return funcs, mon
+
+
+# ---- reading postProcessing ---------------------------------------------------------------------------
+_NUM = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[-+]?(?:nan|inf)", re.I)
+
+
+def _read_dat(path: Path) -> tuple[list, list]:
+    """(header names, rows of floats) of an OpenFOAM .dat file; vectors '(x y z)' become three numbers."""
+    header, rows = [], []
+    for line in path.read_text(errors="replace").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            h = [t for t in re.split(r"\s+", s.lstrip("#").strip()) if t]
+            if h and h[0].lower() == "time":
+                header = h
+            continue
+        vals = [float(v) for v in _NUM.findall(s.replace("(", " ").replace(")", " "))]
+        if vals:
+            rows.append(vals)
+    return header, rows
+
+
+def read_monitor(case: Path, name: str, prefer: str | None = None) -> tuple[np.ndarray, list, np.ndarray] | None:
+    """Iterations, header and values of postProcessing/<name>/<start time>/<file>.dat (all start times, later
+    ones replacing earlier iterations: a restarted run). prefer: a file name prefix to pick (e.g. 'moment')."""
+    root = Path(case) / "postProcessing" / name
+    if not root.is_dir():
+        return None
+    data: dict[float, list] = {}
+    header: list = []
+    width = None
+    starts = []
+    for d in root.iterdir():
+        try:
+            starts.append((float(d.name), d))
+        except ValueError:
+            continue
+    for _, d in sorted(starts):
+        files = sorted(d.glob("*.dat"))
+        if prefer:
+            pf = [f for f in files if f.name.lower().startswith(prefer)]
+            files = pf or files
+        if not files:
+            continue
+        h, rows = _read_dat(files[0])
+        header = h or header
+        for r in rows:
+            if width is None:
+                width = len(r)
+            if len(r) == width:
+                data[r[0]] = r[1:]
+    if not data:
+        return None
+    its = np.array(sorted(data))
+    return its, header, np.array([data[t] for t in its], float)
+
+
+def _moment_series(case: Path, fo: str):
+    """Total moment (x, y, z) per iteration from a forces function object, whichever layout it wrote:
+    moments.dat with total first (OpenFOAM.org 10+), moment.dat with pressure/viscous(/porous) parts, or one
+    forces.dat with forces then moments (older)."""
+    got = read_monitor(case, fo, "moment")
+    if got is None:
+        return None
+    its, header, vals = got
+    root = Path(case) / "postProcessing" / fo
+    has_moment_file = any(f.name.lower().startswith("moment") for f in root.glob("*/*.dat"))
+    if has_moment_file:
+        if any("total" in h.lower() for h in header) or vals.shape[1] == 3:
+            return its, vals[:, :3]
+        nv = vals.shape[1] // 3
+        return its, sum(vals[:, 3 * k:3 * k + 3] for k in range(nv))
+    if vals.shape[1] >= 18:                       # forces(pressure viscous porous) moment(pressure viscous porous)
+        return its, vals[:, 9:12] + vals[:, 12:15] + vals[:, 15:18]
+    if vals.shape[1] >= 12:                       # forces(pressure viscous) moment(pressure viscous)
+        return its, vals[:, 6:9] + vals[:, 9:12]
+    return None
+
+
+def _pressure_columns(header: list, ncol: int) -> tuple[int | None, int | None]:
+    """(static, total) column indices (after the time column) of a surfaceFieldValue file."""
+    names = header[1:] if header and header[0].lower() == "time" else []
+    st = tt = None
+    for i, h in enumerate(names):
+        if "total(p)" in h:
+            tt = i
+        elif re.search(r"\(p\)$", h):
+            st = i
+    if not names:                                  # no header: the order the fields were asked for
+        st, tt = (0, 1) if ncol >= 2 else (0, None)
+    return st, tt
+
+
+# ---- statistics ---------------------------------------------------------------------------------------
+def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict) -> dict | None:
+    """Mean, scatter and drift of the last part of a series; None when too short."""
+    n = len(v)
+    m = int(cfg.get("min_iterations", DEFAULTS["min_iterations"]))
+    w = max(int(round(float(cfg.get("window", DEFAULTS["window"])) * n)), m)
+    if n < m or w < 4:
+        return None
+    w = min(w, n)
+    x = np.asarray(v[-w:], float)
+    mean = float(x.mean())
+    std = float(x.std())
+    h = w // 2
+    d = float(x[h:].mean() - x[:h].mean())
+    scale = abs(mean)
+    return {"mean": _r(mean), "std": _r(std), "min": _r(x.min()), "max": _r(x.max()), "last": _r(x[-1]),
+            "drift": _r(abs(d) / scale) if scale > 0 else float("inf"),
+            "scatter": _r(std / scale) if scale > 0 else float("inf"),
+            "window": [int(its[-w]), int(its[-1])], "n": int(w)}
+
+
+def _calibrate(last: float, ref: float, rho: float) -> float | None:
+    """The units factor (1, rho or 1/rho) that makes the monitor's last value match the field value, or None."""
+    if ref is None or not np.isfinite(last):
+        return None
+    if abs(ref) < 1e-12:
+        return 1.0 if abs(last) < 1e-9 else None
+    best = min((1.0, rho, 1.0 / rho), key=lambda s: abs(s * last - ref))
+    return best if abs(best * last - ref) <= AGREE * abs(ref) else None
+
+
+# ---- the averaged results -----------------------------------------------------------------------------
+def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, list]:
+    """Window statistics of the monitored quantities; when they agree with the final fields, the means
+    replace the final-iteration values in res (rotating.<zone>.torque_Nm, power_W; pump.head_m, power_W,
+    efficiency; total_pressure_drop, head_loss_m), which move to *_last."""
+    mon = plan.get("monitors") or {}
+    if not mon:
+        return None, []
+    cfg = mon.get("settings") or dict(DEFAULTS)
+    rho = float(plan["rho"])
+    warns, series = [], {}
+    # torque per rotating zone
+    for zn, fo in mon.get("torque", {}).items():
+        got = _moment_series(case, fo)
+        if got is None:
+            warns.append(f"averaging: no moment history from {fo} (postProcessing/{fo}); final-iteration values kept")
+            continue
+        its, M = got
+        a = np.asarray(plan["zones"][zn]["axis"], float)
+        T = M @ a
+        ref = (res.get("rotating") or {}).get(zn, {}).get("torque_Nm")
+        s = _calibrate(float(T[-1]), ref, rho)
+        if s is None:
+            warns.append(f"averaging: zone {zn}: the monitored torque at the last iteration ({T[-1]:.6g}) does not "
+                         f"match the fields' ({ref}); its history is not used")
+            continue
+        series[f"torque_Nm.{zn}"] = (its, s * T)
+    # total pressure drop, inlets minus outlets, each side weighted by its flow
+    ins = [n for n in mon.get("pressure", {}) if plan["patches"][n]["kind"] == "inlet"]
+    outs = [n for n in mon.get("pressure", {}) if plan["patches"][n]["kind"] in ("outlet", "opening")]
+    if ins and outs:
+        cols, ok = {}, True
+        for n in ins + outs:
+            got = read_monitor(case, mon["pressure"][n])
+            if got is None:
+                warns.append(f"averaging: no pressure history for {n} (postProcessing/{mon['pressure'][n]})")
+                ok = False
+                break
+            its, header, vals = got
+            st, tt = _pressure_columns(header, vals.shape[1])
+            cols[n] = (its, vals[:, st] if st is not None and st < vals.shape[1] else None,
+                       vals[:, tt] if tt is not None and tt < vals.shape[1] else None)
+        if ok:
+            common = cols[ins[0]][0]
+            for n in cols:
+                common = np.intersect1d(common, cols[n][0])
+            if len(common):
+                wq = {n: abs(float(res.get("flow", {}).get(n, {}).get("Q", 1.0))) or 1.0 for n in cols}
+
+                def side(names, j):
+                    num = 0.0
+                    for n in names:
+                        its, *c = cols[n]
+                        idx = np.searchsorted(its, common)
+                        num = num + wq[n] * c[j][idx]
+                    return num / sum(wq[n] for n in names)
+                ref = res.get("total_pressure_drop")
+                tp = None
+                if all(cols[n][2] is not None for n in cols):
+                    d = side(ins, 1) - side(outs, 1)
+                    s = _calibrate(float(d[-1]), ref, rho)
+                    if s is not None:
+                        tp, method = s * d, "flow-weighted total pressure"
+                if tp is None and all(cols[n][1] is not None for n in cols) and ref is not None:
+                    # static pressure history plus the final iteration's dynamic-pressure difference
+                    d = side(ins, 0) - side(outs, 0)
+                    sp = res.get("pressure_drop")
+                    s = _calibrate(float(d[-1]), sp, rho) if sp is not None else None
+                    if s is not None:
+                        tp, method = s * d + (ref - sp), "static pressure + final dynamic-pressure difference"
+                if tp is None:
+                    warns.append("averaging: the monitored inlet/outlet pressures do not match the fields at the last "
+                                 "iteration; their history is not used")
+                else:
+                    series["total_pressure_drop"] = (common, tp)
+    if not series:
+        return None, warns
+    # derived: power, head, efficiency
+    zones = [k.split(".", 1)[1] for k in series if k.startswith("torque_Nm.")]
+    if zones:
+        its = series[f"torque_Nm.{zones[0]}"][0]
+        for z in zones[1:]:
+            its = np.intersect1d(its, series[f"torque_Nm.{z}"][0])
+        P = sum(-series[f"torque_Nm.{z}"][1][np.searchsorted(series[f"torque_Nm.{z}"][0], its)]
+                * plan["zones"][z]["omega_rad_s"] for z in zones)
+        series["power_W"] = (its, P)
+    if "total_pressure_drop" in series:
+        its, tp = series["total_pressure_drop"]
+        series["head_m"] = (its, -tp / (rho * G0))
+        if "power_W" in series and res.get("pump"):
+            Q = float(res["pump"]["flow_m3h"]) / 3600.0
+            com = np.intersect1d(its, series["power_W"][0])
+            H = series["head_m"][1][np.searchsorted(its, com)]
+            P = series["power_W"][1][np.searchsorted(series["power_W"][0], com)]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                series["efficiency"] = (com, np.where(P > 0, rho * G0 * Q * H / P, np.nan))
+    stats = {}
+    for k, (its, v) in series.items():
+        st = window_stats(its, v, cfg)
+        if st is not None:
+            stats[k] = st
+    total = max(len(v) for _, v in series.values())
+    if not stats:
+        warns.append(f"averaging: {total} iterations recorded, fewer than min_iterations ({cfg['min_iterations']}); "
+                     "final-iteration values kept")
+        return {"settings": cfg, "iterations_recorded": total, "settled": False,
+                "why": "too few iterations to average"}, warns
+    # the quantities judged: pump head and power, else the pressure drop and the torques
+    judged = [k for k in ("head_m", "power_W") if k in stats] or \
+             [k for k in stats if k == "total_pressure_drop" or k.startswith("torque_Nm.")]
+    bad = []
+    for k in judged:
+        st = stats[k]
+        if st["drift"] > cfg["drift"]:
+            bad.append(f"{k} drifts {st['drift']:.2%} (> {cfg['drift']:.0%})")
+        if st["scatter"] > cfg["scatter"]:
+            bad.append(f"{k} scatters {st['scatter']:.2%} (> {cfg['scatter']:.0%})")
+    block = {"basis": "mean over the window (the last iterations); *_last in the results are the final iteration",
+             "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
+             "quantities": stats, "iterations_recorded": total}
+    _apply_means(res, stats, plan)
+    return block, warns
+
+
+def _apply_means(res: dict, stats: dict, plan: dict) -> None:
+    rho = float(plan["rho"])
+    for k, st in stats.items():
+        if k.startswith("torque_Nm."):
+            zn = k.split(".", 1)[1]
+            z = res.get("rotating", {}).get(zn)
+            if z is not None:
+                z["torque_Nm_last"], z["power_W_last"] = z["torque_Nm"], z["power_W"]
+                z["torque_Nm"] = st["mean"]
+                z["power_W"] = _r(-st["mean"] * plan["zones"][zn]["omega_rad_s"])
+                z["averaged_over"] = st["window"]
+    if "total_pressure_drop" in stats and "total_pressure_drop" in res:
+        res["total_pressure_drop_last"] = res["total_pressure_drop"]
+        res["total_pressure_drop"] = stats["total_pressure_drop"]["mean"]
+        if "head_loss_m" in res:
+            res["head_loss_m_last"] = res["head_loss_m"]
+            res["head_loss_m"] = _r(stats["total_pressure_drop"]["mean"] / (rho * G0))
+    pump = res.get("pump")
+    if pump:
+        for k in ("head_m", "power_W", "efficiency"):
+            if k in stats and np.isfinite(stats[k]["mean"]):
+                pump[f"{k}_last"] = pump.get(k)
+                pump[k] = stats[k]["mean"]
+                pump[f"{k}_std"] = stats[k]["std"]
+        if "head_m" in stats:
+            pump["averaged_over"] = stats["head_m"]["window"]
+            # efficiency of the means (rho g Q mean(H) / mean(P)) is steadier than the mean of the ratio
+            if "power_W" in stats and stats["power_W"]["mean"] > 0:
+                Q = float(pump["flow_m3h"]) / 3600.0
+                pump["efficiency"] = _r(rho * G0 * Q * stats["head_m"]["mean"] / stats["power_W"]["mean"])
+        pump["note"] = (pump.get("note", "") + "; window means over iterations "
+                        f"{pump.get('averaged_over', '')} (see averaged)").lstrip("; ")

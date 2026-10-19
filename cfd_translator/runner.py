@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.11
+Version: 2026.10.18.15
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -110,6 +110,21 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         from .post import check_expect, results
         res, w = results(study, mesh, plan, fields)
         warns += w
+        if solver != "ref" and plan.get("monitors"):
+            from .average import average_results
+            try:
+                avg, w = average_results(case, plan, res)
+            except Exception as exc:  # noqa: BLE001
+                avg, w = None, [f"averaging failed ({type(exc).__name__}: {exc}); final-iteration values kept"]
+            warns += w
+            if avg:
+                res["averaged"] = avg
+                out["solve"]["settled"] = bool(avg.get("settled"))
+                if avg.get("settled"):
+                    q = avg["quantities"]
+                    out["solve"]["settled_by"] = "; ".join(
+                        f"{k}: drift {q[k]['drift']:.2%}, scatter {q[k]['scatter']:.2%}" for k in avg["judged"]) + \
+                        f" over iterations {q[avg['judged'][0]]['window'][0]}..{q[avg['judged'][0]]['window'][1]}"
         out["results"] = res
         from .render import default_images, render, save_state
         try:
@@ -195,10 +210,17 @@ def zero_fields(fields: dict, plan: dict) -> list[str]:
 
 
 def _verdict(out: dict, res: dict) -> tuple[bool, list]:
-    """Whether the numbers may be reported as results: converged, mass and momentum balanced."""
+    """Whether the numbers may be reported as results: converged (residuals) or settled (the monitored
+    quantities neither drift nor scatter over the averaging window), mass and momentum balanced."""
     why = []
-    if not out.get("solve", {}).get("converged"):
-        why.append("the solver did not converge (see solve.residuals)")
+    sv = out.get("solve", {})
+    if not sv.get("converged") and not sv.get("settled"):
+        if "settled" in sv:
+            av = res.get("averaged", {})
+            why.append("the solver did not converge (see solve.residuals) and the monitored quantities have not "
+                       f"settled ({'; '.join(av.get('why', [])) or 'see results.averaged'})")
+        else:
+            why.append("the solver did not converge (see solve.residuals)")
     ch = res.get("checks", {})
     if ch.get("mass_balance", {}).get("error", 0) > 1e-3:
         why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
