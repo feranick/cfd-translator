@@ -1,5 +1,5 @@
 """porous.py — porous zones: packed beds, catalyst monoliths, filters and screens (Darcy-Forchheimer).
-Version: 2026.10.19.1
+Version: 2026.10.19.2
 
 A porous zone is the set of cells whose centres lie in a region (box, cylinder, sphere). The fluid there feels
 a resistance per unit volume  -(mu d + 1/2 rho |U| f) U  with d (1/m2) and f (1/m) given along the zone's axes
@@ -261,5 +261,14 @@ def results(study: dict, mesh, plan: dict, fields: dict, out: dict, warns: list)
                 gamma = 1 - float((np.abs(un[m] - ubar) * A[m]).sum()) / (2 * ubar * float(A[m].sum())) if ubar > 0 else None
                 rec.update({"pressure_drop_Pa": _r(p_in - p_out), "flow_in_m3s": _r(qin.sum()),
                             "uniformity_index_out": _r(gamma)})
+        # cells on the zone's faces: OpenFOAM's collocated grid makes their velocity dip, so the resistance and the
+        # pressure drop come out low (porous_channel_1d on mochi: -2.6 % with 2 of every 20 cells along the flow)
+        if edge.any():
+            n_edge = len(np.unique(np.concatenate([own[edge], nei[edge]])[inz[np.concatenate([own[edge], nei[edge]])]]))
+            frac = n_edge / max(len(cells), 1)
+            rec["face_cell_fraction"] = _r(frac)
+            if frac > 0.05:
+                warns.append(f"porous zone {name!r}: {frac:.0%} of its cells lie on its faces, where the cell velocity "
+                             f"dips; its pressure drop may be low by about {0.25 * frac:.1%}: refine the mesh across the zone")
         res[name] = rec
     out["porous"] = res

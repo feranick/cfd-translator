@@ -47,7 +47,7 @@ def test_case_files_and_zone(tmp_path):
                                                   "axes": [[s2, s2, 0], [-s2, s2, 0]]}), tmp_path)
     c = tmp_path / "case"
     zp = plan["porous"]["bed"]
-    assert zp["cells"] == 20 * 4 and zp["volume_mm3"] == pytest.approx(50 * 10 * 1)        # x in [-25, 25]
+    assert zp["cells"] == 100 * 4 and zp["volume_mm3"] == pytest.approx(50 * 10 * 1)        # x in [-25, 25]
     zones = (c / "constant" / "polyMesh" / "cellZones").read_text()
     assert "bed" in zones
     fm = foamio.read_foam((c / "constant" / "fvModels").read_text())["porous_bed"]
