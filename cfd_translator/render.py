@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.18.1
+Version: 2026.10.19.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
     default_images(study, mesh) -> specs (for "images": true)
@@ -36,6 +36,10 @@ def default_images(study: dict, mesh) -> list[dict]:
     the middle (external: mid-height of the part, and a side view), and the pressure on the walls. Energy
     studies add the temperature on the first slice (and the Mach number for gases)."""
     out = _default_images(study, mesh)
+    sl0 = next((s for s in out if "slice" in s), None)
+    if sl0:                                          # tracers and the age on the first slice
+        from .format import _scalar_names
+        out += [{"name": n, "slice": dict(sl0["slice"]), "field": n} for n in _scalar_names(study)]
     if study.get("energy"):
         sl = next(s for s in out if "slice" in s)
         out.append({"name": "temperature", "slice": dict(sl["slice"]), "field": "T"})
@@ -102,6 +106,9 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     H = [h[sel]]
     has_T = fields.get("T") is not None
     T = [np.asarray(fields["T"], float)[sel] if has_T else np.zeros(int(sel.sum()))]
+    field = spec.get("field", "u")
+    scal = (fields.get("scalars") or {}).get(field)          # a tracer or the age (scalars.py)
+    S = [np.asarray(scal["internal"], float)[sel]] if scal else [np.zeros(int(sel.sum()))]
     for patch in mesh.patches:
         pf = fields["patches"].get(patch["name"])
         if patch["type"] == "empty" or pf is None or pf.get("U") is None:
@@ -116,15 +123,23 @@ def _slice(study, mesh, plan, fields, spec, title, path):
             H.append(hf[m])
             T.append(np.asarray(pf["T"], float)[m] if has_T and pf.get("T") is not None
                      else (np.asarray(fields["T"], float)[mesh.owner[f[m]]] if has_T else np.zeros(int(m.sum()))))
-    X, U, P, H, T = (np.concatenate(v) for v in (X, U, P, H, T))
+            if scal:
+                sb = scal["patches"].get(patch["name"])
+                S.append(np.asarray(sb, float)[m] if sb is not None else np.asarray(scal["internal"], float)[mesh.owner[f[m]]])
+            else:
+                S.append(np.zeros(int(m.sum())))
+    X, U, P, H, T, S = (np.concatenate(v) for v in (X, U, P, H, T, S))
     X, idx = np.unique(np.round(X, 9), axis=0, return_index=True)
-    U, P, H, T = U[idx], P[idx], H[idx], T[idx]
+    U, P, H, T, S = U[idx], P[idx], H[idx], T[idx], S[idx]
     tri = mtri.Triangulation(X[:, 0], X[:, 1])
     e = X[tri.triangles]
     L = np.max(np.linalg.norm(e - np.roll(e, 1, axis=1), axis=2), axis=1)
     tri.set_mask(L > 2.0 * H[tri.triangles].max(axis=1))
-    field = spec.get("field", "u")
     vals = {"u": np.linalg.norm(U, axis=1), "ux": U[:, 0], "uy": U[:, 1], "uz": U[:, 2], "p": P}
+    if scal:
+        vals[field] = S
+    elif field not in FIELDS:
+        raise ValueError(f"field {field!r}: one of {sorted(FIELDS)} or a scalar of the study ({sorted(fields.get('scalars') or {})})")
     en = plan.get("energy")
     if field in ("T", "mach"):
         if not has_T:
@@ -137,9 +152,9 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     val = vals[field]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=130)
     win = spec.get("window")
-    cmap = {"p": "coolwarm", "T": "inferno", "mach": "magma"}.get(field, "viridis")
+    cmap = {"p": "coolwarm", "T": "inferno", "mach": "magma", "age": "cividis"}.get(field, "plasma" if scal else "viridis")
     tp = ax.tripcolor(tri, val, shading="gouraud", cmap=cmap)
-    fig.colorbar(tp, ax=ax, label=FIELDS[field], shrink=0.85)
+    fig.colorbar(tp, ax=ax, label=FIELDS.get(field, "mean age of fluid (s)" if field == "age" else f"{field} (tracer)"), shrink=0.85)
     if spec.get("streamlines"):
         x0, x1 = (win[0], win[1]) if win else (X[:, 0].min(), X[:, 0].max())
         y0, y1 = (win[2], win[3]) if win else (X[:, 1].min(), X[:, 1].max())
@@ -256,7 +271,7 @@ def render(study, mesh, plan, fields, folder, specs, name="study") -> tuple[dict
         sp = dict(sp, field=field)
         try:
             if "slice" in sp:
-                what = f"{name}: {FIELDS[field]}" + (" with streamlines" if sp.get("streamlines") else "")
+                what = f"{name}: {FIELDS.get(field, field)}" + (" with streamlines" if sp.get("streamlines") else "")
                 info = _slice(study, mesh, plan, fields, sp, what, path)
             else:
                 what = f"{name}: {FIELDS[field]} on {sp.get('surface', 'walls')}"
@@ -281,6 +296,10 @@ def save_state(folder: Path, mesh, plan: dict, fields: dict, study: dict | None 
             arr[k] = np.asarray(fields[k], float)
     for nm, cells in (mesh.zones or {}).items():
         arr[f"zone/{nm}"] = np.asarray(cells)
+    for nm, sf in (fields.get("scalars") or {}).items():
+        arr[f"scalar/{nm}"] = np.asarray(sf["internal"], float)
+        for pn, v in sf["patches"].items():
+            arr[f"scalarpatch/{nm}/{pn}"] = np.asarray(v, float)
     np.savez_compressed(folder / "state.npz", **arr)
     meta = {"ncells": int(mesh.ncells), "patches": mesh.patches, "tag_info": {str(k): v for k, v in mesh.tag_info.items()},
             "info": {k: v for k, v in mesh.info.items() if isinstance(v, (int, float, str, list, bool))}, "plan": plan,
@@ -302,4 +321,9 @@ def load_state(folder: Path):
         patches[p["name"]] = rec
     fields = {"U": z["U"], "p": z["p"], "patches": patches,
               "T": z["T"] if "T" in z.files else None, "rho": z["rho"] if "rho" in z.files else None}
+    sn = [k[7:] for k in z.files if k.startswith("scalar/")]
+    if sn:
+        fields["scalars"] = {n: {"internal": z[f"scalar/{n}"],
+                                 "patches": {k.split("/", 2)[2]: z[k] for k in z.files if k.startswith(f"scalarpatch/{n}/")}}
+                             for n in sn}
     return mesh, meta["plan"], fields, meta.get("study", {})

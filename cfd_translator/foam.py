@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.18.15
+Version: 2026.10.19.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -215,6 +215,11 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
     Tc = internal(T, 1) if T else None
     rc = internal(rho, 1) if rho else None
     g = mesh.geometry()
+    scal, scal_b = {}, {}
+    for sn in (plan.get("scalars") or {}):
+        sf = load(sn)
+        if sf is not None:
+            scal[sn] = (sf, internal(sf, 1))
     patches = {}
     notes = []
     for P in mesh.patches:
@@ -259,7 +264,11 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
             rec["whf"] = bval(whf, 1, None) if (whf and P["type"] == "wall" and nm in whf["boundaryField"]) else None
             rec["alphat"] = bval(alphat, 1, None) if alphat and nm in alphat["boundaryField"] else None
         patches[nm] = rec
+        for sn, (sf, scc) in scal.items():          # tracers and age (scalars.py)
+            scal_b.setdefault(sn, {})[nm] = bval(sf, 1, scc)
     out = {"U": Uc, "p": pc, "patches": patches, "time": t.name, "notes": notes, "source": "openfoam"}
+    if scal:
+        out["scalars"] = {sn: {"internal": scc, "patches": scal_b.get(sn, {})} for sn, (sf, scc) in scal.items()}
     if T:
         out["T"], out["rho"] = Tc, rc
     return out

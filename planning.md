@@ -92,7 +92,83 @@ Works **together** with b3dt and feat:
 3. Keep README (versions table, checker results) and State up to date; give carbonio commands ready to paste.
 4. End with an end-to-end test prompt using cfdt with b3dt and feat.
 
+## Plan: tracers (mixing, residence time) and porous zones
+
+For gas and liquid reactors: what mixes, how long the fluid stays, and how packed beds, catalyst monoliths and filters
+resist and distribute the flow. Steady, single-phase, no reactions. Tracers first (low risk), then porous zones.
+Before writing case files, check every OpenFOAM 14 keyword against its source (as for the .16 monitors): a bad key
+in a function object or fvModel is fatal at startup.
+
+### 1. Tracers (passive scalars) and mean age — 2026.10.x.a
+
+- **Format.** `"scalars": [{"name": "tracer", "Sc": 1.0 | "diffusivity": m2/s, "inlets": {"<inlet bc>": value, ...}}]`.
+  Inlets not listed take 0; walls zero flux; outlets/openings inletOutlet (0 on backflow).
+  `"age": true` adds the mean age of fluid (time since entering): source 1 per unit volume (rho for gas), 0 at
+  every inlet. Turbulent runs add nut/Sct (Sct 0.7, settable) to the diffusivity.
+- **Case.** OpenFOAM's `scalarTransport` function object (libsolverFunctionObjects), one per scalar, solved every
+  iteration with the flow; `0/<name>` with the bcs above; `div(phi,<name>)` bounded limitedLinear; a solver entry
+  in fvSolution. Age: the same object with a unit source (fvModel `semiImplicitSource` on the field, or the
+  object's own source if v14 has one). To verify in the v14 source: keywords (`field`, `diffusivity`, `D`,
+  `alphal`/`alphat`, `schemesField`, `nCorr`), how the source is attached, and that it runs in steady
+  (SIMPLE) mode. Energy runs: phi is a mass flux; check how scalarTransport takes rho.
+- **Results.** Per outlet: flow-weighted mean, min, max and the mixing index (1 − CoV of the scalar over the
+  outlet, flow-weighted); volume mean; at probes. Age: per outlet flow-weighted mean age (the mean residence
+  time), volume-mean age, max age and where (dead zones), the fraction of volume older than 2 V/Q.
+  Images: `field: "<scalar name>"` and `"age"` in slices and surfaces.
+- **Checks on every run.**
+  - Scalar conservation: sum over open boundaries of phi*s = 0 (no source), so the outlet mean is
+    sum(Q_i s_i)/Q exactly; error reported and judged like the mass balance.
+  - Age: with one inlet and no diffusion through inlets/outlets, the outlet flow-weighted mean age is V/Q exactly
+    (any geometry, any flow): judged within 1 %.
+  - Bounds: 0 <= s <= max inlet value (no overshoot), reported.
+- **Benchmarks.**
+  - `mixing_layer_2d`: uniform flow (slip walls), tracer 1 on half the inlet, 0 on the other half:
+    c = ½ erfc(y / (2 sqrt(D x / U))) at two stations (exact for constant D and U).
+  - `tee_mixing`: two inlets 1 and 0 with flows Q1, Q2: outlet mean = Q1/(Q1+Q2) (exact, conservation).
+  - `age_pipe`: laminar pipe, outlet mean age = V/Q (exact); the volume-mean age differs (laminar profile), so
+    both numbers are checked.
+  - `age_cavity_tank`: a tank with an inlet and outlet: mean age = V/Q exactly, and the dead zone shows.
+- **Limits stated in study_format.** Mean age gives the mean residence time and where fluid stagnates, not the
+  full residence-time distribution (that needs a transient tracer pulse: later, with transient).
+
+### 2. Porous zones (packed beds, monoliths, filters, screens) — 2026.10.x.b
+
+- **Format.** `"porous": [{"name": "bed", "region": {"box": [x0,y0,z0,x1,y1,z1]} | {"cylinder": {...}} |
+  {"sphere": {...}}, "darcy": [dx, dy, dz] (1/m2), "forchheimer": [fx, fy, fz] (1/m), "axes": [[e1], [e2]]}]`, or
+  `"ergun": {"particle_diameter": mm, "porosity": eps}` (d = 150 (1-eps)^2 / (eps^3 dp^2), f = 3.5 (1-eps) /
+  (eps^3 dp), OpenFOAM's convention: dp/L = mu d U + ½ rho |U| f U), or `"monolith": {"channel": mm,
+  "open_fraction": eps, "shape": "round" | "square"}` (laminar channels along e1: d1 = 32 / (eps dh^2) round, 28.4 / (eps dh^2) square; d2 = d3 = 1000 d1).
+  Velocities are superficial (OpenFOAM's convention), said in study_format.
+- **Case.** A cellZone from the region (cell centres, as for rotating zones; zones may not overlap).
+  `constant/fvModels`: `explicitPorositySource` with `DarcyForchheimer` (d, f, coordinateSystem from `axes`).
+  To verify in the v14 source: the fvModel keywords (cellZone selection key, `d`, `f`, the coordinate system
+  layout). Works with energy runs for the flow; the solid heat capacity/conduction is not modelled (said so).
+- **Results.** Per zone: superficial velocity mean and range, pressure drop across the zone (flow-weighted
+  means on the zone's inflow and outflow faces), the uniformity index of the flow leaving the zone
+  (1 − ½ mean|u − ū|/ū, the catalyst/filter maldistribution number), and the zone's force on the fluid.
+- **Checks on every run.**
+  - Momentum balance with the porous force: sum over zone cells of −(mu d + ½ rho |U| f)·U V added to the
+    balance (as the MRF Coriolis term is now); without it the balance would flag every porous run.
+  - The zone's force equals the pressure drop × area for a 1D zone (reported).
+- **Benchmarks.**
+  - `porous_channel_1d`: slip walls, uniform flow through a block: dp = L (mu d U + ½ rho f U²) exact.
+  - `ergun_bed`: the same with `ergun` input against the Ergun equation (exact by construction, checks the
+    conversion and units).
+  - `porous_bypass`: a porous plug in half of a channel (slip walls, inviscid split): the flow divides so the
+    pressure drops match (loose, 5 %).
+  - `monolith_straightening`: angled inflow into an anisotropic block: the outflow leaves along e1 (angle < 1°).
+- **Limits.** No solid-phase energy, no reactions on the surface, no particle-resolved beds.
+
+### Order and size
+
+Tracers (format, case, results, checks, 4 benchmarks, tests with synthetic fields): about one session; porous
+zones about one more. Each: keywords checked in the v14 source first, sandbox tests, then the benchmarks on mochi
+with local runs (as for the venturi). README: format, results, the new checks, versions.
+
 ## State
+
+**2026.10.19.1**: tracers, mean age (scalars.py) and porous zones (porous.py), per the plan above. OpenFOAM 14 sources read: scalarTransport (keys field, diffusivity none|constant|viscosity, D, alphal, alphat; sources via fvModels; it writes every iteration unless writeControl writeTime); semiImplicitSource (volumeMode, sources {f {explicit; implicit}}, cellZone); porosityForce (tutorial fluid/angledDuct: type porosityForce; porosityForce {cellZone; type DarcyForchheimer|fixedCoeff; ...; coordinateSystem}). fixedCoeff chosen: DarcyForchheimer looks up nu/mu fields, which incompressibleFluid may not register; fixedCoeff's rhoRef must be 1 for the kinematic equation. Unverified on OpenFOAM: `cellZone all` for the age source, scalarTransport inside the fluid solver (rho lookup), fixedCoeff's rotation (e1/e3). Benchmarks to run on mochi (all small, < 1 min): mixing_layer_2d, tracer_two_streams, age_cavity_2d, porous_channel_1d, ergun_bed, porous_anisotropic.
+- Scaling test on mochi (pump_v5 Q115, 899k tets, kOmegaSST + MRF, 200 iterations, idle machine): solve 178 s on 19 ranks, 210 s on 10, 283 on 6 (19 ranks only 1.18x faster than 10): memory-bandwidth bound. Two 10-rank jobs at once: 316 s each, so a pair takes 316 s of solve against 2 x 178 = 356 s one after the other on 19 (11 % more throughput; 24 % on wall time, 413 s vs 540 s, because meshing (40 s) and results (52 s) are serial and overlap). For flow-point sweeps: pairs on 10 ranks; single studies: 19.
 
 **2026.10.18.15/.16**: iteration averaging (average.py, monitors in controlDict). On mochi with .15: the torque monitor works (Taylor-Couette MRF, local run: torque -6.706e-7 vs 6.702e-7 analytic, settled, drift 0.14 %, scatter 0.10 %); the inlet/outlet surfaceFieldValue stopped OpenFOAM 14 at startup (weightedAverage not an operation). .16: operation average + weightField phi, patch only, no mode in the pressure FO. To check on mochi: swirl_pipe with solve.average true (cfdtP_inlet/outlet written, no dropped series, total_pressure_drop = its _last). Caveat: phi-weighted average with backflow faces on an outlet; the 5 % agreement check drops it if it goes wrong.
 
@@ -189,5 +265,5 @@ Next: on carbonio run the new benchmarks (`cfdt bench taylor_couette_2d taylor_c
 Open ideas:
 - pipe_turbulent residual stall; cylinder cL (refine);
 - `converge: true`; 3D prism layers; cyclic patches;
-- heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones;
+- heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones and tracers (plan above);
 - a pump example (volute + impeller goal) once MRF is confirmed.

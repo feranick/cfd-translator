@@ -150,19 +150,28 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
   - Those walls get OpenFOAM 14's `MRFnoSlip`, with the rigid velocity ω × r. Other walls stay at rest.
   - The zone's cylinder should contain only fluid and the rotating walls.
 
+- **scalars** (mixing): `[{name, inlets: {<inlet bc>: value}, Sc (1) | diffusivity (m²/s), Sct (0.7)}]`. Passive tracers carried by the converged flow; inlets not listed get 0, walls have zero flux. Laminar runs with a `diffusivity` use it as given; otherwise D = ν/Sc (+ ν_t/Sct for kOmegaSST).
+- **age** (residence time): `true` or `{Sc, Sct}`. The mean age of fluid a (s): div(φ a) − div(D ∇a) = 1, a = 0 at every inlet. Its flow-weighted outlet mean is the mean residence time; it equals V/Q when nothing diffuses back through the inlets, whatever the flow. Old fluid marks dead zones. (The full residence-time distribution needs a transient tracer pulse: not available.)
+- **porous** (packed beds, catalyst monoliths, filters): `[{name, region, darcy, forchheimer, axes} | ergun | monolith]`.
+  - `region`: `{box: [x0, y0, z0, x1, y1, z1]}`, `{cylinder: {center, axis, radius, span}}` or `{sphere: {center, radius}}` (mm). The cells whose centres lie inside form the zone (zones may not overlap).
+  - Resistance per unit volume −(μ d + ½ ρ |U| f) U, with U the superficial velocity. `darcy` d (1/m²) and `forchheimer` f (1/m) are numbers or `[along e1, e2, e3]` with `axes: [[e1], [e2]]`.
+  - `ergun: {particle_diameter (mm), porosity}`: d = 150 (1−ε)²/(ε³ d_p²), f = 3.5 (1−ε)/(ε³ d_p).
+  - `monolith: {channel (mm), open_fraction, shape: round | square}` with `axes` (e1 = channel direction): laminar channels, d₁ = 32 (round) or 28.4 (square) /(ε d_h²); across, 1000 d₁.
+  - Not modelled: heat in the solid, reactions on its surface.
+
 - **mesh**:
   - A box geometry with `cells [nx, ny, nz]` (+ `grading`) gets a structured hex mesh, as blockMesh would make.
   - Otherwise Gmsh meshes the domain. `size` is in mm. `refine` takes `[{at, r, size}]`.
   - For prisms along Z, `extrude: n` sweeps a 2D mesh of the bottom face (quads by default) into n layers.
   - `layers: {n, first, growth}` adds boundary layers on the walls, in 2D or swept meshes only.
   - Plain 3D meshes are tetrahedra.
-- **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other}`, `procs` (MPI ranks; default `CFDT_PROCS` or 1).
+- **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other, p}`, `procs` (MPI ranks; default `CFDT_PROCS` or 1), `average`; energy runs also `transonic`, `consistent`, `start`, `ramp`.
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
 - **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
 - **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
 - **images**: `true` for the default views, or a list of views. The PNGs are written after the solve.
   - Defaults: 2D studies get |U| with streamlines and the pressure on the plane. External 3D studies get top and side slices through the part with streamlines, plus the pressure on the part. Internal 3D studies get a mid slice and the wall pressure.
-  - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p, streamlines, window: [a0, a1, b0, b1]}`.
+  - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p (| T | mach | a tracer | age), streamlines, window: [a0, a1, b0, b1]}`. Tracers and the age are added to the default views.
   - Surface: `{name, surface: part | walls | <wall bc>, field: p | wall_shear, view: [elev, azim]}`.
   - Every run also saves its mesh and final fields (`state.npz`), so `render_images` / `cfdt images` can make other views later without solving again.
 
@@ -187,9 +196,12 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 | `heat.<wall bc>.Q_W`, `q_mean`, `T_mean_C` (+ `h`, `Nu` with `reference.T` and `length`) | energy: heat into the fluid through each wall (OpenFOAM's `wallHeatFlux`), wall temperatures |
 | `flow.<bc>.mdot`, `T_mean_C`, `mach`; `max_mach`, `T_min_C`, `T_max_C`; `probes.<name>.T`, `mach` | energy: mass flow, flow-weighted temperature, Mach number |
 | `feat_thermal` | energy, external flow: fea-translator thermal bcs per part face. `convection` gives h from the CFD heat and wall temperature, with `T_inf`; `heat_flux` is the heat into the part; plus the total |
-| `checks` | `mass_balance`, `momentum_balance`, `angular_momentum_balance`, `energy_balance` (energy), `inlet_flow_error`, `wall_shear_vs_ours` |
+| `scalars.<name>.outlets.<bc>.mean`, `min`, `max`, `mixing_index`; `volume_mean`; `probes.<name>.<scalar>` | tracers: flow-weighted outlet values; mixing index = 1 − CoV over the outlet |
+| `age.mean_residence_time_s`, `V_over_Q_s`, `volume_mean`, `max_s`, `max_at`, `volume_fraction_older_than_2tau` | mean age: outlet mean (residence time), V/Q, dead zones |
+| `porous.<zone>.pressure_drop_Pa`, `superficial_velocity`, `uniformity_index_out`, `force_on_fluid_N`, `darcy_1_m2`, `forchheimer_1_m` | porous zones: flow-weighted pressure upstream minus downstream of the zone, flow uniformity leaving it (1 − ½ mean\|u − ū\|/ū) |
+| `checks` | `mass_balance`, `momentum_balance` (with MRF and porous terms), `angular_momentum_balance`, `energy_balance` (energy), `scalar_balance.<name>`, `age_balance`, `inlet_flow_error`, `wall_shear_vs_ours` |
 
-Each study's result has **`reliable`**. It is false, with `unreliable_because`, when the solver did not converge, or the mass balance is off by more than 0.1%, or the momentum balance by more than 3%. Those numbers must not be reported as results.
+Each study's result has **`reliable`**. It is false, with `unreliable_because`, when the solver did not converge, or the mass balance is off by more than 0.1%, the momentum balance by more than 3%, or a tracer's or the age's balance by more than 1%. Those numbers must not be reported as results.
 
 It also has `selection` (what every bc took: face kind, area, normal, radius, side), `mesh` (cells, volume, non-orthogonality, closedness), `solve` (converged, iterations, last residuals, checkMesh), `warnings` and `files`.
 
@@ -236,6 +248,12 @@ It also has `selection` (what every bc took: face kind, area, normal, radius, si
 | pipe_air_low_mach | air with energy at Mach 0.0015: Hagen–Poiseuille | 2 % | — | to run |
 | chain_thermal | b3dt block at 60 °C in 20 °C air → `feat_thermal` convection + heater with the CFD heat → copper block at 60 °C | 1 K | — | to run |
 | chain_plate | b3dt plate → cfdt → feat: support reaction = −CFD force | 1 % | — | pass (reaction = −CFD force to 2e-5; feat 2026.10.16.8; 58 s) |
+| mixing_layer_2d | two streams after a splitter plate, slip walls: c = ½ erfc(−y / (2√(Dx/U))); outlet mean ½ | 0.02 / 1e-3 | — | to run |
+| tracer_two_streams | unequal streams: outlet mean = Q₁/(Q₁+Q₂) (conservation) | 1e-3 | — | to run |
+| age_cavity_2d | channel with a side cavity, laminar: outlet mean age = V/Q (exact for any flow), age balance, dead zone | 1 % / 1e-3 | — | to run |
+| porous_channel_1d | Darcy–Forchheimer block in a slip channel: Δp = L(μ d U + ½ ρ f U²), force, momentum balance | 0.1 % | — | to run |
+| ergun_bed | the same from particle size and porosity: Ergun's equation | 0.1 % | — | to run |
+| porous_anisotropic | block with axes at 45°: Δp = μ U L (d₁+d₂)/2 and the transverse force (coordinate rotation) | 0.1 % | — | to run |
 
 The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver: MAC grid, central differences, Picard iteration with a sparse direct solve. It reads the written case (polyMesh, `0/U`, `0/p`, `physicalProperties`), not the study, so a mistake in the translation shows up there too. A test changes ν in the case file and checks that the answer follows.
 
@@ -306,13 +324,17 @@ cfd_translator/
   render.py     images (matplotlib), saved state
   bench.py      benchmarks                         api.py, cli.py, mcp_server.py
   executor.py   SLURM jobs: submit, run-study, states, jobs, cancel
-tests/test_cfd.py      examples/studies.json      planning.md (session context)
+  average.py    per-iteration monitors, window averages, 'settled'
+  scalars.py    tracers and the mean age            porous.py     porous zones
+tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py
+examples/studies.json      planning.md (session context)
 ```
 
 ## Versions
 
 | version | changes |
 |---|---|
+| 2026.10.19.1 | Tracers, mean age and porous zones (checked against the OpenFOAM 14 source, not yet run). `scalars` (passive tracers) and `age` (mean age of fluid, residence time): OpenFOAM's `scalarTransport` function object per field, solved every iteration without relaxation; the age's unit source via `semiImplicitSource` in `constant/fvModels` (`cellZone all`, `volumeMode specific`). Results `scalars.<name>` (outlet mean, mixing index), `age` (mean residence time, V/Q, dead zones), `checks.scalar_balance`, `checks.age_balance` (exact conservation, in the verdict), images of the fields. `porous` zones (box, cylinder, sphere; Darcy–Forchheimer, Ergun, monolith; anisotropic with axes): `porosityForce` with `fixedCoeff` (needs no viscosity field), the porous force in the momentum and angular momentum balances, results `porous.<zone>` (Δp, superficial velocity, uniformity index, force). Benchmarks mixing_layer_2d, tracer_two_streams, age_cavity_2d, porous_channel_1d, ergun_bed, porous_anisotropic. New modules scalars.py, porous.py. |
 | 2026.10.18.16 | Monitors for OpenFOAM 14 (2026.10.18.15 stopped every study with an inlet and an outlet at startup: "weightedAverage is not in enumeration"). `cfdtP_<patch>`: `operation average` with `weightField phi` (the flow-weighted mean), `patch <name>` only (no select/regionType/name). `cfdtTotalP`: no `mode` (calcTotal, rho rhoInf, result total(p); in Pa). Checked on mochi with .15: the torque monitor works (Taylor-Couette MRF: averaged torque +0.06 % from analytic, settled). |
 | 2026.10.18.15 | Iteration averaging for runs whose residuals stall (MRF frozen rotor). With a rotating zone (or `solve.average`), controlDict gets function objects that write every iteration: `forces` on each zone's rotating walls (torque about the axis) and flow-weighted `p` and `total(p)` (`pressure` function object) on every inlet and outlet. `average.py` reads postProcessing, checks each series against the final fields (last value within 5 %, units factor 1 or rho; otherwise the series is dropped with a warning; without total(p) it falls back to static p plus the final dynamic-pressure difference), and computes over the window (last 25 %, at least 500 iterations) mean, std, drift (second half vs first half) and scatter. `results.averaged` holds them; the means replace torque_Nm, power_W, pump.head_m/power_W/efficiency and total_pressure_drop (final iteration as *_last). `solve.settled`: head and power (or pressure drop and torque) drift < 1 % and scatter < 2 %; `reliable` now accepts converged or settled. `solve.average`: true/false/{window, min_iterations, drift, scatter}. foam.run clears postProcessing. Tests: tests/test_average.py (synthetic monitor files). Not yet with energy runs. The function-object syntax is untested on OpenFOAM 14: check postProcessing/cfdt* after the first run. |
 | 2026.10.18.14 | The disconnect test of EXECUTION.md passed on mochi: SLURM job 2534 kept running while Claude was closed, and a new server found it with jobs() and collected it. Progress at the last iteration says 'finishing (fields, results, pictures)' and `next` gives an estimate (it said 'no estimate yet' when the ETA was 0). |

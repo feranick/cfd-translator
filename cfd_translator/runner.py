@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.18.15
+Version: 2026.10.19.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -206,6 +206,10 @@ def zero_fields(fields: dict, plan: dict) -> list[str]:
     dT = 1e-6 * en["T_op"] + (umax ** 2 / en["cp"] if en and en.get("isothermal") else 0.0) if en else 0.0
     if en and T is not None and float(np.ptp(np.asarray(T, float))) <= dT:
         out.append("h")
+    for n, sf in (fields.get("scalars") or {}).items():    # a tracer that is uniform (one value at every inlet)
+        c = np.asarray(sf["internal"], float)
+        if c.size and float(np.ptp(c)) <= 1e-6 * max(float(np.abs(c).max()), 1e-300):
+            out.append(n)
     return out
 
 
@@ -230,6 +234,11 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
     eb = ch.get("energy_balance", {})
     if "note" not in eb and eb.get("error", 0) > 0.02:
         why.append(f"energy balance off by {ch['energy_balance']['error']:.2%}")
+    for n, sb in (ch.get("scalar_balance") or {}).items():
+        if sb.get("error", 0) > 1e-2:
+            why.append(f"tracer {n}: balance off by {sb['error']:.2%}")
+    if ch.get("age_balance", {}).get("error", 0) > 1e-2:
+        why.append(f"age: balance off by {ch['age_balance']['error']:.2%}")
     if why:
         why.append("do not report these numbers as results: rerun with more solve.iterations, lower solve.relax "
                    "(e.g. 0.5) or a better mesh, and check that the quantities of interest stop changing")

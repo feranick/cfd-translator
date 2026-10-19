@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.18.15
+Version: 2026.10.19.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -199,6 +199,8 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         plan["zones"][name] = {"cells": int(len(cells)), "omega_rad_s": omega, "axis": a.tolist(),
                                "center_mm": list(map(float, z.get("center", [0, 0, 0]))),
                                "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls}
+    from .porous import build_zones as _porous_zones
+    _porous_zones(study, mesh, plan)                    # porous cellZones (after the rotating ones)
     # inlets first (they set the turbulence reference)
     U = {}
     kin = {}
@@ -405,6 +407,8 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     mf, mon = monitor_functions(study, plan, float(plan["rho"]))
     funcs += mf
     plan["monitors"] = mon
+    sc = _scalar_parts(study, plan, patches, case, turb, nu, None)
+    funcs += sc["funcs"]
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {iters};\n\ndeltaT          1;\n\nwriteControl    timeStep;\n\n"
           f"writeInterval   {iters};\n\npurgeWrite      0;\n\nwriteFormat     ascii;\n\nwritePrecision  12;\n\n"
@@ -419,7 +423,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     fs = (f"ddtSchemes\n{{\n    default         steadyState;\n}}\n\ngradSchemes\n{{\n    {grad}\n}}\n\n"
           "divSchemes\n{\n    default         Gauss linear;\n    div(phi,U)      bounded Gauss linearUpwind grad(U);\n"
           "    div(phi,k)      bounded Gauss limitedLinear 1;\n    div(phi,omega)  bounded Gauss limitedLinear 1;\n"
-          "    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}\n\n"
+          "    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n" + sc["div"] + "}\n\n"
           f"laplacianSchemes\n{{\n    default         {lap};\n}}\n\ninterpolationSchemes\n{{\n    default         linear;\n}}\n\n"
           f"snGradSchemes\n{{\n    default         {sn};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}")
     (case / "system" / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
@@ -429,16 +433,38 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
           "    pcorr\n    {\n        solver          GAMG;\n"
           f"        tolerance       {tol_p:.3g};\n        relTol          0;\n        smoother        GaussSeidel;\n    }}\n\n"
           "    \"(U|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
-          f"        tolerance       {tol_u:.3g};\n        relTol          0.1;\n    }}\n}}\n\n"
+          f"        tolerance       {tol_u:.3g};\n        relTol          0.1;\n    }}\n" + sc["solvers"] + "}\n\n"
           f"SIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    consistent      yes;\n"
           "    pRefCell        0;\n    pRefValue       0;\n\n    residualControl\n    {\n"
           f"        p               {res:.3g};\n        U               {res:.3g};\n        \"(k|omega)\"       {res:.3g};\n    }}\n}}\n\n"
-          f"relaxationFactors\n{{\n    equations\n    {{\n        U               {rU:g};\n        \".*\"            {rO:g};\n    }}\n}}")
+          f"relaxationFactors\n{{\n    equations\n    {{\n        U               {rU:g};\n" + sc["relax"] +
+          f"        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", fv))
+    from .porous import fv_model_entries
+    _write_fv_models(case, sc["fvModels"] + fv_model_entries(plan, None))
     if (case / "system" / "fvConstraints").exists():      # left by an energy run in the same folder
         (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
     return plan
+
+
+def _scalar_parts(study, plan, patches, case, turb, nu, rho_src) -> dict:
+    """Tracers and the mean age (scalars.py): 0/ files written, the rest returned for the system files."""
+    from .scalars import case_parts
+    for f in (case / "0").glob("*"):                 # fields of scalars from an earlier run in this folder
+        if f.name not in ("U", "p", "p_rgh", "T", "k", "omega", "nut", "alphat") and f.is_file():
+            f.unlink()
+    plan.pop("scalars", None)
+    return case_parts(study, plan, patches, case, turb, nu, rho_src)
+
+
+def _write_fv_models(case, entries: list) -> None:
+    """constant/fvModels from the given entries (scalar sources, porous zones), or none."""
+    f = case / "constant" / "fvModels"
+    if entries:
+        f.write_text(_dict("fvModels", "constant", "\n\n".join(entries)))
+    elif f.exists():
+        f.unlink()
 
 
 # ---- energy (OpenFOAM's fluid solver) -------------------------------------------------------------
@@ -635,7 +661,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                                              f"\ndimensions      [0 1 -2 0 0 0 0];\nvalue           ({gx:.12g} {gy:.12g} {gz:.12g});\n")
         (case / "constant" / "pRef").write_text(header("uniformDimensionedScalarField", "pRef", "constant") +
                                                 f"\ndimensions      {P};\nvalue           {p_op:.12g};\n")
-    mesh.zones = {}
+    mesh.zones = {k: v for k, v in (mesh.zones or {}).items() if k in (plan.get("porous") or {})}   # no MRF here
     mesh.write(case)
     # system
     s = study.get("solve", {})
@@ -684,6 +710,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
             funcs.append("    yPlus\n    {\n        type            yPlus;\n" + lib + "        writeControl    writeTime;\n    }")
     # no MachNo function object: our results compute Mach from U and T, and on the venturi it was MachNo's sqrt
     # that stopped the run (SIGFPE) on the first iterations' transient pressures (mochi, 2026.10.18.11)
+    sc = _scalar_parts(study, plan, patches, case, turb, th["mu"] / th["rho"], th["rho"])
+    funcs += sc["funcs"]
     cd = (f"solver          fluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {iters};\n\ndeltaT          1;\n\nwriteControl    timeStep;\n\n"
           f"writeInterval   {iters};\n\npurgeWrite      0;\n\nwriteFormat     ascii;\n\nwritePrecision  12;\n\n"
@@ -702,7 +730,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
           "    div(phi,h)      bounded Gauss limitedLinear 1;\n    div(phi,K)      bounded Gauss limitedLinear 1;\n"
           "    div(phid,p)     Gauss limitedLinear 1;\n"
           "    div(phi,k)      bounded Gauss limitedLinear 1;\n    div(phi,omega)  bounded Gauss limitedLinear 1;\n"
-          "    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;\n}\n\n"
+          "    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;\n" + sc["div"] + "}\n\n"
           f"laplacianSchemes\n{{\n    default         {lap};\n}}\n\ninterpolationSchemes\n{{\n    default         linear;\n}}\n\n"
           f"snGradSchemes\n{{\n    default         {sn};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}")
     (case / "system" / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
@@ -715,7 +743,8 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                f"        tolerance       {tol:.3g};\n        relTol          0.01;\n        smoother        GaussSeidel;\n"
                "        maxIter         50;\n    }\n\n"
                "    \"(U|h|k|omega)\"\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
-               f"        tolerance       {tol:.3g};\n        relTol          0.1;\n        maxIter         100;\n    }}\n}}\n\n")
+               f"        tolerance       {tol:.3g};\n        relTol          0.1;\n        maxIter         100;\n    }}\n"
+               + sc["solvers"] + "}\n\n")
     rc = (f"    residualControl\n    {{\n        {pname:<15} {res:.3g};\n        U               {res:.3g};\n"
           + ("" if isothermal else f"        h               {res:.3g};\n")
           + f"        \"(k|omega)\"       {res:.3g};\n    }}\n")
@@ -723,7 +752,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
         pim = (f"PIMPLE\n{{\n    momentumPredictor no;\n    nNonOrthogonalCorrectors {nonorth};\n"
                f"    pRefCell        0;\n    pRefValue       0;\n\n{rc}}}\n\n"
                "relaxationFactors\n{\n    fields\n    {\n        rho             1;\n        p_rgh           0.7;\n    }\n"
-               f"    equations\n    {{\n        U               {rU:g};\n        h               {rO:g};\n"
+               f"    equations\n    {{\n        U               {rU:g};\n        h               {rO:g};\n" + sc["relax"] +
                "        \"(k|omega)\"       0.7;\n    }\n}")
     else:
         pim = (f"PIMPLE\n{{\n    nNonOrthogonalCorrectors {nonorth};\n    transonic       {'yes' if transonic else 'no'};\n"
@@ -731,8 +760,10 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
                f"    pRefValue       {p_op:.12g};\n\n{rc}}}\n\n"
                f"relaxationFactors\n{{\n    fields\n    {{\n        p               {rP:g};\n    }}\n"
                f"    equations\n    {{\n        p               1;\n        U               {rU:g};\n"
-               f"        h               {rO:g};\n        \".*\"            {rO:g};\n    }}\n}}")
+               f"        h               {rO:g};\n" + sc["relax"] + f"        \".*\"            {rO:g};\n    }}\n}}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", solvers + pim))
+    from .porous import fv_model_entries
+    _write_fv_models(case, sc["fvModels"] + fv_model_entries(plan, th))
     # pressure limits: OpenFOAM clips p to [0.5, 2] x its boundary range, so a bad start cannot make it negative
     # (OpenFOAM 14 wants them here, not as pMinFactor/pMaxFactor in PIMPLE: 2026.10.18.9 failed on mochi)
     fc = case / "system" / "fvConstraints"

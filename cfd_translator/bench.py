@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.18.13
+Version: 2026.10.19.1
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -18,6 +18,12 @@ Version: 2026.10.18.13
   venturi_subsonic     energy, compressible: 2D venturi vs quasi-1D isentropic mass flow and throat pressure
                        (b3dt outline, Gmsh)
   pipe_air_low_mach    energy, air at Mach 0.0015: Hagen-Poiseuille as in the incompressible pipe (Gmsh)
+  mixing_layer_2d      tracer: two streams after a splitter plate vs 1/2 erfc(-y / (2 sqrt(D x / U))) (b3dt, Gmsh)
+  tracer_two_streams   tracer: unequal streams, outlet mean = Q1 / (Q1 + Q2) (conservation)
+  age_cavity_2d        mean age: channel with a side cavity, outlet mean age = V / Q (exact), dead zone
+  porous_channel_1d    porous block (Darcy-Forchheimer) in a slip channel: dp = L (mu d U + rho f U^2 / 2) (exact)
+  ergun_bed            the same from a packed bed's particle size and porosity: Ergun's equation
+  porous_anisotropic   anisotropic block with axes at 45 degrees: dp and transverse force (coordinate rotation)
   chain_thermal        CFD heat per face -> fea-translator thermal: a copper block comes out at the CFD wall
                        temperature (needs Gmsh, b3dt, feat)
   cavity_re1000    lid-driven cavity, Re 1000 vs Ghia (slow; OpenFOAM)
@@ -278,6 +284,91 @@ def _cases() -> dict:
         "checks": lambda r: [("dp over 0.1 m = 8 mu L U / R^2", 8 * air["mu"] * 0.1 * 0.5 / 0.005 ** 2,
                               r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.02})],
         "ref": False, "needs": ["gmsh"]}
+    # ---- tracers and age (scalars.py) ----
+    # two streams split by a thin plate (x < 0, y = 0), slip walls everywhere: uniform flow, so the tracer layer
+    # downstream of the plate's end is the error function c = 1/2 erfc(-y / (2 sqrt(D x / U)))
+    split = {"features": [{"kind": "profile_base", "params": {"h": 1, "outline": {"start": [-20, -10], "segs": [
+        ["L", 200, -10], ["L", 200, 10], ["L", -20, 10], ["L", -20, 0.25], ["L", 0, 0.25], ["L", 0, -0.25],
+        ["L", -20, -0.25], ["L", -20, -10]]}}}]}
+
+    def two_streams(u_top, u_bot, extra=None):
+        st = {"geometry": {"goal": split}, "2d": True, "fluid": "water", "model": "laminar",
+              "bcs": [{"kind": "inlet", "name": "top", "faces": {"nx": -1, "at": [-20, 5, 0.5]}, "velocity": u_top},
+                      {"kind": "inlet", "name": "bottom", "faces": {"nx": -1, "at": [-20, -5, 0.5]}, "velocity": u_bot},
+                      {"kind": "outlet", "faces": {"nx": 1}},
+                      {"kind": "slip", "name": "walls_slip", "faces": {"all": True}}],
+              "scalars": [{"name": "dye", "inlets": {"top": 1}, "diffusivity": 1e-6}],
+              "mesh": {"size": 0.5}, "solve": {"iterations": 2000, "residual": 1e-7}}
+        st.update(extra or {})
+        return st
+    Dm, Um, xm = 1e-6, 0.01, 0.1
+    ys = [-4, -2, 0, 2, 4]
+    erf_c = {y: 0.5 * math.erfc(-y * 1e-3 / (2 * math.sqrt(Dm * xm / Um))) for y in ys}
+    C["mixing_layer_2d"] = {
+        "study": two_streams(Um, Um, {"probes": [{"name": f"y{y}".replace("-", "m"), "at": [100, y, 0.5]} for y in ys]}),
+        "checks": lambda r: [(f"c at x = 100 mm, y = {y} mm (erfc)", erf_c[y], r["probes"][f"y{y}".replace("-", "m")]["dye"],
+                              {"abs": 0.02}) for y in ys]
+        + [("outlet mean = 1/2 (equal flows; conservation)", 0.5, r["scalars"]["dye"]["outlets"]["outlet"]["mean"], {"abs": 1e-3}),
+           ("tracer balance", 0.0, r["checks"]["scalar_balance"]["dye"]["error"], {"abs": 1e-3})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    C["tracer_two_streams"] = {
+        "study": two_streams(0.02, 0.01),
+        "checks": lambda r: [("outlet mean = Q_top / (Q_top + Q_bottom) = 2/3", 2 / 3,
+                              r["scalars"]["dye"]["outlets"]["outlet"]["mean"], {"abs": 1e-3}),
+                             ("tracer balance", 0.0, r["checks"]["scalar_balance"]["dye"]["error"], {"abs": 1e-3})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    # mean age in a channel with a side cavity (laminar, Re 100): outlet mean age = V / Q exactly (any flow);
+    # the cavity holds old fluid
+    cav = {"features": [{"kind": "profile_base", "params": {"h": 1, "outline": {"start": [0, 0], "segs": [
+        ["L", 40, 0], ["L", 40, -20], ["L", 60, -20], ["L", 60, 0], ["L", 100, 0], ["L", 100, 10], ["L", 0, 10],
+        ["L", 0, 0]]}}}]}
+    tau = (100 * 10 + 20 * 20) * 1e-9 / (0.01 * 10e-6)
+    C["age_cavity_2d"] = {
+        "study": {"geometry": {"goal": cav}, "2d": True, "fluid": "water", "model": "laminar",
+                  "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.01, "profile": "parabolic"},
+                          {"kind": "outlet", "faces": {"nx": 1}}],
+                  "age": True, "mesh": {"size": 0.5}, "solve": {"iterations": 3000, "residual": 1e-7}},
+        "checks": lambda r: [("outlet mean age = V / Q = %.2f s" % tau, tau, r["age"]["mean_residence_time_s"], {"tol": 0.01}),
+                             ("age balance (outflow + back-diffusion = V)", 0.0, r["checks"]["age_balance"]["error"], {"abs": 1e-3}),
+                             ("the cavity holds fluid older than 2 V/Q", 1.0,
+                              1.0 if r["age"]["volume_fraction_older_than_2tau"] > 0.05 else 0.0, {"abs": 0.5})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    # ---- porous zones (porous.py): a block in a slip channel, uniform flow, so dp = L (mu d U + rho f U^2 / 2) ----
+    mu_w, rho_w, Up, Lp = 1e-3, 1000.0, 0.01, 0.05
+
+    def porous_channel(zone, extra=None):
+        st = {"geometry": {"box": [200, 10, 1]}, "2d": True, "fluid": {"rho": rho_w, "mu": mu_w}, "model": "laminar",
+              "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": Up}, {"kind": "outlet", "faces": {"nx": 1}},
+                      {"kind": "slip", "faces": [{"ny": 1}, {"ny": -1}]}],
+              "porous": [dict({"name": "bed", "region": {"box": [-25, -10, -1, 25, 10, 2]}}, **zone)],
+              "mesh": {"cells": [80, 4, 1]}, "solve": {"iterations": 2000, "residual": 1e-8}}
+        st.update(extra or {})
+        return st
+    d0, f0 = 1e8, 1e3
+    dp0 = Lp * (mu_w * d0 * Up + 0.5 * rho_w * f0 * Up ** 2)
+    C["porous_channel_1d"] = {
+        "study": porous_channel({"darcy": d0, "forchheimer": f0}),
+        "checks": lambda r: [("dp across the block = L (mu d U + rho f U^2 / 2)", dp0, r["porous"]["bed"]["pressure_drop_Pa"], {"tol": 1e-3}),
+                             ("inlet to outlet dp (no other loss)", dp0, r["pressure_drop"], {"tol": 1e-3}),
+                             ("block force on the fluid = -dp A", -dp0 * 1e-5, r["porous"]["bed"]["force_on_fluid_N"][0], {"tol": 1e-3}),
+                             ("momentum balance with the porous force", 0.0, r["checks"]["momentum_balance"]["error"], {"abs": 1e-3})],
+        "ref": False, "needs": []}
+    dpe, eps = 1e-3, 0.4
+    ergun = Lp * (150 * mu_w * (1 - eps) ** 2 * Up / (eps ** 3 * dpe ** 2) + 1.75 * rho_w * (1 - eps) * Up ** 2 / (eps ** 3 * dpe))
+    C["ergun_bed"] = {
+        "study": porous_channel({"ergun": {"particle_diameter": 1.0, "porosity": eps}}),
+        "checks": lambda r: [("dp = Ergun (dp 1 mm, porosity 0.4)", ergun, r["porous"]["bed"]["pressure_drop_Pa"], {"tol": 1e-3})],
+        "ref": False, "needs": []}
+    # anisotropic block with its axes at 45 degrees: along the channel dp/dx = mu U (d1 + d2) / 2 (rotation check)
+    d1, d2 = 1e8, 1e7
+    s2 = math.sqrt(0.5)
+    C["porous_anisotropic"] = {
+        "study": porous_channel({"darcy": [d1, d2, d2], "axes": [[s2, s2, 0], [-s2, s2, 0]]}),
+        "checks": lambda r: [("dp = mu U L (d1 + d2) / 2 (axes at 45 deg)", mu_w * Up * Lp * (d1 + d2) / 2,
+                              r["porous"]["bed"]["pressure_drop_Pa"], {"tol": 1e-3}),
+                             ("transverse force = -mu U V (d1 - d2) / 2", -mu_w * Up * Lp * 1e-5 * (d1 - d2) / 2,
+                              r["porous"]["bed"]["force_on_fluid_N"][1], {"tol": 1e-3})],
+        "ref": False, "needs": []}
     C["chain_thermal"] = {"study": None, "chain": "thermal", "ref": False,
                           "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     C["chain_plate"] = {"study": None, "chain": True, "ref": False, "needs": ["gmsh", "build123d_translator", "fea_translator"]}

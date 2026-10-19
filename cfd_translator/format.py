@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.18.15
+Version: 2026.10.19.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -94,38 +94,36 @@ CONVENTIONS = [
     "velocity as a number is normal into the domain; 'parabolic' gives the fully developed laminar profile "
     "with that mean velocity (or flow rate).",
     "Mesh: box geometry (internal) with cells [nx, ny, nz] (+ grading [gx, gy, gz] = last/first cell) gives a "
-    "structured hex mesh; otherwise Gmsh: size (mm, default 1/30 of the domain diagonal), refine [{at, r, "
+    "structured hex mesh; otherwise Gmsh: size (mm, default diagonal / 30), refine [{at, r, "
     "size}], and for prisms along Z extrude: n layers (2d uses 1) with quads (default true) and boundary "
     "layers {n, first (mm), growth} on the walls. 3D tetrahedral meshes have no boundary layers.",
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
     "Results: flow.<bc>.Q (m3/s, positive into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean (area mean, Pa), "
-    "p_total (flow-weighted total pressure); pressure_drop (mean inlet minus mean outlet static pressure), "
+    "p_total (flow-weighted total pressure); pressure_drop (inlet minus outlet mean static pressure), "
     "total_pressure_drop, head_loss_m (total pressure drop / (rho g): use it for losses); forces.<wall bc>.fx/fy/fz (N, by the fluid on the wall, pressure + viscous) and "
     ".mx/my/mz about reference.cofr; forces.part (external: every part face); coefficients.cd/cl (with "
     "reference.velocity and area); probes.<name>.ux/uy/uz/p/u; max_velocity; wall_shear; y_plus; "
-    "feat_loads (external: per part face, as fea-translator force bcs); checks (mass and momentum balance, "
-    "convergence, mesh).",
-    "energy: true solves temperature with OpenFOAM's fluid solver (steady, subsonic to transonic): air is a perfect "
-    "gas (density from p and T), water has constant density. Temperatures in degrees C; pressures stay gauge "
-    "(relative to conditions.p, default 101325 Pa). Walls are adiabatic unless given T, q (W/m2 into the fluid), "
+    "feat_loads (external: fea-translator force bcs per part face); checks (balances, convergence, mesh).",
+    "energy: true solves temperature (OpenFOAM fluid, steady, subsonic to transonic): air is a perfect "
+    "gas, water has constant density. Temperatures in degrees C; pressures gauge "
+    "(relative to conditions.p, 101325 Pa). Walls are adiabatic unless given T, q (W/m2 into the fluid), "
     "power (W) or h with T_inf. gravity [gx, gy, gz] adds buoyancy (natural convection). Results add "
     "heat.<wall bc>.Q_W/q_mean/T_mean_C (and h, Nu with reference.T and length), flow.<bc>.mdot/T_mean_C/mach, "
     "max_mach, T_min_C/T_max_C, checks.energy_balance, and for external flow feat_thermal (convection and "
-    "heat-flux bcs per part face for fea-translator's thermal analysis).",
+    "heat-flux bcs per part face for fea-translator).",
     "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
     "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
     "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
-    "(hydraulic: rho g Q H / power). The zone must contain only fluid and the rotating walls; keep its "
-    "cylinder clear of stationary walls.",
+    "(rho g Q H / power). Keep the zone's cylinder clear of stationary walls.",
     "Averaging (solve.average, on with a rotating zone): torque and inlet/outlet total pressure are recorded "
-    "every iteration; results.averaged has mean, std, drift and scatter over the last 25 % (>= 500 its); the means "
+    "every iteration; results.averaged: mean, std, drift, scatter over the last 25 % (>= 500 its); the means "
     "replace torque, power, head, efficiency, total_pressure_drop (final iteration: *_last). settled (drift < 1 %, "
     "scatter < 2 %) counts as converged for reliable.",
     "reliable: false (with reasons) when the solver neither converged nor settled, or the mass or momentum balance is off: "
     "then do not report the numbers as results; rerun with more solve.iterations, lower solve.relax, or a "
     "better mesh. Long runs: use solve.procs (MPI ranks).",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
-    "(pressure_drop, flow.inlet.Q, forces.part.fx, coefficients.cd, probes.p1.ux, probes.line.ux.4); tol is "
+    "(pressure_drop, flow.inlet.Q, coefficients.cd, probes.line.ux.4); tol is "
     "relative (default 0.02), or give abs (absolute).",
 ]
 
@@ -166,6 +164,12 @@ STUDY_KEYS = {
     "queue": "true: always a SLURM job; false: always in the server's own workers (when CFDT_EXECUTOR=slurm; "
              "default: by the study's time estimate)",
     "analysis": "steady (the only one for now)",
+    "scalars": "[{name, inlets: {<inlet bc>: value} (others 0), Sc (1) | diffusivity m2/s, Sct (0.7)}]: passive "
+               "tracers (mixing); results.scalars.<name>.outlets.<bc>.mean/mixing_index, volume_mean",
+    "age": "true | {Sc, Sct}: mean age of fluid (s); results.age: mean_residence_time_s, V_over_Q_s, dead zones",
+    "porous": "[{name, region: {box: [x0,y0,z0,x1,y1,z1]} | {cylinder: {center, axis, radius, span}} | {sphere: "
+              "{center, radius}} (mm), darcy 1/m2, forchheimer 1/m (number | [e1,e2,e3]) | ergun: {particle_diameter mm, "
+              "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]]}]; results.porous",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average"}
@@ -234,7 +238,12 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
     return errs
 
 
-def image_errors(im, two_d: bool = False) -> list[str]:
+def _scalar_names(st: dict) -> tuple:
+    names = tuple(s.get("name") for s in (st.get("scalars") or []) if isinstance(s, dict) and isinstance(s.get("name"), str))
+    return names + (("age",) if st.get("age") else ())
+
+
+def image_errors(im, two_d: bool = False, scalars: tuple = ()) -> list[str]:
     if im is True or im is False:
         return []
     if not isinstance(im, list):
@@ -258,8 +267,9 @@ def image_errors(im, two_d: bool = False) -> list[str]:
                 errs.append(f"{w}.slice: {{axis: x | y | z, at: coordinate in mm}}")
             elif two_d and sl["axis"] != "z":
                 errs.append(f"{w}.slice: a 2d study has only the z slice")
-            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p", "T", "mach"):
-                errs.append(f"{w}.field: u, ux, uy, uz, p, T or mach (T and mach with energy)")
+            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p", "T", "mach") + tuple(scalars):
+                errs.append(f"{w}.field: u, ux, uy, uz, p, T or mach (T and mach with energy)"
+                            + (f", or a scalar: {', '.join(scalars)}" if scalars else ""))
             if "window" in sp and (not _vec(sp["window"], 4) or sp["window"][0] >= sp["window"][1]
                                    or sp["window"][2] >= sp["window"][3]):
                 errs.append(f"{w}.window: [a0, a1, b0, b1] in mm along the slice's two in-plane axes")
@@ -669,7 +679,7 @@ def validate_study(st: dict) -> dict:
             errs.append(f"bcs[{i}].rotation: {r!r} is not a rotating zone ({znames or 'none defined'})")
     # images
     if "images" in st:
-        errs += image_errors(st["images"], two_d)
+        errs += image_errors(st["images"], two_d, _scalar_names(st))
     # reference, probes, expect
     ref = st.get("reference", {})
     if not isinstance(ref, dict):
@@ -719,6 +729,10 @@ def validate_study(st: dict) -> dict:
         errs.append("2d: an internal cylinder (axis Z) is not a 2D section; use a box, a goal, or external flow")
     if geo_kind != "box" and "cells" not in m and not m.get("size"):
         warns.append("mesh.size not given: the default (1/30 of the domain diagonal) is coarse; give one")
+    from .porous import validate as _porous
+    _porous(st, errs)
+    from .scalars import validate as _scalars
+    _scalars(st, {n: b.get("kind") for n, b in zip(names, bcs) if isinstance(b, dict)}, errs)
     return {"ok": not errs, "errors": errs, "warnings": warns}
 
 

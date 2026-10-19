@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.18.13
+Version: 2026.10.19.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -411,6 +411,16 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                                               "rotating_walls": zp["rotating_walls"]}
         if not zp["rotating_walls"]:
             warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
+    # porous zones: their resistance enters the momentum balance like the MRF source (porous.py)
+    from .porous import momentum_source
+    Fpor = momentum_source(plan, mesh, Uc)
+    if Fpor is not None:
+        src = -Fpor                                   # the momentum equation's term, rho (alpha + beta |U|) U V
+        totals += src.sum(axis=0)
+        scale_m = max(scale_m, float(np.linalg.norm(src.sum(axis=0))), float(np.abs(src).sum(axis=0).max()))
+        msrc = np.cross(g["C"] * SCALE - cofr, src)
+        ang += msrc.sum(axis=0)
+        gross_a += np.abs(msrc).sum(axis=0)
     if out.get("rotating") and "total_pressure_drop" in out:
         P = sum(z["power_W"] for z in out["rotating"].values())
         H = -out["total_pressure_drop"] / (rho * 9.80665)
@@ -457,6 +467,10 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     elif mom_err > 0.03:
         warns.append(f"momentum balance off by {mom_err:.2%} (not converged, or coarse mesh at open boundaries)")
     out["checks"] = checks
+    from .scalars import results as scalar_results
+    scalar_results(study, mesh, plan, fields, out, warns)     # tracers and age: results.scalars, results.age
+    from .porous import results as porous_results
+    porous_results(study, mesh, plan, fields, out, warns)     # porous zones: results.porous
     return out, warns
 
 
