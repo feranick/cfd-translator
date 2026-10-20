@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.19.1
+Version: 2026.10.20.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -145,9 +145,9 @@ STUDY_KEYS = {
     "model": "|".join(MODELS),
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
-    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p (energy)}, procs (MPI ranks; default CFDT_PROCS or 1), "
-             "transonic (energy, gas: true/false; default true above an estimated Mach 0.7 or with a total-pressure inlet), consistent (energy: SIMPLEC, default true), start ('rest' | 'estimate'), ramp (iterations; total-pressure gas inlets, default 400), "
-             "average (true | false | {window, min_iterations, drift, scatter})}",
+    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs (MPI ranks), "
+             "energy: transonic (default: Mach > 0.7 or a total-pressure inlet), consistent (true), start (rest | "
+             "estimate), ramp (400 its, total-pressure gas inlets); average (true | false | {window, min_iterations, drift, scatter})}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -161,8 +161,8 @@ STUDY_KEYS = {
     "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
                   "it) and initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
-    "queue": "true: always a SLURM job; false: always in the server's own workers (when CFDT_EXECUTOR=slurm; "
-             "default: by the study's time estimate)",
+    "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
+    "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
     "analysis": "steady (the only one for now)",
     "scalars": "[{name, inlets: {<inlet bc>: value} (others 0), Sc (1) | diffusivity m2/s, Sct (0.7)}]: passive "
                "tracers (mixing); results.scalars.<name>.outlets.<bc>.mean/mixing_index, volume_mean",
@@ -729,6 +729,8 @@ def validate_study(st: dict) -> dict:
         errs.append("2d: an internal cylinder (axis Z) is not a 2D section; use a box, a goal, or external flow")
     if geo_kind != "box" and "cells" not in m and not m.get("size"):
         warns.append("mesh.size not given: the default (1/30 of the domain diagonal) is coarse; give one")
+    from .executor import run_errors
+    errs += run_errors(st)
     from .porous import validate as _porous
     _porous(st, errs)
     from .scalars import validate as _scalars

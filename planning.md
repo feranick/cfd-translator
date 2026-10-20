@@ -167,6 +167,8 @@ with local runs (as for the venturi). README: format, results, the new checks, v
 
 ## State
 
+**2026.10.20.1**: per-study `run` {timeout_s, mem, procs, queue} over config/env, with CFDT_MAX_* caps (the user cannot ask Claude to edit config/env on mochi); execution.limits in results; EXECUTION.md section 'Per-study run settings' for lmpt and feat; translators.json lists CFDT_MAX_*.
+
 **2026.10.19.3/.4**: run_benchmarks submits and returns, bench_status collects (all six new benchmarks pass on mochi with .3). Jobs ask for ranks from an upper cell estimate before meshing (executor.cell_estimate / procs_for_job).
 
 **2026.10.19.2**: the six tracer/age/porous benchmarks pass on mochi; OpenFOAM 14 took every new keyword (scalarTransport, semiImplicitSource cellZone all, porosityForce fixedCoeff + axesRotation). Fixed: age_cavity selectors; porous Δp −2.6 % from the collocated-grid velocity dip at zone faces (20 cells) → 100 cells: −0.4 %, plus face_cell_fraction warning.

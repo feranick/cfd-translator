@@ -76,8 +76,16 @@ With `CFDT_EXECUTOR=slurm`, each study becomes a SLURM job instead of running in
 | `CFDT_TIMEOUT` | 3600 | seconds per study; the job asks for ceil(timeout/60) + 10 minutes, so the translator stops itself first |
 | `CFDT_MPIRUN` | `mpirun` | the MPI launcher; inside a job, OpenMPI's mpirun uses the allocation |
 | `CFDT_CELLS_PER_RANK` | 5000 | a study runs on at most cells/5000 ranks, so small cases run serially |
+| `CFDT_MAX_TIMEOUT`, `CFDT_MAX_MEM`, `CFDT_MAX_PROCS` | (none) | ceilings for a study's `run` settings |
 
 A study's `"queue": true` or `false` forces SLURM or local; it never overrides `CFDT_EXECUTOR=local`.
+
+**Per-study run settings.** `config/env` holds the machine's defaults, edited by hand. A study can override some of them for itself with `"run": {"timeout_s": 30000, "mem": "12G", "procs": 10, "queue": true}`:
+- `timeout_s` sets the solver's timeout and the job's `--time` (+10 min).
+- `mem` becomes the job's `--mem`, replacing any memory request in `CFDT_SLURM_ARGS`; the other arguments stay.
+- `procs` sets the ranks (still capped by the cell estimate); `queue` is as above.
+- Validation refuses values above the `CFDT_MAX_*` ceilings. `tool_status().executor` shows the defaults and `caps`.
+- Every result records `execution.limits = {timeout_s, mem, from_study}`.
 
 **What a submission writes**, in `<request>/<name>/`:
 - `job.sh`: the job name `cfdt:<request>:<name>`, `--chdir`, `--output=job.log`, `--ntasks`, `--ntasks-per-core=1` (whole cores: OpenMPI 5 refuses more ranks than cores, 'allocation-overload'), `--time`, `--export=ALL`, then `<python> -m cfd_translator.cli run-study <request> <name>`. `sbatch job.sh` reruns it by hand.
@@ -167,6 +175,7 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
   - `layers: {n, first, growth}` adds boundary layers on the walls, in 2D or swept meshes only.
   - Plain 3D meshes are tetrahedra.
 - **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other, p}`, `procs` (MPI ranks; default `CFDT_PROCS` or 1), `average`; energy runs also `transonic`, `consistent`, `start`, `ramp`.
+- **run**: `{timeout_s, mem, procs, queue}`, this study's overrides of the machine's defaults (see Running on SLURM).
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
 - **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
 - **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
@@ -335,6 +344,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.20.1 | Per-study run settings: `"run": {timeout_s, mem, procs, queue}` override `config/env`'s defaults for one study (the job's `--time`, `--mem` replacing the one in `CFDT_SLURM_ARGS`, `--ntasks`, the solver's timeout), within ceilings `CFDT_MAX_TIMEOUT`, `CFDT_MAX_MEM`, `CFDT_MAX_PROCS` (validation names the variable). `tool_status().executor` adds `timeout_s` and `caps`; results add `execution.limits`; `job.json` keeps `run`. Specified for every translator in llm-translators' EXECUTION.md. |
 | 2026.10.19.4 | SLURM jobs ask only for the ranks their mesh can use: an upper estimate of the cell count before meshing (box cells exact; Gmsh sections ~1.3 cells per size² with quads, 2.5 with triangles, times the layers; tetrahedra ~10 per size³; plus each refine sphere; goals built with build123d-translator for their volume), divided by `CFDT_CELLS_PER_RANK`, capped at the study's `procs`. The six small benchmarks held 18 CPUs each on mochi for 1–3 ranks; now 2 (porous: 1 rank) to 10 (mixing layer: 5, an upper estimate for 3). Unknown sizes (STEP, no mesh.size) keep the study's procs. |
 | 2026.10.19.3 | The MCP tool `run_benchmarks` timed out with SLURM (it waited for every job; the jobs still ran). Now it submits the cases as one request and returns after `wait_s` (30 s); the new tool `bench_status(bench)` evaluates the finished cases and lists the pending ones. Chains are left to the CLI (`cfdt bench <name>`). `bench.evaluate` is shared by both paths. |
 | 2026.10.19.2 | The six new benchmarks on mochi (OpenFOAM 14 accepted every new keyword: scalarTransport, semiImplicitSource with `cellZone all`, porosityForce/fixedCoeff with axesRotation): all pass. Fixes from the first run: age_cavity_2d's inlet and outlet now chosen with `at` (`nx: -1` alone took the cavity's side wall); porous blocks need cells across them: the cell velocity dips in the zone's first and last cells (collocated grid), so Δp came out −2.6 % with 20 cells along the block and −0.4 % with 100. `porous.<zone>.face_cell_fraction` and a warning above 5 %. porous_anisotropic checks the momentum balance (which tests the rotation) instead of a 1D formula the flow does not follow. |

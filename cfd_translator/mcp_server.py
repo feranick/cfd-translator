@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.19.3
+Version: 2026.10.20.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -57,7 +57,8 @@ checks.energy_balance and feat_thermal (bcs for fea-translator's thermal analysi
 Long studies run as SLURM jobs on the machine (when CFDT_EXECUTOR=slurm): run_studies returns them
 pending with job ids. They do not depend on this conversation. Report the expected finish time and
 stop; do not poll. Later, study_status(request) collects them; jobs() lists recent and active runs
-(also those started in other conversations); cancel(request) stops them.
+(also those started in other conversations); cancel(request) stops them. A study's "run": {timeout_s, mem,
+procs, queue} overrides the machine's defaults for that study, within the caps in study_format's status.
 Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
 get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""

@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.19.1
+Version: 2026.10.20.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -42,8 +42,17 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out.update(ok=False, why="invalid study", errors=v["errors"])
         return _save(out, folder, name)
     warns = list(v["warnings"])
-    procs_req = int((study.get("solve") or {}).get("procs") or os.environ.get("CFDT_PROCS", "1") or 1)
-    out["execution"] = execution_record(procs_req)
+    from .executor import procs_of
+    procs_req = procs_of(study)
+    # what bounded this run, and which of it the study set (study.run) rather than config/env
+    mem = os.environ.get("SLURM_MEM_PER_NODE")
+    run_over = study.get("run") or {}
+    limits = {"timeout_s": float(timeout), "mem": f"{int(mem)}M" if mem and mem.isdigit() else None,
+              "from_study": sorted(k for k in run_over if k in ("timeout_s", "mem", "procs", "queue"))}
+
+    def record(*a, **k):
+        return {**execution_record(*a, **k), "limits": limits}
+    out["execution"] = record(procs_req)
     if (folder / "cancel").exists():
         out.update(ok=False, state="cancelled", why="cancelled before it started")
         return _save(out, folder, name)
@@ -65,17 +74,17 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                             "converged": fields["converged"], "change": fields["change"]}
             if not fields["converged"]:
                 warns.append("reference solver did not converge")
-            out["execution"] = execution_record(procs_req, 1)
+            out["execution"] = record(procs_req, 1)
         else:
             from . import foam
-            procs = int(study.get("solve", {}).get("procs") or os.environ.get("CFDT_PROCS", "1") or 1)
+            procs = procs_of(study)
             per = int(os.environ.get("CFDT_CELLS_PER_RANK", "5000"))
             use = max(1, min(procs, mesh.ncells // max(per, 1)))
             if use < procs:
                 warns.append(f"ran on {use} MPI rank{'s' if use > 1 else ''} instead of {procs}: {mesh.ncells} cells "
                              f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
             info = foam.run(case, timeout, use)
-            out["execution"] = execution_record(procs_req, use, info.get("launch"), info.get("binding", "default"))
+            out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
             fields = foam.read_fields(case, mesh, plan)
             lg = info["log"]
             out["solve"] = {"openfoam": info.get("openfoam"), "procs": info.get("procs"), "iterations": lg["iterations"],

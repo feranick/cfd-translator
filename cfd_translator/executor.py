@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.19.4
+Version: 2026.10.20.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -47,17 +48,110 @@ def min_minutes() -> float:
         return 0.0
 
 
-def timeout_s() -> float:
-    return float(os.environ.get("CFDT_TIMEOUT", "3600"))
+def timeout_s(study: dict | None = None) -> float:
+    """The study's run.timeout_s, else CFDT_TIMEOUT (3600)."""
+    t = ((study or {}).get("run") or {}).get("timeout_s")
+    return float(t) if t else float(os.environ.get("CFDT_TIMEOUT", "3600"))
 
 
-def time_limit_min() -> int:
-    return int(math.ceil(timeout_s() / 60.0)) + 10
+def time_limit_min(study: dict | None = None) -> int:
+    return int(math.ceil(timeout_s(study) / 60.0)) + 10
 
 
 def procs_of(study: dict) -> int:
-    p = (study.get("solve") or {}).get("procs")
+    p = ((study.get("run") or {}).get("procs")) or (study.get("solve") or {}).get("procs")
     return int(p) if p else int(os.environ.get("CFDT_PROCS", "1") or 1)
+
+
+# ---- per-study run settings (study.run) within the machine's caps ------------------------------------
+RUN_KEYS = {"timeout_s", "mem", "procs", "queue"}
+_MEM = re.compile(r"^(\d+(?:\.\d+)?)([KMGT]?)B?$", re.I)
+
+
+def mem_mb(text) -> float | None:
+    """'8G' -> 8192 (SLURM's units: K, M (default), G, T)."""
+    m = _MEM.match(str(text).strip())
+    if not m:
+        return None
+    return float(m.group(1)) * {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 ** 2}[m.group(2).upper()]
+
+
+def caps() -> dict:
+    """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none."""
+    out = {}
+    for k, env in (("timeout_s", "CFDT_MAX_TIMEOUT"), ("mem", "CFDT_MAX_MEM"), ("procs", "CFDT_MAX_PROCS")):
+        v = os.environ.get(env, "").strip()
+        if v:
+            out[k] = v
+    return out
+
+
+def run_errors(st: dict) -> list[str]:
+    """Validation of study.run: names, types, and the caps of this machine."""
+    r = st.get("run")
+    if r is None:
+        return []
+    if not isinstance(r, dict):
+        return ["run: {timeout_s, mem, procs, queue}"]
+    errs = []
+    bad = set(r) - RUN_KEYS
+    if bad:
+        errs.append(f"run: unknown keys {sorted(bad)} (timeout_s, mem, procs, queue)")
+    cap = caps()
+    t = r.get("timeout_s")
+    if t is not None:
+        if not isinstance(t, (int, float)) or isinstance(t, bool) or t <= 0:
+            errs.append("run.timeout_s: seconds (> 0)")
+        elif "timeout_s" in cap and t > float(cap["timeout_s"]):
+            errs.append(f"run.timeout_s: at most {float(cap['timeout_s']):g} s on this machine (CFDT_MAX_TIMEOUT)")
+    m = r.get("mem")
+    if m is not None:
+        mb = mem_mb(m) if isinstance(m, str) else None
+        if not mb:
+            errs.append("run.mem: SLURM memory per job, e.g. '8G' or '500M'")
+        elif "mem" in cap and mem_mb(cap["mem"]) and mb > mem_mb(cap["mem"]):
+            errs.append(f"run.mem: at most {cap['mem']} on this machine (CFDT_MAX_MEM)")
+    n = r.get("procs")
+    if n is not None:
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            errs.append("run.procs: MPI ranks (integer >= 1)")
+        elif "procs" in cap and n > int(cap["procs"]):
+            errs.append(f"run.procs: at most {cap['procs']} on this machine (CFDT_MAX_PROCS)")
+        sp = (st.get("solve") or {}).get("procs")
+        if sp is not None and sp != n:
+            errs.append(f"run.procs ({n}) and solve.procs ({sp}) differ: give one")
+    q = r.get("queue")
+    if q is not None:
+        if not isinstance(q, bool):
+            errs.append("run.queue: true (always a SLURM job) or false (always local)")
+        elif "queue" in st and st["queue"] != q:
+            errs.append("run.queue and queue differ: give one")
+    return errs
+
+
+def queue_of(study: dict):
+    r = (study.get("run") or {}).get("queue")
+    return r if r is not None else study.get("queue")
+
+
+def sbatch_args(study: dict) -> list[str]:
+    """CFDT_SLURM_ARGS, with run.mem replacing any memory request in it."""
+    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
+    mem = (study.get("run") or {}).get("mem")
+    if not mem:
+        return args
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in ("--mem", "--mem-per-cpu"):
+            skip = True
+            continue
+        if a.startswith(("--mem=", "--mem-per-cpu=")):
+            continue
+        out.append(a)
+    return out + [f"--mem={mem}"]
 
 
 def cell_estimate(study: dict) -> float | None:
@@ -127,7 +221,7 @@ def estimate_minutes(study: dict, solver: str) -> float | None:
 def use_slurm(study: dict, solver: str) -> bool:
     if kind() != "slurm":
         return False
-    q = study.get("queue")
+    q = queue_of(study)
     if q is True:
         return True
     if q is False:
@@ -141,9 +235,9 @@ def status() -> dict:
     if kind() == "slurm":
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
                 "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "time_limit_min": time_limit_min(),
-                "args": os.environ.get("CFDT_SLURM_ARGS", "")}
+                "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
-            "procs": int(os.environ.get("CFDT_PROCS", "1") or 1)}
+            "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
 
 
 # ---- submitting --------------------------------------------------------------------------------
@@ -153,7 +247,7 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def job_script(request: Path, name: str, procs: int) -> str:
+def job_script(request: Path, name: str, procs: int, study: dict | None = None) -> str:
     d = request / name
     return "\n".join([
         "#!/bin/bash",
@@ -162,7 +256,7 @@ def job_script(request: Path, name: str, procs: int) -> str:
         f"#SBATCH --output={d / 'job.log'}",
         f"#SBATCH --ntasks={procs}",
         "#SBATCH --ntasks-per-core=1",          # a whole core per rank (OpenMPI 5 maps ranks by core)
-        f"#SBATCH --time={time_limit_min()}",
+        f"#SBATCH --time={time_limit_min(study)}",
         "#SBATCH --export=ALL",
         f"exec {shlex.quote(sys.executable)} -m cfd_translator.cli run-study {shlex.quote(str(request))} {shlex.quote(name)}",
         ""])
@@ -175,9 +269,9 @@ def submit(request: Path, name: str, study: dict) -> dict:
     d.mkdir(parents=True, exist_ok=True)
     procs = procs_for_job(study)
     script = d / "job.sh"
-    script.write_text(job_script(request, name, procs))
+    script.write_text(job_script(request, name, procs, study))
     script.chmod(0o755)
-    cmd = ["sbatch", "--parsable"] + shlex.split(os.environ.get("CFDT_SLURM_ARGS", "")) + [str(script)]
+    cmd = ["sbatch", "--parsable"] + sbatch_args(study) + [str(script)]
     try:
         r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60)
         ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
@@ -190,7 +284,8 @@ def submit(request: Path, name: str, study: dict) -> dict:
         return res
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
     info = {"executor": "slurm", "job_id": job_id, "submitted": time.time(), "procs": procs,
-            "time_min": time_limit_min(), "command": cmd}
+            "time_min": time_limit_min(study), "command": cmd,
+            "run": dict(study.get("run") or {})}
     write_atomic(d / "job.json", json.dumps(info, indent=1))
     return info
 
@@ -209,7 +304,7 @@ def run_study_job(request: str, name: str) -> int:
     if not os.environ.get("SLURM_JOB_ID"):
         os.environ["CFDT_EXECUTION"] = "by hand"            # the run record's executor
     t0 = time.perf_counter()
-    r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s())
+    r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s(study))
     r.setdefault("seconds", {})
     if isinstance(r["seconds"], dict):
         r["seconds"]["wall"] = round(time.perf_counter() - t0, 3)

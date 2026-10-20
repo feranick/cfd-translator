@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.19.3
+Version: 2026.10.20.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -93,10 +93,11 @@ class _Pool:
 
     def submit(self, folder: Path, jobs: list[dict]) -> None:
         workers = int(os.environ.get("CFDT_WORKERS", "2"))
-        timeout = float(os.environ.get("CFDT_TIMEOUT", "3600"))
+        from .executor import timeout_s
         if self.pool is None:
             self.pool = mp.get_context("spawn").Pool(workers, maxtasksperchild=10)
-        self.jobs[str(folder)] = {j["name"]: self.pool.apply_async(_run_one, (dict(j, timeout=timeout),)) for j in jobs}
+        self.jobs[str(folder)] = {j["name"]: self.pool.apply_async(_run_one, (dict(j, timeout=timeout_s(j["study"])),))
+                                  for j in jobs}
 
 
 _POOL = _Pool()

@@ -180,6 +180,7 @@ def test_run_study_by_hand_and_procs(slurm, monkeypatch, tmp_path):
     assert res["ok"] and res["executor"]["kind"] == "by hand" and res["executor"]["procs"] == 3
     assert res["execution"]["executor"] == "by hand" and res["execution"]["procs_requested"] == 3
     assert res["execution"]["procs_used"] == 1 and res["execution"]["slurm_job"] is None
+    assert res["execution"]["limits"]["timeout_s"] == 600 and res["execution"]["limits"]["from_study"] == []
     assert not list((req / "h").glob(".h.json.*.tmp"))                  # atomic write left nothing behind
 
 
@@ -274,3 +275,31 @@ def test_jobs_ask_only_for_the_ranks_their_mesh_can_use(monkeypatch):
     assert executor.procs_for_job(big) == 9                              # 160k cells: the study's 9
     assert executor.procs_for_job(dict(big, solve={"procs": 4})) == 4
     assert executor.cell_estimate({"geometry": {"step": "x.step"}, "mesh": {"size": 1}}) is None
+
+
+def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
+    from cfd_translator.format import validate_study
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=16G --nice=10")
+    monkeypatch.setenv("CFDT_MAX_TIMEOUT", "86400")
+    monkeypatch.setenv("CFDT_MAX_MEM", "32G")
+    monkeypatch.setenv("CFDT_MAX_PROCS", "19")
+    monkeypatch.setenv("CFDT_CELLS_PER_RANK", "10")
+    st = dict(COUETTE, run={"timeout_s": 30000, "mem": "12G", "procs": 4, "queue": True})
+    assert validate_study(st)["ok"], validate_study(st)
+    e = " ".join(validate_study(dict(COUETTE, run={"timeout_s": 1e6, "mem": "64G", "procs": 40, "x": 1}))["errors"])
+    for w in ("CFDT_MAX_TIMEOUT", "CFDT_MAX_MEM", "CFDT_MAX_PROCS", "unknown keys"):
+        assert w in e, w
+    assert not validate_study(dict(COUETTE, run={"procs": 4}, solve={"procs": 2}))["ok"]
+    assert not validate_study(dict(COUETTE, run={"mem": "lots"}))["ok"]
+    r = api.run({"o": st, "d": dict(COUETTE, queue=True)}, "ref", wait=0)
+    req = Path(r["request"])
+    sh = (req / "o" / "job.sh").read_text()
+    assert "#SBATCH --time=510" in sh and "#SBATCH --ntasks=4" in sh             # 30000 s + 10 min; run.procs
+    job = json.loads((req / "o" / "job.json").read_text())
+    assert job["command"][2:-1] == ["--nice=10", "--mem=12G"] and job["run"]["mem"] == "12G"
+    assert job["time_min"] == 510
+    d = json.loads((req / "d" / "job.json").read_text())                         # defaults for the other study
+    assert d["command"][2:-1] == ["--mem=16G", "--nice=10"] and d["time_min"] == 20          # CFDT_TIMEOUT 600 s + 10 min
+    assert executor.status()["caps"] == {"timeout_s": "86400", "mem": "32G", "procs": "19"}
+    assert executor.mem_mb("8G") == 8192 and executor.mem_mb("500M") == 500 and executor.mem_mb("x") is None
