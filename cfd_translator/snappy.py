@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.21.3
+Version: 2026.10.22.1
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -37,8 +37,9 @@ BOX_FACES = {"xmin": (0, 4, 7, 3), "xmax": (2, 6, 5, 1), "ymin": (1, 5, 4, 0),
 
 # ---- sizes and levels -----------------------------------------------------------------------------
 def level_for(h0: float, size: float) -> int:
-    """The refinement level whose cells (h0 / 2^L) are no larger than size."""
-    return max(0, int(math.ceil(math.log2(h0 / float(size)) - 1e-9)))
+    """The refinement level whose cells (h0 / 2^L) are no larger than size (7 % slack: background cells come out
+    a little larger than mesh.size when the domain is not a whole number of them, and that must not cost a level)."""
+    return max(0, int(math.ceil(math.log2(h0 / float(size)) - 0.1)))
 
 
 def _nu(study: dict) -> float:

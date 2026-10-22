@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.21.2
+Version: 2026.10.22.1
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -33,6 +33,8 @@ Version: 2026.10.21.2
   sphere_snappy_re100  snappyHexMesh with layers: sphere at Re 100, Cd vs the standard drag curve (b3dt, Gmsh)
   sphere_half_snappy   the same as a half model on a symmetry plane (the cut face meshed by snappy.cut_at_box)
   pipe_snappy          internal flow on a snappyHexMesh mesh: Hagen-Poiseuille as pipe_poiseuille
+  ahmed25_L1..L3, ahmed35_L1..L3   Ahmed body (half, moving ground, kOmegaSST, layers at y+ ~60), three meshes:
+                       Cd vs the wind tunnel (0.285, 0.26) within 10 %, y+ 30-300, layer coverage (slow; by name)
 Slow cases run only when named. The reference solver runs the 2D box cases (couette, channel, cavity).
 """
 from __future__ import annotations
@@ -419,14 +421,70 @@ def _cases() -> dict:
                   "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "flow_rate_lpm": 0.5, "profile": "parabolic"},
                           {"kind": "outlet", "faces": {"nz": 1}}],
                   "mesh": {"mesher": "snappy", "size": 2, "surface": 0.5, "layers": {"n": 3, "first": 0.1, "growth": 1.2}},
-                  "solve": {"residual": 1e-7},
+                  "solve": {"residual": 1e-5, "iterations": 4000},
                   "probes": [{"name": "a", "at": [0, 0, 50]}, {"name": "b", "at": [0, 0, 150]}]},
         "checks": lambda r: [("dp over 0.1 m = 8 mu L Q / (pi R^4)", 8 * mu_w * 0.1 * Q / (math.pi * R ** 4),
                               r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.03}),
                              ("wall force = 8 pi mu L U_mean", 8 * math.pi * mu_w * 0.2 * Q / (math.pi * R ** 2),
                               r["forces"]["walls"]["fz"], {"tol": 0.03})],
         "ref": False, "needs": ["gmsh"]}
+    # Ahmed body (Ahmed, Ramm & Faltin 1984), half model on a symmetry plane, no stilts, 50 mm over a moving
+    # ground, 40 m/s (Re_L 2.8e6, as Lienhart & Becker 2003), kOmegaSST with wall functions and prism layers at
+    # y+ ~ 60; three meshes, each sqrt(2) finer than the last. Wind tunnel: Cd 0.285 (25 deg), 0.26 (35 deg).
+    for phi, cd_exp in ((25, 0.285), (35, 0.26)):
+        for lev, f, procs in ((1, 1.0, 6), (2, 1 / math.sqrt(2), 10), (3, 0.5, 19)):
+            C[f"ahmed{phi}_L{lev}"] = {"study": ahmed_study(phi, f, procs), "checks": _ahmed_checks(cd_exp),
+                                       "ref": False, "needs": ["gmsh", "build123d_translator"], "slow": True}
     return C
+
+
+def ahmed_goal(phi: float) -> dict:
+    """The Ahmed body's half (y >= 0): 1044 x 389 x 288 mm, front edges rounded R 100, a 222 mm slant at phi."""
+    c, t = math.cos(math.radians(phi)), math.tan(math.radians(phi))
+    xs = round(522 - 222 * c, 3)
+    zc = round(288 - t * (542 - xs), 3)
+    return {"features": [
+        {"kind": "base_box", "params": {"w": 1044, "d": 389, "h": 288}},
+        {"kind": "fillet_edges", "params": {"r": 100, "pts": [[-522, 0, 288], [-522, 0, 0], [-522, 194.5, 144],
+                                                              [-522, -194.5, 144]]}},
+        {"kind": "profile_pocket", "params": {"nx": 0, "ny": -1, "nz": 0, "x": 0, "y": 0, "z": 0, "outline": {
+            "start": [xs, 288], "segs": [["L", 542, zc], ["L", 542, 300], ["L", xs, 300], ["L", xs, 288]]}}},
+        {"kind": "split", "params": {"nx": 0, "ny": 1, "nz": 0, "off": 0}}]}
+
+
+def ahmed_study(phi: float, f: float, procs: int) -> dict:
+    """f scales every cell size (1: coarse, 1/sqrt(2), 1/2: fine); the levels stay the same."""
+    def r(v):
+        return round(v * f, 3)
+    U = 40.0
+    return {"geometry": {"goal": ahmed_goal(phi)},
+            "domain": {"kind": "external", "box": [-3022, 0, -50, 5522, 1800, 1600]},
+            "fluid": "air", "model": "kOmegaSST",
+            "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": U, "intensity": 0.01},
+                    {"kind": "outlet", "faces": {"box": "xmax"}},
+                    {"kind": "symmetry", "name": "mid", "faces": {"box": "ymin"}},
+                    {"kind": "slip", "name": "far", "faces": {"box": ["ymax", "zmax"]}},
+                    {"kind": "wall", "name": "ground", "faces": {"box": "zmin"}, "velocity": [U, 0, 0]},
+                    {"kind": "wall", "name": "body", "faces": {"all": True}}],
+            "reference": {"velocity": U, "area": 389 * 288 / 2, "length": 1044, "drag_dir": [1, 0, 0],
+                          "lift_dir": [0, 0, 1]},
+            "mesh": {"mesher": "snappy", "size": r(160), "surface": [r(10), r(20)], "features": r(10),
+                     "refine": [{"box": [-800, 0, -50, 1600, 500, 550], "size": r(40)},
+                                {"box": [300, 0, -50, 2700, 350, 450], "size": r(20)},
+                                {"distance": 60, "size": r(20)}],
+                     "layers": {"y_plus": 60}},
+            "solve": {"iterations": 4000},
+            "run": {"procs": procs},
+            "images": True}
+
+
+def _ahmed_checks(cd_exp: float):
+    return lambda r: [
+        ("Cd, time-averaged over the last iterations (wind tunnel %.3f)" % cd_exp, cd_exp, r["coefficients"]["cd"],
+         {"tol": 0.10}),
+        ("mean y+ on the body (wall functions want 30-300)", 165.0, r["y_plus_part_mean"], {"abs": 135.0}),
+        ("prism-layer coverage on the body (%)", 100.0, r["_mesh"]["layers"]["coverage_pct"], {"tol": 0.4}),
+        ("reliable (converged or settled)", 1.0, 1.0 if r["_reliable"] else 0.0, {"abs": 0.5})]
 
 
 PLATE_GOAL = {"features": [{"kind": "base_box", "params": {"w": 4, "d": 40, "h": 40}}]}
@@ -569,7 +627,7 @@ def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:
         return {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
     checks = []
     try:
-        triples = c["checks"](dict(r["results"], _mesh=r.get("mesh") or {}))
+        triples = c["checks"](dict(r["results"], _mesh=r.get("mesh") or {}, _reliable=bool(r.get("reliable"))))
     except (KeyError, TypeError, ZeroDivisionError) as e:
         return {"ok": True, "passed": False, "error": f"a check could not be evaluated: {type(e).__name__}: {e}"}
     for what, exp, got, tol in triples:
