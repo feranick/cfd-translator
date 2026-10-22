@@ -737,15 +737,28 @@ def test_y_plus_from_wall_shear_on_moving_and_fixed_walls(tmp_path):
 
 @gmsh_only
 def test_external_y_plus_marks_the_part_walls(tmp_path):
-    """The domain's sides (walls) are not the part: the y+ warning (turbulent runs) uses only part walls."""
+    """The domain's sides (walls) are not the part: the y+ warning (turbulent runs) uses only part walls. Results
+    from made-up fields on the Gmsh mesh (the reference solver runs structured boxes only)."""
     ext = {"geometry": {"cylinder": [50, 10]}, "domain": {"kind": "external", "box": [-200, -200, 0, 600, 210, 10]},
-           "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3},
+           "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3}, "model": "kOmegaSST",
            "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 0.2},
                    {"kind": "outlet", "faces": {"box": "xmax"}}, {"kind": "wall", "name": "cyl", "faces": {"cyl_r": 50}}],
-           "mesh": {"size": 20}, "solve": {"iterations": 50}}
-    r = run_study("c", ext, tmp_path / "c", "ref")
-    yp = r["results"]["y_plus"]
+           "mesh": {"size": 20}}
+    mesh, patches, sel, plan, w = prepare(ext, tmp_path)
+    g = mesh.geometry()
+    U = np.array([0.2, 0.0, 0.0])
+    fields = {"U": np.tile(U, (mesh.ncells, 1)), "p": np.zeros(mesh.ncells), "patches": {}, "source": "test"}
+    for P in mesh.patches:
+        f = np.arange(P["start"], P["start"] + P["n"])
+        wall = P["type"] == "wall"
+        Ub = np.zeros((P["n"], 3)) if wall or P["type"] == "empty" else np.tile(U, (P["n"], 1))
+        fields["patches"][P["name"]] = {
+            "U": Ub, "p": np.zeros(P["n"]), "phi": (Ub @ np.zeros(3)) if wall else g["Sf"][f] @ U * 1e-6,
+            "wss": np.tile([-1e-3, 0.0, 0.0], (P["n"], 1)) if wall else None, "nut": None, "yPlus": None}
+    res, warns = results(ext, mesh, plan, fields)
+    yp = res["y_plus"]
     assert yp["cyl"]["part"] and not yp["walls"]["part"]
+    assert res["y_plus_part_mean"] == pytest.approx(yp["cyl"]["mean"])
 
 
 def test_summary_mode_drops_the_selection_dump(tmp_path):

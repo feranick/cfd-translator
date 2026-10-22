@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.22.4
+Version: 2026.10.22.6
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -144,20 +144,17 @@ STUDY_KEYS = {
             "max_cells, optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
-             "transient: {end_time s, average_from (end/3), max_co (1), write_interval, init (steady its first, 500 "
-             "turbulent), max_jobs (10)}: PIMPLE, time averages (results from UMean/pMean; cd/cl mean, min, max, "
-             "frequency_Hz, strouhal); continues over SLURM jobs; model kOmegaSSTDES (DES) needs it}",
+             "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs}: "
+             "time-averaged results (cd mean/min/max, frequency_Hz, strouhal), continues over SLURM jobs; needed by "
+             "kOmegaSSTDES}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
-    "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis from center}]: "
-                "rotating zones (MRF, frozen rotor): the cells whose centres are inside the cylinder",
-    "images": "true (default pictures) or [{name, slice: {axis: x|y|z, at: mm}, field: u|ux|uy|uz|p|cp, streamlines, "
-              "window: [a0, a1, b0, b1] mm} | {name, surface: part|walls|<wall bc>, field: p|cp|wall_shear, view: "
-              "[elev, azim]}], each with clim: [lo, hi] | full | robust (2-98th percentile, surface default): "
-              "PNGs after the solve (get_image shows them; render_images makes more). cp uses reference.velocity",
-    "energy": "true: solve temperature (OpenFOAM fluid): gases (air) are compressible perfect gases (to "
-              "transonic), liquids (water) keep constant density; walls can be heated; default false",
+    "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis}]: MRF zones",
+    "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0, a1, b0, b1]} "
+              "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim]}], clim: [lo, hi] | full "
+              "| robust: PNGs (get_image; render_images makes more)",
+    "energy": "true: solve temperature (see conventions); default false",
     "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
                   "it) and initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
