@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.20.1
+Version: 2026.10.21.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -106,9 +106,9 @@ def run_errors(st: dict) -> list[str]:
             errs.append(f"run.timeout_s: at most {float(cap['timeout_s']):g} s on this machine (CFDT_MAX_TIMEOUT)")
     m = r.get("mem")
     if m is not None:
-        mb = mem_mb(m) if isinstance(m, str) else None
+        mb = mem_mb(m) if isinstance(m, str) and m.lower() != "auto" else (1 if m == "auto" else None)
         if not mb:
-            errs.append("run.mem: SLURM memory per job, e.g. '8G' or '500M'")
+            errs.append("run.mem: SLURM memory per job, e.g. '8G' or '500M', or 'auto' (from the cell estimate)")
         elif "mem" in cap and mem_mb(cap["mem"]) and mb > mem_mb(cap["mem"]):
             errs.append(f"run.mem: at most {cap['mem']} on this machine (CFDT_MAX_MEM)")
     n = r.get("procs")
@@ -134,24 +134,50 @@ def queue_of(study: dict):
     return r if r is not None else study.get("queue")
 
 
-def sbatch_args(study: dict) -> list[str]:
-    """CFDT_SLURM_ARGS, with run.mem replacing any memory request in it."""
-    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
-    mem = (study.get("run") or {}).get("mem")
-    if not mem:
-        return args
-    out, skip = [], False
+def mem_estimate_mb(cells: float | None) -> float | None:
+    """Memory a study may need, from its cell count: 2 GB plus 4 GB per million cells, an upper bound that
+    covers meshing (Gmsh, snappyHexMesh) and a kOmegaSST solve with MPI buffers."""
+    return None if not cells else 2048.0 + 4096.0 * cells / 1e6
+
+
+def _strip_mem(args: list[str]) -> tuple[list[str], float | None]:
+    """args without memory requests, and the --mem they held (MB)."""
+    out, mem, skip = [], None, None
     for a in args:
         if skip:
-            skip = False
+            if skip == "--mem":
+                mem = mem_mb(a)
+            skip = None
             continue
         if a in ("--mem", "--mem-per-cpu"):
-            skip = True
+            skip = a
             continue
-        if a.startswith(("--mem=", "--mem-per-cpu=")):
+        if a.startswith("--mem="):
+            mem = mem_mb(a.split("=", 1)[1])
+            continue
+        if a.startswith("--mem-per-cpu="):
             continue
         out.append(a)
-    return out + [f"--mem={mem}"]
+    return out, mem
+
+
+def sbatch_args(study: dict, cells: float | None = None) -> tuple[list[str], str | None]:
+    """CFDT_SLURM_ARGS with the job's memory: run.mem when given (or 'auto'); otherwise the default --mem,
+    raised to the cell estimate's need when that is larger (a 3-6M-cell mesh does not fit 8G), within
+    CFDT_MAX_MEM. Returns (args, where the memory came from)."""
+    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
+    mem = (study.get("run") or {}).get("mem")
+    rest, default = _strip_mem(args)
+    cap = mem_mb(caps()["mem"]) if caps().get("mem") else None
+    if mem and str(mem).lower() != "auto":
+        return rest + [f"--mem={mem}"], "study"
+    need = mem_estimate_mb(cells)
+    if need and (str(mem).lower() == "auto" or (default is not None and need > default)):
+        mb = min(need, cap) if cap else need
+        if default is not None and str(mem).lower() != "auto":
+            mb = max(mb, default)
+        return rest + [f"--mem={int(math.ceil(mb / 1024))}G"], "estimate"
+    return args, "default" if default is not None else None
 
 
 def cell_estimate(study: dict) -> float | None:
@@ -200,12 +226,12 @@ def cell_estimate(study: dict) -> float | None:
     return vol / h ** 3 * 10 + sum(4 / 3 * math.pi * float(r["r"]) ** 3 / float(r["size"]) ** 3 * 10 for r in refine)
 
 
-def procs_for_job(study: dict) -> int:
+def procs_for_job(study: dict, est: float | None = None) -> int:
     """The ranks a SLURM job asks for: the study's (or CFDT_PROCS), but no more than the cell estimate allows
     at CFDT_CELLS_PER_RANK, so small studies do not hold cores they cannot use (the benchmarks on mochi held
     18 CPUs each for 1-3 ranks)."""
     procs = procs_of(study)
-    est = cell_estimate(study)
+    est = cell_estimate(study) if est is None else est
     if est is None:
         return procs
     per = int(os.environ.get("CFDT_CELLS_PER_RANK", "5000") or 5000)
@@ -267,11 +293,13 @@ def submit(request: Path, name: str, study: dict) -> dict:
     {"ok": false, "why": "could not submit: ..."} (never falls back to local)."""
     d = request / name
     d.mkdir(parents=True, exist_ok=True)
-    procs = procs_for_job(study)
+    est = cell_estimate(study)
+    procs = procs_for_job(study, est)
     script = d / "job.sh"
     script.write_text(job_script(request, name, procs, study))
     script.chmod(0o755)
-    cmd = ["sbatch", "--parsable"] + sbatch_args(study) + [str(script)]
+    sargs, mem_from = sbatch_args(study, est)
+    cmd = ["sbatch", "--parsable"] + sargs + [str(script)]
     try:
         r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60)
         ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
@@ -285,7 +313,7 @@ def submit(request: Path, name: str, study: dict) -> dict:
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
     info = {"executor": "slurm", "job_id": job_id, "submitted": time.time(), "procs": procs,
             "time_min": time_limit_min(study), "command": cmd,
-            "run": dict(study.get("run") or {})}
+            "run": dict(study.get("run") or {}), "cells_estimate": int(est) if est else None, "mem_from": mem_from}
     write_atomic(d / "job.json", json.dumps(info, indent=1))
     return info
 

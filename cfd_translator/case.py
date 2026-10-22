@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.19.1
+Version: 2026.10.21.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -404,6 +404,10 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                          "        libs            (\"libfieldFunctionObjects.so\");\n        writeControl    writeTime;\n    }")
     # per-iteration monitors (torque, inlet/outlet total pressure) for window averages (average.py)
     from .average import monitor_functions
+    # the body's walls (external: every wall patch of the part's faces; internal: all walls), for forces
+    ptags = {int(t) for t, i in (mesh.tag_info or {}).items() if i.get("on") == "part"}
+    plan["body_walls"] = [p["name"] for p in patches if p["type"] == "wall"
+                          and (not external or (p["tags"] and all(int(t) in ptags for t in p["tags"])))]
     mf, mon = monitor_functions(study, plan, float(plan["rho"]))
     funcs += mf
     plan["monitors"] = mon

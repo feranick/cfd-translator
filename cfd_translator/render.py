@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.19.1
+Version: 2026.10.21.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
     default_images(study, mesh) -> specs (for "images": true)
@@ -22,7 +22,35 @@ from .polymesh import SCALE, PolyMesh
 
 AXES = {"x": 0, "y": 1, "z": 2}
 FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa, gauge)",
-          "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)"}
+          "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)",
+          "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)"}
+
+
+def _q_ref(study: dict, plan: dict) -> tuple[float, float]:
+    """(dynamic pressure from reference.velocity, reference.p) for Cp."""
+    ref = study.get("reference") or {}
+    if not ref.get("velocity"):
+        raise ValueError("field 'cp' needs reference.velocity")
+    en = plan.get("energy")
+    rho = float(en["rho"]) if en else float(plan["rho"])
+    return 0.5 * rho * float(ref["velocity"]) ** 2, float(ref.get("p", 0.0))
+
+
+def _limits(vals: np.ndarray, spec: dict, default: str) -> tuple[float, float, str]:
+    """Colour range: clim [lo, hi], 'full' (min to max) or 'robust' (2nd to 98th percentile, so one suction
+    peak does not wash out the rest). Returns (lo, hi, extend)."""
+    c = spec.get("clim", default)
+    if isinstance(c, (list, tuple)):
+        lo, hi = float(c[0]), float(c[1])
+    elif c == "robust":
+        lo, hi = (float(x) for x in np.percentile(vals, [2, 98]))
+    else:
+        lo, hi = float(np.min(vals)), float(np.max(vals))
+    if hi <= lo:
+        hi = lo + max(abs(lo) * 1e-9, 1e-12)
+    ext = {(True, True): "both", (True, False): "min", (False, True): "max"}.get(
+        (bool(np.min(vals) < lo), bool(np.max(vals) > hi)), "neither")
+    return lo, hi, ext
 
 
 def _pa(plan, p):
@@ -136,6 +164,9 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     L = np.max(np.linalg.norm(e - np.roll(e, 1, axis=1), axis=2), axis=1)
     tri.set_mask(L > 2.0 * H[tri.triangles].max(axis=1))
     vals = {"u": np.linalg.norm(U, axis=1), "ux": U[:, 0], "uy": U[:, 1], "uz": U[:, 2], "p": P}
+    if field == "cp":
+        qd, pr = _q_ref(study, plan)
+        vals["cp"] = (P - pr) / qd
     if scal:
         vals[field] = S
     elif field not in FIELDS:
@@ -152,9 +183,11 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     val = vals[field]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=130)
     win = spec.get("window")
-    cmap = {"p": "coolwarm", "T": "inferno", "mach": "magma", "age": "cividis"}.get(field, "plasma" if scal else "viridis")
-    tp = ax.tripcolor(tri, val, shading="gouraud", cmap=cmap)
-    fig.colorbar(tp, ax=ax, label=FIELDS.get(field, "mean age of fluid (s)" if field == "age" else f"{field} (tracer)"), shrink=0.85)
+    cmap = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "mach": "magma", "age": "cividis"}.get(field, "plasma" if scal else "viridis")
+    lo_c, hi_c, ext = _limits(val, spec, "full")
+    tp = ax.tripcolor(tri, val, shading="gouraud", cmap=cmap, vmin=lo_c, vmax=hi_c)
+    fig.colorbar(tp, ax=ax, label=FIELDS.get(field, "mean age of fluid (s)" if field == "age" else f"{field} (tracer)"),
+                 shrink=0.85, extend=ext)
     if spec.get("streamlines"):
         x0, x1 = (win[0], win[1]) if win else (X[:, 0].min(), X[:, 0].max())
         y0, y1 = (win[2], win[3]) if win else (X[:, 1].min(), X[:, 1].max())
@@ -177,7 +210,7 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-    return {"cells": int(sel.sum()), "min": float(np.nanmin(val)), "max": float(np.nanmax(val))}
+    return {"cells": int(sel.sum()), "min": float(np.nanmin(val)), "max": float(np.nanmax(val)), "clim": [lo_c, hi_c]}
 
 
 def _surface(study, mesh, plan, fields, spec, title, path):
@@ -221,6 +254,9 @@ def _surface(study, mesh, plan, fields, spec, title, path):
             if pf.get("whf") is None:
                 raise ValueError("field 'q' needs an energy study with wall heat flux")
             v = np.asarray(pf["whf"], float)[loc]
+        elif spec.get("field", "p") == "cp":
+            qd, pr = _q_ref(study, plan)
+            v = (_pa(plan, pf["p"])[loc] - pr) / qd
         else:
             v = _pa(plan, pf["p"])[loc]
         for r in mesh.faces[f]:
@@ -231,9 +267,9 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     vals = np.concatenate(vals)
     import matplotlib.cm as cm
     import matplotlib.colors as mcolors
-    hi_ = float(vals.max()) if vals.max() > vals.min() else float(vals.min()) + 1e-12
-    norm = mcolors.Normalize(vmin=float(vals.min()), vmax=hi_)
-    cmap = matplotlib.colormaps[{"p": "coolwarm", "T": "inferno", "q": "inferno"}.get(spec.get("field", "p"), "viridis")]
+    lo_c, hi_c, ext = _limits(vals, spec, "robust")
+    norm = mcolors.Normalize(vmin=lo_c, vmax=hi_c)
+    cmap = matplotlib.colormaps[{"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "q": "inferno"}.get(spec.get("field", "p"), "viridis")]
     fig = plt.figure(figsize=(9, 7), dpi=130)
     ax = fig.add_subplot(projection="3d")
     ax.add_collection3d(Poly3DCollection(polys, facecolors=cmap(norm(vals)), edgecolors="none"))
@@ -249,12 +285,12 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     ax.set_ylabel("y (mm)")
     ax.set_zlabel("z (mm)")
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    fig.colorbar(sm, ax=ax, label=FIELDS[spec.get("field", "p")], shrink=0.7)
+    fig.colorbar(sm, ax=ax, label=FIELDS[spec.get("field", "p")], shrink=0.7, extend=ext)
     ax.set_title(title)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-    return {"faces": len(polys), "min": float(vals.min()), "max": float(vals.max())}
+    return {"faces": len(polys), "min": float(vals.min()), "max": float(vals.max()), "clim": [lo_c, hi_c]}
 
 
 def render(study, mesh, plan, fields, folder, specs, name="study") -> tuple[dict, list]:

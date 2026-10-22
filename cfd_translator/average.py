@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.18.16
+Version: 2026.10.21.1
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -47,7 +47,10 @@ def settings(study: dict, plan: dict | None = None) -> dict | None:
         return None
     if a is None:
         has_zones = bool((plan or {}).get("zones")) if plan is not None else bool(study.get("rotating"))
-        if not has_zones:
+        # turbulent external flow with a reference (drag and lift coefficients): the forces wobble the same way
+        ext = (study.get("domain") or {}).get("kind") == "external" and study.get("model", "laminar") != "laminar" \
+            and bool((study.get("reference") or {}).get("velocity")) and bool((study.get("reference") or {}).get("area"))
+        if not (has_zones or ext):
             return None
         a = True
     cfg = dict(DEFAULTS)
@@ -105,6 +108,22 @@ operation       average;
 weightField     phi;
 fields          (p total(p));"""))
             mon["pressure"][n] = fo
+    body = plan.get("body_walls") or []
+    ref = study.get("reference") or {}
+    if body and ref.get("velocity") and ref.get("area"):
+        c = np.asarray(ref.get("cofr", [0, 0, 0]), float) * 1e-3
+        funcs.append(_fo("cfdtF_body", f"""
+type            forces;
+libs            ("libforces.so");
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+patches         ({' '.join(body)});
+rho             rhoInf;
+rhoInf          {rho:.12g};
+pRef            0;
+CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
+        mon["forces"] = {"fo": "cfdtF_body", "patches": list(body)}
     for zn, zp in (plan.get("zones") or {}).items():
         if not zp.get("rotating_walls"):
             continue
@@ -122,7 +141,7 @@ rhoInf          {rho:.12g};
 pRef            0;
 CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
         mon["torque"][zn] = fo
-    if not mon["pressure"] and not mon["torque"]:
+    if not mon["pressure"] and not mon["torque"] and not mon.get("forces"):
         return [], {}
     return funcs, mon
 
@@ -206,6 +225,24 @@ def _moment_series(case: Path, fo: str):
     return None
 
 
+def _force_series(case: Path, fo: str):
+    """Total force (x, y, z) per iteration from a forces function object (force.dat/forces.dat: total first,
+    or pressure + viscous (+ porous) parts)."""
+    got = read_monitor(case, fo, "force")
+    if got is None:
+        return None
+    its, header, vals = got
+    if any("total" in h.lower() for h in header) or vals.shape[1] == 3:
+        return its, vals[:, :3]
+    if vals.shape[1] in (6, 9):                    # pressure, viscous (, porous)
+        return its, sum(vals[:, 3 * k:3 * k + 3] for k in range(vals.shape[1] // 3))
+    if vals.shape[1] >= 18:                        # forces(p v porous) moments(p v porous) in one file
+        return its, vals[:, 0:3] + vals[:, 3:6] + vals[:, 6:9]
+    if vals.shape[1] >= 12:
+        return its, vals[:, 0:3] + vals[:, 3:6]
+    return None
+
+
 def _pressure_columns(header: list, ncol: int) -> tuple[int | None, int | None]:
     """(static, total) column indices (after the time column) of a surfaceFieldValue file."""
     names = header[1:] if header and header[0].lower() == "time" else []
@@ -221,8 +258,9 @@ def _pressure_columns(header: list, ncol: int) -> tuple[int | None, int | None]:
 
 
 # ---- statistics ---------------------------------------------------------------------------------------
-def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict) -> dict | None:
-    """Mean, scatter and drift of the last part of a series; None when too short."""
+def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict, scale: float | None = None) -> dict | None:
+    """Mean, scatter and drift of the last part of a series; None when too short. scale: what drift and
+    scatter are relative to (default |mean|; a lift coefficient near zero is judged against the drag's)."""
     n = len(v)
     m = int(cfg.get("min_iterations", DEFAULTS["min_iterations"]))
     w = max(int(round(float(cfg.get("window", DEFAULTS["window"])) * n)), m)
@@ -234,7 +272,7 @@ def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict) -> dict | None:
     std = float(x.std())
     h = w // 2
     d = float(x[h:].mean() - x[:h].mean())
-    scale = abs(mean)
+    scale = abs(mean) if scale is None else max(abs(mean), float(scale))
     return {"mean": _r(mean), "std": _r(std), "min": _r(x.min()), "max": _r(x.max()), "last": _r(x[-1]),
             "drift": _r(abs(d) / scale) if scale > 0 else float("inf"),
             "scatter": _r(std / scale) if scale > 0 else float("inf"),
@@ -326,6 +364,25 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                                  "iteration; their history is not used")
                 else:
                     series["total_pressure_drop"] = (common, tp)
+    # drag and lift coefficients from the forces on the body
+    fm = mon.get("forces")
+    co = res.get("coefficients") or {}
+    if fm and co.get("q_Pa") and co.get("area_m2"):
+        got = _force_series(case, fm["fo"])
+        if got is None:
+            warns.append(f"averaging: no force history (postProcessing/{fm['fo']}); final-iteration coefficients kept")
+        else:
+            its, Fh = got
+            d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
+            qa = float(co["q_Pa"]) * float(co["area_m2"])
+            cd_ref = co.get("cd")
+            s = _calibrate(float(Fh[-1] @ d) / qa, cd_ref, rho)
+            if s is None:
+                warns.append(f"averaging: the monitored drag at the last iteration ({float(Fh[-1] @ d) / qa:.6g}) does not "
+                             f"match the fields' cd ({cd_ref}); its history is not used")
+            else:
+                series["cd"] = (its, s * (Fh @ d) / qa)
+                series["cl"] = (its, s * (Fh @ l) / qa)
     if not series:
         return None, warns
     # derived: power, head, efficiency
@@ -349,7 +406,9 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                 series["efficiency"] = (com, np.where(P > 0, rho * G0 * Q * H / P, np.nan))
     stats = {}
     for k, (its, v) in series.items():
-        st = window_stats(its, v, cfg)
+        # cl is judged against the drag's size (its own mean can be near zero)
+        sc = float(np.abs(series["cd"][1][-len(v):]).mean()) if k == "cl" and "cd" in series else None
+        st = window_stats(its, v, cfg, sc)
         if st is not None:
             stats[k] = st
     total = max(len(v) for _, v in series.values())
@@ -361,6 +420,7 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     # the quantities judged: pump head and power, else the pressure drop and the torques
     judged = [k for k in ("head_m", "power_W") if k in stats] or \
              [k for k in stats if k == "total_pressure_drop" or k.startswith("torque_Nm.")]
+    judged += [k for k in ("cd", "cl") if k in stats]
     bad = []
     for k in judged:
         st = stats[k]
@@ -371,12 +431,26 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     block = {"basis": "mean over the window (the last iterations); *_last in the results are the final iteration",
              "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
              "quantities": stats, "iterations_recorded": total}
+    if "cd" in series:                               # coefficient history, at most 200 points, for plots
+        its, cd = series["cd"]
+        k = max(1, len(its) // 200)
+        block["history"] = {"iteration": [int(i) for i in its[::k]], "cd": [_r(x) for x in cd[::k]],
+                            "cl": [_r(x) for x in series["cl"][1][::k]]}
     _apply_means(res, stats, plan)
     return block, warns
 
 
 def _apply_means(res: dict, stats: dict, plan: dict) -> None:
     rho = float(plan["rho"])
+    co = res.get("coefficients")
+    if co is not None:
+        for k in ("cd", "cl"):
+            if k in stats:
+                co[f"{k}_last"] = co.get(k)
+                co[k] = stats[k]["mean"]
+                co[f"{k}_std"] = stats[k]["std"]
+        if "cd" in stats:
+            co["averaged_over"] = stats["cd"]["window"]
     for k, st in stats.items():
         if k.startswith("torque_Nm."):
             zn = k.split(".", 1)[1]

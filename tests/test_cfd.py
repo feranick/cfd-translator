@@ -718,3 +718,67 @@ def test_total_pressure_ramp_and_start_from_rest(tmp_path):
     assert "initial_U" not in plan
     cd = foamio.read_foam((c / "system" / "controlDict").read_text())
     assert "MachNo" not in cd["functions"]
+
+
+# ---- 2026.10.21.1: y+ from the wall shear, summary mode, clim and Cp ----------------------------
+def test_y_plus_from_wall_shear_on_moving_and_fixed_walls(tmp_path):
+    """Couette: tau = mu U / H on both walls, u_tau = sqrt(tau / rho), y = half a cell: y+ = 0.05 on the
+    moving lid as on the fixed bottom (the velocity relative to the wall, not the lid's own speed)."""
+    st = bench._cases()["couette_2d"]["study"]
+    r = run_study("c", st, tmp_path / "c", "ref")
+    yp = r["results"]["y_plus"]
+    u_tau = math.sqrt(1e-3 * 0.01 / 0.1 / 1.0)
+    expect = u_tau * 0.005 / 1e-3
+    for n in ("lid", "bottom"):
+        assert yp[n]["mean"] == pytest.approx(expect, rel=1e-6) and yp[n]["part"]
+    assert yp["lid"].get("moving") and not yp["bottom"].get("moving")
+    assert "y_plus_part_mean" not in r["results"]                            # laminar: not judged
+
+
+@gmsh_only
+def test_external_y_plus_marks_the_part_walls(tmp_path):
+    """The domain's sides (walls) are not the part: the y+ warning (turbulent runs) uses only part walls."""
+    ext = {"geometry": {"cylinder": [50, 10]}, "domain": {"kind": "external", "box": [-200, -200, 0, 600, 210, 10]},
+           "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3},
+           "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 0.2},
+                   {"kind": "outlet", "faces": {"box": "xmax"}}, {"kind": "wall", "name": "cyl", "faces": {"cyl_r": 50}}],
+           "mesh": {"size": 20}, "solve": {"iterations": 50}}
+    r = run_study("c", ext, tmp_path / "c", "ref")
+    yp = r["results"]["y_plus"]
+    assert yp["cyl"]["part"] and not yp["walls"]["part"]
+
+
+def test_summary_mode_drops_the_selection_dump(tmp_path):
+    r = run_study("ch", CHANNEL, tmp_path / "ch", "ref")
+    s = api.summarize(r)
+    assert s["detail"] == "summary" and set(s["selection"]) == set(r["selection"])
+    assert s["selection"]["walls"] == {"faces": 2, "area_mm2": pytest.approx(20000)}
+    assert s["results"]["flow"] == r["results"]["flow"] and s["ok"] == r["ok"]
+    assert len(json.dumps(s)) < len(json.dumps(r))
+    assert api.summarize({"error": "x"}) == {"error": "x"}
+    res = {"done": True, "studies": {"ch": r}}
+    assert api._detail(res, "summary")["studies"]["ch"]["detail"] == "summary"
+    assert api._detail(res, "full") is res
+
+
+def test_image_clim_and_cp(tmp_path, monkeypatch):
+    from cfd_translator.format import image_errors
+    assert image_errors([{"slice": {"axis": "z", "at": 0}, "field": "cp"}], True, (), False)
+    assert not image_errors([{"slice": {"axis": "z", "at": 0}, "field": "cp", "clim": [-1, 1]}], True, (), True)
+    assert image_errors([{"surface": "part", "clim": [1, 0]}]) and image_errors([{"surface": "part", "clim": "wide"}])
+    assert not image_errors([{"surface": "part", "field": "cp", "clim": "full"}])
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    st = dict(CHANNEL, reference={"velocity": 0.01})
+    r = run_study("ch", st, tmp_path / "req" / "ch", "ref")
+    assert r["ok"]
+    out = api.render_images(str(tmp_path / "req" / "ch"),
+                            [{"name": "cp", "slice": {"axis": "z", "at": 5}, "field": "cp"},
+                             {"name": "cpc", "slice": {"axis": "z", "at": 5}, "field": "cp", "clim": [-1, 1]},
+                             {"name": "rob", "slice": {"axis": "z", "at": 5}, "field": "p", "clim": "robust"}])
+    assert out["warnings"] == [], out
+    q = 0.5 * 1.0 * 0.01 ** 2
+    p = r["results"]["pressure"]
+    assert out["images"]["cp"]["max"] == pytest.approx(p["inlet"]["p_mean"] / q, rel=0.2)
+    assert out["images"]["cpc"]["clim"] == [-1, 1] and out["images"]["cp"]["clim"][0] == out["images"]["cp"]["min"]
+    lo, hi = out["images"]["rob"]["clim"]
+    assert out["images"]["rob"]["min"] <= lo < hi <= out["images"]["rob"]["max"]

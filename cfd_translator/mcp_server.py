@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.20.1
+Version: 2026.10.21.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -80,20 +80,23 @@ def validate_studies(studies: dict) -> dict:
 
 
 @server.tool()
-def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45) -> dict:
+def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail: str = "summary") -> dict:
     """Meshes, solves (OpenFOAM, or the 2D reference solver) and checks each study. Per study: results
     (flow rates, pressures, pressure drop, wall forces, coefficients, probes, wall shear, y+, loads for
     fea-translator), what each bc's selector took, solver convergence, mass and momentum balance,
     'expect' checks, warnings, and files (the OpenFOAM case and a .tgz of it). Returns after at most
-    wait_s seconds: studies still running are listed in 'pending'; collect them with study_status."""
-    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0))
+    wait_s seconds: studies still running are listed in 'pending'; collect them with study_status.
+    detail: "summary" (default: bc selections as counts, no per-face loads) or "full"."""
+    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0), detail=detail)
 
 
 @server.tool()
-def study_status(request: str, wait_s: float = 45) -> dict:
+def study_status(request: str, wait_s: float = 45, detail: str = "summary") -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results,
-    the others in 'pending'. Waits up to wait_s seconds (at most 50) for them to finish."""
-    return api.status(request, min(max(float(wait_s), 0.0), 50.0))
+    the others in 'pending'. Waits up to wait_s seconds (at most 50) for them to finish. detail: "summary"
+    (default: coefficients, forces, checks, image paths; bc selections as counts, no per-face loads) or
+    "full" (everything, as in <request>/<name>/<name>.json)."""
+    return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail)
 
 
 @server.tool()
@@ -146,7 +149,8 @@ def get_image(path: str) -> Image:
 def render_images(study_folder: str, images: list | bool = True) -> dict:
     """New pictures of a finished study without solving again: study_folder is <request>/<study name>
     (the folder holding <name>.json). images: true (defaults) or [{name, slice: {axis, at}, field,
-    streamlines, window} | {name, surface, field, view}] as in study_format. Then get_image each path."""
+    streamlines, window, clim} | {name, surface, field, view, clim}] as in study_format (field cp: pressure
+    coefficient from reference.velocity). Then get_image each path."""
     return api.render_images(study_folder, images)
 
 

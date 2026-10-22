@@ -303,3 +303,17 @@ def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
     assert d["command"][2:-1] == ["--mem=16G", "--nice=10"] and d["time_min"] == 20          # CFDT_TIMEOUT 600 s + 10 min
     assert executor.status()["caps"] == {"timeout_s": "86400", "mem": "32G", "procs": "19"}
     assert executor.mem_mb("8G") == 8192 and executor.mem_mb("500M") == 500 and executor.mem_mb("x") is None
+
+
+def test_job_memory_rises_with_the_cell_estimate(monkeypatch):
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nice=5")
+    monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
+    big = dict(COUETTE, mesh={"cells": [2000, 2000, 1]})                     # 4M cells: 2 + 4 x 4 = 18 GB
+    args, src = executor.sbatch_args(big, executor.cell_estimate(big))
+    assert args == ["--nice=5", "--mem=18G"] and src == "estimate"
+    monkeypatch.setenv("CFDT_MAX_MEM", "16G")
+    assert executor.sbatch_args(big, 4e6)[0][-1] == "--mem=16G"               # within the machine's cap
+    small, src = executor.sbatch_args(COUETTE, 200)
+    assert small == ["--mem=8G", "--nice=5"] and src == "default"            # the default when it suffices
+    auto = dict(COUETTE, run={"mem": "auto"})
+    assert executor.sbatch_args(auto, 200)[0][-1] == "--mem=3G" and executor.sbatch_args(auto, 200)[1] == "estimate"

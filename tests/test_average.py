@@ -189,3 +189,33 @@ def test_verdict_accepts_settled_and_validation():
     for bad in ({"average": {"windows": 0.3}}, {"average": {"window": 1.5}}, {"average": "yes"},
                 {"average": {"min_iterations": 5}}, {"average": {"scatter": 0}}):
         assert any("solve.average" in e for e in validate_study(dict(base, solve=bad))["errors"]), bad
+
+
+def test_drag_and_lift_coefficients_are_averaged_and_judged(tmp_path):
+    n = 3000
+    it = np.arange(1, n + 1)
+    Fx = 2.0 + 0.02 * np.sin(it / 9.0)                    # drag (N) wobbling 1 %
+    Fz = 0.05 * np.sin(it / 13.0)                         # lift around zero
+    _write(tmp_path / "postProcessing" / "cfdtF_body" / "0" / "forces.dat",
+           "# Time\ttotal_x\ttotal_y\ttotal_z\tpressure_x\tpressure_y\tpressure_z\tviscous_x\tviscous_y\tviscous_z",
+           [f"{i}\t({x:.9g} 0 {z:.9g})\t({x:.9g} 0 {z:.9g})\t(0 0 0)" for i, x, z in zip(it, Fx, Fz)])
+    qa = 0.5 * 1.2 * 30 ** 2 * 0.01
+    res = {"coefficients": {"cd": Fx[-1] / qa, "cl": Fz[-1] / qa, "drag_dir": [1, 0, 0], "lift_dir": [0, 0, 1],
+                            "q_Pa": 0.5 * 1.2 * 900, "area_m2": 0.01}}
+    plan = {"rho": 1.2, "patches": {"body": {"kind": "wall"}},
+            "monitors": {"pressure": {}, "torque": {}, "forces": {"fo": "cfdtF_body", "patches": ["body"]},
+                         "settings": {"window": 0.25, "min_iterations": 500, "drift": 0.01, "scatter": 0.02}}}
+    avg, w = average_results(tmp_path, plan, res)
+    assert not w, w
+    co = res["coefficients"]
+    assert co["cd"] == pytest.approx(Fx[-750:].mean() / qa, rel=1e-5) and co["cd_last"] == pytest.approx(Fx[-1] / qa)
+    assert co["cl"] == pytest.approx(Fz[-750:].mean() / qa, abs=1e-6) and "cd_std" in co and co["averaged_over"] == [2251, 3000]
+    assert avg["judged"] == ["cd", "cl"] and avg["settled"], avg      # cl judged against cd's size, not its own ~0
+    assert len(avg["history"]["cd"]) <= 201
+
+
+def test_turbulent_external_flow_averages_by_default():
+    ext = {"domain": {"kind": "external", "box": [0, 0, 0, 1, 1, 1]}, "model": "kOmegaSST",
+           "reference": {"velocity": 30, "area": 1e4}}
+    assert settings(ext) is not None and settings(dict(ext, model="laminar")) is None
+    assert settings(dict(ext, solve={"average": False})) is None

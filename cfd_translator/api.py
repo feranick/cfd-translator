@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.20.1
+Version: 2026.10.21.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -231,7 +231,42 @@ def start(studies: dict, solver: str | None = None) -> Path:
     return folder
 
 
-def status(request: str, wait: float = 0.0) -> dict:
+# keys that make a result long and that a model rarely needs once the setup is right (the full result stays
+# in <request>/<name>/<name>.json and results.json; detail="full" returns it)
+_HEAVY_RESULTS = ("feat_loads", "feat_thermal")
+
+
+def summarize(r: dict) -> dict:
+    """A study result without the face-selection dump and per-face lists: what each bc took becomes counts
+    and areas; results keep coefficients, forces, flow, pressure, heat, checks, probes, images, averaged
+    (without its history), scalars, age, porous, rotating, pump; feat_loads/feat_thermal keep their totals."""
+    if not isinstance(r, dict) or "results" not in r and "selection" not in r:
+        return r
+    out = {k: v for k, v in r.items() if k not in ("selection", "case", "mesh")}
+    if isinstance(r.get("selection"), dict):
+        out["selection"] = {bc: {"faces": len(v), "area_mm2": round(sum(float(x.get("area_mm2", 0)) for x in v), 4)}
+                            for bc, v in r["selection"].items() if isinstance(v, list)}
+    m = r.get("mesh") or {}
+    if m:
+        out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality", "ok", "layers_y_plus") if k in m}
+    res = r.get("results")
+    if isinstance(res, dict):
+        rs = {k: v for k, v in res.items() if k not in _HEAVY_RESULTS}
+        for k in ("feat_loads", "feat_thermal"):
+            if isinstance(res.get(k), dict):
+                rs[k] = {kk: vv for kk, vv in res[k].items() if kk in ("total", "note")}
+                rs[k]["note_summary"] = "per-face bcs left out: study_status(..., detail='full') or get_file"
+        if isinstance(rs.get("averaged"), dict):
+            rs["averaged"] = {k: v for k, v in rs["averaged"].items() if k != "history"}
+        out["results"] = rs
+    sv = r.get("solve")
+    if isinstance(sv, dict):
+        out["solve"] = {k: v for k, v in sv.items() if k not in ("checkMesh", "first_residuals")}
+    out["detail"] = "summary"
+    return out
+
+
+def status(request: str, wait: float = 0.0, detail: str = "full") -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
@@ -240,19 +275,25 @@ def status(request: str, wait: float = 0.0) -> dict:
     while True:
         res = _collect(folder)
         if res["done"] or time.time() >= t_end:
-            return res
+            return _detail(res, detail)
         # SLURM jobs do not need this process: give quick ones up to 15 s, then return them pending
         prog = res.get("progress", {})
         if prog and all("job_id" in v for v in prog.values()) and time.time() - t0 >= 15:
-            return res
+            return _detail(res, detail)
         time.sleep(2.0)
 
 
-def run(studies: dict, solver: str | None = None, wait: float | None = None) -> dict:
+def _detail(res: dict, detail: str) -> dict:
+    if detail != "summary":
+        return res
+    return dict(res, studies={n: summarize(r) for n, r in (res.get("studies") or {}).items()})
+
+
+def run(studies: dict, solver: str | None = None, wait: float | None = None, detail: str = "full") -> dict:
     """Runs the studies into a new request folder under CFDT_OUT: per study <name>/case (the OpenFOAM
     case with logs and results), <name>_case.tgz, <name>.json; and studies.json, results.json."""
     folder = start(studies, solver)
-    return status(str(folder), 1e9 if wait is None else wait)
+    return status(str(folder), 1e9 if wait is None else wait, detail)
 
 
 def _requests(limit: int):
@@ -373,7 +414,8 @@ def render_images(study_folder: str, images=True) -> dict:
         return {"error": f"no saved state in {d} (a finished study's folder: <request>/<name>)"}
     mesh, plan, fields, study = load_state(d)
     from .format import _scalar_names
-    errs = image_errors(images, bool(study.get("2d")), _scalar_names(study))
+    errs = image_errors(images, bool(study.get("2d")), _scalar_names(study),
+                        bool((study.get("reference") or {}).get("velocity")))
     if errs:
         return {"error": "invalid images", "errors": errs}
     specs = default_images(study, mesh) if images is True else images

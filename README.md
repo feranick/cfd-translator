@@ -181,8 +181,9 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 - **expect**: `[{quantity, value, tol | abs}]`, where `quantity` is a dotted path into the results.
 - **images**: `true` for the default views, or a list of views. The PNGs are written after the solve.
   - Defaults: 2D studies get |U| with streamlines and the pressure on the plane. External 3D studies get top and side slices through the part with streamlines, plus the pressure on the part. Internal 3D studies get a mid slice and the wall pressure.
-  - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p (| T | mach | a tracer | age), streamlines, window: [a0, a1, b0, b1]}`. Tracers and the age are added to the default views.
-  - Surface: `{name, surface: part | walls | <wall bc>, field: p | wall_shear, view: [elev, azim]}`.
+  - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p | cp (| T | mach | a tracer | age), streamlines, window: [a0, a1, b0, b1]}`. Tracers and the age are added to the default views.
+  - Surface: `{name, surface: part | walls | <wall bc>, field: p | cp | wall_shear, view: [elev, azim]}`.
+  - Any image: `clim: [lo, hi] | full | robust` (colour range; robust = 2nd-98th percentile, the default on surfaces). `cp` = (p - reference.p) / (½ρ·reference.velocity²), on slices too.
   - Every run also saves its mesh and final fields (`state.npz`), so `render_images` / `cfdt images` can make other views later without solving again.
 
 ### Results
@@ -199,7 +200,7 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 | `forces.part` (external) / `forces.all_walls` (internal) | total over the part's faces / all walls |
 | `coefficients.cd`, `cl`, `cm` | with `reference.velocity` and `area` (drag along the inlet velocity unless `drag_dir` is given) |
 | `probes.<name>.ux/uy/uz/u/p` | values at points; lists for lines |
-| `wall_shear.<bc>.mean/max`, `y_plus.<bc>` | Pa; y⁺ for kOmegaSST |
+| `wall_shear.<bc>.mean/max`, `y_plus.<bc>` | Pa; y⁺ = u_τ y / ν from the wall shear (relative to a moving wall), with `part`, `moving` and OpenFOAM's k-based value as `openfoam`; `y_plus_part_mean` (turbulent) judges the part's walls |
 | `max_velocity` | largest cell velocity and where it is |
 | `feat_loads` | external flow: one fea-translator `force` bc per part face (`pts` selector, N), ready to paste into a feat study of the same part |
 | `images.<name>.path`, `what`, `min`, `max` | the PNGs (show them with the MCP tool `get_image`) |
@@ -344,6 +345,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.21.1 | Vehicle-aero quick fixes. **y+** from the wall shear (u_tau = sqrt(tau/rho), y = wall to cell centre), so a moving ground reads its velocity relative to the wall (OpenFOAM's k-based yPlus, ~26,000 on a 30 m/s ground, kept as `y_plus.<wall>.openfoam`); each wall says `part` (and `moving`), and the 30-300 warning judges only the part's walls (`y_plus_part_mean`, area-weighted). **Cd/Cl averaging**: external turbulent studies with reference velocity and area average by default; a forces monitor on the part's walls gives `averaged.cd/cl` (mean, std, drift, scatter, history) and `coefficients.cd/cl` become the means (`cd_last`). **Memory**: jobs ask for `--mem` = 2 GB + 4 GB per million estimated cells when larger than the default (`run.mem` still wins; `"auto"` = the estimate); job.json records `cells_estimate`, `mem_from`. **Summary mode**: `run_studies` / `study_status` return `detail="summary"` by default (selection as faces and area per bc, no per-face feat bcs, no averaging history); `detail="full"` for everything. **Images**: field `cp` ((p - reference.p) / (½ρU²)) on slices and surfaces; `clim`: [lo, hi] | full | robust (2nd-98th percentile, the surface default). |
 | 2026.10.20.1 | Per-study run settings: `"run": {timeout_s, mem, procs, queue}` override `config/env`'s defaults for one study (the job's `--time`, `--mem` replacing the one in `CFDT_SLURM_ARGS`, `--ntasks`, the solver's timeout), within ceilings `CFDT_MAX_TIMEOUT`, `CFDT_MAX_MEM`, `CFDT_MAX_PROCS` (validation names the variable). `tool_status().executor` adds `timeout_s` and `caps`; results add `execution.limits`; `job.json` keeps `run`. Specified for every translator in llm-translators' EXECUTION.md. |
 | 2026.10.19.4 | SLURM jobs ask only for the ranks their mesh can use: an upper estimate of the cell count before meshing (box cells exact; Gmsh sections ~1.3 cells per size² with quads, 2.5 with triangles, times the layers; tetrahedra ~10 per size³; plus each refine sphere; goals built with build123d-translator for their volume), divided by `CFDT_CELLS_PER_RANK`, capped at the study's `procs`. The six small benchmarks held 18 CPUs each on mochi for 1–3 ranks; now 2 (porous: 1 rank) to 10 (mixing layer: 5, an upper estimate for 3). Unknown sizes (STEP, no mesh.size) keep the study's procs. |
 | 2026.10.19.3 | The MCP tool `run_benchmarks` timed out with SLURM (it waited for every job; the jobs still ran). Now it submits the cases as one request and returns after `wait_s` (30 s); the new tool `bench_status(bench)` evaluates the finished cases and lists the pending ones. Chains are left to the CLI (`cfdt bench <name>`). `bench.evaluate` is shared by both paths. |

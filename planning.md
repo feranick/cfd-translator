@@ -167,6 +167,8 @@ with local runs (as for the venturi). README: format, results, the new checks, v
 
 ## State
 
+**2026.10.21.1**: vehicle-aero quick fixes (#4 y+ from shear, part-only warning; #3 Cd/Cl averaged from a forces monitor on the part walls; #6 --mem from the cell estimate; #8 summary detail; #9 cp and clim). Next, in order: snappyHexMesh path (#1 layers with collapse + y+ report, #5 box/cylinder/distance refinement, #10 quality controls), geometry by reference and mesh variants (#7), transient URANS/DDES with averaging and restarts across SLURM jobs (#2); acceptance: Ahmed body 25 and 35 degrees, three meshes, layers, y+ 30-300, Cd within ~10 % (0.285 / 0.26).
+
 **2026.10.20.1**: per-study `run` {timeout_s, mem, procs, queue} over config/env, with CFDT_MAX_* caps (the user cannot ask Claude to edit config/env on mochi); execution.limits in results; EXECUTION.md section 'Per-study run settings' for lmpt and feat; translators.json lists CFDT_MAX_*.
 
 **2026.10.19.3/.4**: run_benchmarks submits and returns, bench_status collects (all six new benchmarks pass on mochi with .3). Jobs ask for ranks from an upper cell estimate before meshing (executor.cell_estimate / procs_for_job).

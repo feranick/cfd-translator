@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.19.1
+Version: 2026.10.21.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -201,10 +201,21 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             tau = np.linalg.norm(Fv - np.einsum("ij,ij->i", Fv, Sf / A[:, None])[:, None] * (Sf / A[:, None]), axis=1) / A
             out["wall_shear"][nm] = {"mean": _r((tau * A).sum() / At), "max": _r(tau.max())}
             wall_faces.append((f, F, r))
+            # y+ from the wall shear (the velocity relative to the wall: a ground moving with the air has little):
+            # u_tau = sqrt(tau / rho), y = wall to cell centre. OpenFOAM's yPlus field with wall functions is k-based
+            # (Cmu^1/4 sqrt(k) y / nu) and read ~26,000 on a moving ground in coarse cells: kept as 'openfoam'
+            nu_f = (en["mu"] / np.asarray(rho_f, float)) if en else nu
+            rho_w = np.asarray(rho_f, float) if en else rho
+            ypl = np.sqrt(np.maximum(tau, 0) / rho_w) * (1.0 / dc[f - ni]) / nu_f
+            on_part = (not external) or all(mesh.tag_info.get(int(t), {}).get("on") == "part"
+                                            for t in plan["patches"][nm].get("tags", []))
+            rec_y = {"min": _r(np.min(ypl)), "mean": _r(float((ypl * A).sum() / At)), "max": _r(np.max(ypl)),
+                     "part": bool(on_part), **({"moving": True} if plan["patches"][nm].get("moving") else {})}
             yp = pf.get("yPlus")
             if yp is not None and len(yp):
                 yp = np.asarray(yp, float)
-                yplus[nm] = {"min": _r(yp.min()), "mean": _r((yp * A).sum() / At), "max": _r(yp.max())}
+                rec_y["openfoam"] = {"min": _r(yp.min()), "mean": _r((yp * A).sum() / At), "max": _r(yp.max())}
+            yplus[nm] = rec_y
         probes_X.append(g["Cf"][f])
         probes_V.append(np.column_stack([Ub, pb] + ([Tb - 273.15] if en else [])))
     # totals over walls
@@ -325,10 +336,14 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                 warns.append(f"probe {p['name']!r}: {far:.3g} mm from the nearest cell centre (outside the fluid?)")
     if yplus:
         out["y_plus"] = yplus
-        if plan["model"] != "laminar":
-            mean = np.mean([v["mean"] for v in yplus.values()])
+        part = {n: v for n, v in yplus.items() if v.get("part")}
+        if plan["model"] != "laminar" and part:
+            # judged on the part's walls only (not the domain's ground or sides), area-weighted
+            areas = {n: float(np.linalg.norm(g["Sf"][mesh.patch_faces(n)], axis=1).sum()) for n in part}
+            mean = sum(part[n]["mean"] * areas[n] for n in part) / max(sum(areas.values()), 1e-300)
+            out["y_plus_part_mean"] = _r(mean)
             if mean < 25 or mean > 400:
-                warns.append(f"mean y+ on the walls is {mean:.3g}: wall functions want 30-300 at the first cell "
+                warns.append(f"mean y+ on the part's walls is {mean:.3g}: wall functions want 30-300 at the first cell "
                              "(change mesh.size or mesh.layers.first)")
     # energy: gravity in the momentum balances, heat results, energy balance, loads for feat's thermal analysis
     if en:

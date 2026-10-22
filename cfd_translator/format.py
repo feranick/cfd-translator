@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.20.1
+Version: 2026.10.21.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -38,16 +38,14 @@ BC_KINDS = {
     "inlet": ({"faces": ""},
               {"velocity": "m/s: a number (normal into the domain) or [vx, vy, vz]",
                "flow_rate": "m3/s (instead of velocity)", "flow_rate_lpm": "L/min (instead of velocity)",
-               "profile": "uniform (default) | parabolic (fully developed laminar: circular, rectangular or 2D inlets)",
+               "profile": "uniform (default) | parabolic (fully developed laminar)",
                "intensity": "turbulence intensity (kOmegaSST; default 0.05)",
-               "length_scale": "mm, turbulence length scale (default 0.07 x hydraulic diameter)",
-               "swirl": "{axis: [x, y, z], center: [x, y, z] mm, rpm (solid body: omega r) or tangential (m/s, "
-                        "uniform)}: tangential velocity added face by face (impeller exits, swirlers)",
+               "length_scale": "mm (default 0.07 x hydraulic diameter)",
+               "swirl": "{axis, center mm, rpm (solid body) or tangential m/s}: added tangential velocity (swirlers)",
                "mass_flow": "kg/s (energy only; instead of velocity)",
                "temperature": "degrees C (energy only; default conditions.T)",
-               "total_pressure": "Pa gauge (energy, gases: instead of velocity; isentropic total-pressure inlet; with "
-                                 "total_temperature in degrees C, default conditions.T)",
-               "total_temperature": "degrees C (with total_pressure)"},
+               "total_pressure": "Pa gauge (energy, gases: instead of velocity; isentropic)",
+               "total_temperature": "degrees C (with total_pressure; default conditions.T)"},
               "Fixed velocity in (pressure zero-gradient)."),
     "outlet": ({"faces": ""}, {"pressure": "Pa (static, default 0; gauge to conditions.p with energy)",
                                "temperature": "degrees C of any backflow (energy; default conditions.T)"},
@@ -55,9 +53,8 @@ BC_KINDS = {
     "opening": ({"faces": ""}, {"pressure": "Pa (static, default 0; gauge to conditions.p with energy)",
                                 "temperature": "degrees C of inflow (energy; default conditions.T)"},
                 "Fixed static pressure; flow may go in or out (open ends, far-field)."),
-    "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part used; default at rest)",
-                             "rotation": "a rotating zone's name (impeller faces inside it) or {axis: [x, y, z], "
-                                         "center: [x, y, z] mm, rpm}: rotating wall (u = omega x r, right-handed)",
+    "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part)",
+                             "rotation": "a rotating zone's name or {axis, center mm, rpm}: rotating wall (u = omega x r)",
                              "T": "energy: wall temperature, degrees C", "q": "energy: heat flux into the fluid, W/m2",
                              "power": "energy: total heat into the fluid, W (spread over the area)",
                              "h": "energy: film coefficient to an outside temperature T_inf, W/(m2 K)",
@@ -114,11 +111,11 @@ CONVENTIONS = [
     "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
     "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
     "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
-    "(rho g Q H / power). Keep the zone's cylinder clear of stationary walls.",
-    "Averaging (solve.average, on with a rotating zone): torque and inlet/outlet total pressure are recorded "
-    "every iteration; results.averaged: mean, std, drift, scatter over the last 25 % (>= 500 its); the means "
-    "replace torque, power, head, efficiency, total_pressure_drop (final iteration: *_last). settled (drift < 1 %, "
-    "scatter < 2 %) counts as converged for reliable.",
+    "(rho g Q H / power). Keep the cylinder clear of stationary walls.",
+    "Averaging (solve.average; on with a rotating zone, or external turbulent flow with reference velocity and "
+    "area): torque, total pressures and part forces each iteration; results.averaged: mean, std, drift, scatter "
+    "over the last 25 % (>= 500 its); the means replace torque, power, head, efficiency, total_pressure_drop, "
+    "cd, cl (final iteration: *_last). settled (drift < 1 %, scatter < 2 %) counts as converged.",
     "reliable: false (with reasons) when the solver neither converged nor settled, or the mass or momentum balance is off: "
     "then do not report the numbers as results; rerun with more solve.iterations, lower solve.relax, or a "
     "better mesh. Long runs: use solve.procs (MPI ranks).",
@@ -153,9 +150,10 @@ STUDY_KEYS = {
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis from center}]: "
                 "rotating zones (MRF, frozen rotor): the cells whose centres are inside the cylinder",
-    "images": "true (default pictures) or [{name, slice: {axis: x|y|z, at: mm}, field: u|ux|uy|uz|p, streamlines, "
-              "window: [a0, a1, b0, b1] mm} | {name, surface: part|walls|<wall bc>, field: p|wall_shear, view: "
-              "[elev, azim]}]: PNGs after the solve (get_image shows them; render_images makes more later)",
+    "images": "true (default pictures) or [{name, slice: {axis: x|y|z, at: mm}, field: u|ux|uy|uz|p|cp, streamlines, "
+              "window: [a0, a1, b0, b1] mm} | {name, surface: part|walls|<wall bc>, field: p|cp|wall_shear, view: "
+              "[elev, azim]}], each with clim: [lo, hi] | full | robust (2-98th percentile, surface default): "
+              "PNGs after the solve (get_image shows them; render_images makes more). cp uses reference.velocity",
     "energy": "true: solve temperature (OpenFOAM fluid): gases (air) are compressible perfect gases (to "
               "transonic), liquids (water) keep constant density; walls can be heated; default false",
     "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
@@ -243,7 +241,7 @@ def _scalar_names(st: dict) -> tuple:
     return names + (("age",) if st.get("age") else ())
 
 
-def image_errors(im, two_d: bool = False, scalars: tuple = ()) -> list[str]:
+def image_errors(im, two_d: bool = False, scalars: tuple = (), ref_velocity: bool = True) -> list[str]:
     if im is True or im is False:
         return []
     if not isinstance(im, list):
@@ -255,7 +253,7 @@ def image_errors(im, two_d: bool = False, scalars: tuple = ()) -> list[str]:
             errs.append(f"{w}: give slice: {{axis, at}} or surface: part | walls | <wall bc>")
             continue
         for k in sp:
-            if k not in ("name", "slice", "surface", "field", "streamlines", "window", "view"):
+            if k not in ("name", "slice", "surface", "field", "streamlines", "window", "view", "clim"):
                 errs.append(f"{w}: unknown key {k!r}")
         if "name" in sp:
             if not isinstance(sp["name"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", sp["name"]):
@@ -267,8 +265,8 @@ def image_errors(im, two_d: bool = False, scalars: tuple = ()) -> list[str]:
                 errs.append(f"{w}.slice: {{axis: x | y | z, at: coordinate in mm}}")
             elif two_d and sl["axis"] != "z":
                 errs.append(f"{w}.slice: a 2d study has only the z slice")
-            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p", "T", "mach") + tuple(scalars):
-                errs.append(f"{w}.field: u, ux, uy, uz, p, T or mach (T and mach with energy)"
+            if sp.get("field", "u") not in ("u", "ux", "uy", "uz", "p", "cp", "T", "mach") + tuple(scalars):
+                errs.append(f"{w}.field: u, ux, uy, uz, p, cp, T or mach (T and mach with energy)"
                             + (f", or a scalar: {', '.join(scalars)}" if scalars else ""))
             if "window" in sp and (not _vec(sp["window"], 4) or sp["window"][0] >= sp["window"][1]
                                    or sp["window"][2] >= sp["window"][3]):
@@ -276,10 +274,15 @@ def image_errors(im, two_d: bool = False, scalars: tuple = ()) -> list[str]:
         else:
             if not isinstance(sp["surface"], str):
                 errs.append(f"{w}.surface: part, walls or a wall bc's name")
-            if sp.get("field", "p") not in ("p", "wall_shear", "T", "q"):
-                errs.append(f"{w}.field: p, wall_shear, T or q (T and q with energy)")
+            if sp.get("field", "p") not in ("p", "cp", "wall_shear", "T", "q"):
+                errs.append(f"{w}.field: p, cp, wall_shear, T or q (T and q with energy)")
             if "view" in sp and not _vec(sp["view"], 2):
                 errs.append(f"{w}.view: [elevation, azimuth] in degrees")
+        if sp.get("field") == "cp" and not ref_velocity:
+            errs.append(f"{w}.field: cp needs reference.velocity (and reference.p if the far-field gauge is not 0)")
+        if "clim" in sp and not (sp["clim"] in ("full", "robust")
+                                 or (_vec(sp["clim"], 2) and sp["clim"][0] < sp["clim"][1])):
+            errs.append(f"{w}.clim: [lo, hi] in the field's units, 'full' (min to max) or 'robust' (2nd-98th percentile)")
         if "streamlines" in sp and not isinstance(sp["streamlines"], bool):
             errs.append(f"{w}.streamlines: true or false")
     if len([n for n in names if n]) != len({n for n in names if n}):
@@ -679,7 +682,7 @@ def validate_study(st: dict) -> dict:
             errs.append(f"bcs[{i}].rotation: {r!r} is not a rotating zone ({znames or 'none defined'})")
     # images
     if "images" in st:
-        errs += image_errors(st["images"], two_d, _scalar_names(st))
+        errs += image_errors(st["images"], two_d, _scalar_names(st), bool((st.get("reference") or {}).get("velocity")))
     # reference, probes, expect
     ref = st.get("reference", {})
     if not isinstance(ref, dict):
