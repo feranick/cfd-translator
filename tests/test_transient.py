@@ -81,9 +81,10 @@ def test_steady_start_becomes_time_zero(tmp_path):
 
 
 def test_progress_of_a_transient_log():
-    log = "".join(f"Courant Number mean: 0.1 max: 0.9{i}\ndeltaT = 0.001\nTime = {0.001 * i:g}s\n\n" for i in range(1, 51))
+    log = "".join(f"Courant Number mean: 0.1 max: 0.9{i}\ndeltaT = 0.001\nTime = {0.001 * i:g}s\n\n"
+                  f"ExecutionTime = {i * 0.5:g} s  ClockTime = {i} s\n\n" for i in range(1, 51))
     p = transient.progress(log, 1.0)
-    assert p["time_steps"] == 50 and p["time"] == pytest.approx(0.05) and p["courant_max"] == 0.95 and p["dt"] == 0.001
+    assert p["time"] == pytest.approx(0.05) and p["courant_max"] == 0.95 and p["dt"] == 0.001 and p["job_clock_s"] == 50
 
 
 def test_time_averages_and_frequency():

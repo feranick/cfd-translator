@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.10.22.4
+Version: 2026.10.22.5
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -185,9 +185,17 @@ _CO = re.compile(r"Courant Number mean: ([-+0-9.eE]+) max: ([-+0-9.eE]+)")
 _DT = re.compile(r"^deltaT = ([-+0-9.eE]+)", re.M)
 
 
+_CLOCK = re.compile(r"ClockTime = ([-+0-9.eE]+) s")
+
+
 def progress(text: str, end_time: float) -> dict:
+    """From the end of this job's log: simulated time, Courant number, time step, and the job's wall time so far
+    (OpenFOAM's ClockTime: the log file's own times change with every write)."""
     t = _TIME.findall(text)
-    out = {"time_steps": len(t)}
+    out = {}
+    ck = _CLOCK.findall(text[-20000:])
+    if ck:
+        out["job_clock_s"] = float(ck[-1])
     if t:
         out["time"] = float(t[-1])
         out["end_time"] = end_time

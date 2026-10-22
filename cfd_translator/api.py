@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.22.4
+Version: 2026.10.22.5
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -246,11 +246,16 @@ def _progress(d: Path, study: dict) -> dict:
         from .transient import progress as _tp
         T = float(trs["end_time"])
         pr = _tp(text, T)
-        el = max(time.time() - log.stat().st_ctime, 1e-3)
+        el = max(float(pr.pop("job_clock_s", 0.0)), 1e-3)
         out = {"stage": "solving (transient)", **pr, "elapsed_min": round(el / 60, 1)}
-        if len(it) >= 2:
-            t0, t1 = float(it[0]), float(it[-1])
-            rate = (t1 - t0) / el
+        try:
+            head = log.open("r", errors="replace").read(200000)
+            t_first = float(_re.findall(r"^Time = ([-+0-9.eE]+)", head, _re.M)[0])
+        except (OSError, IndexError, ValueError):
+            t_first = None
+        if it and t_first is not None and el > 1:
+            t1 = float(it[-1])
+            rate = (t1 - t_first) / el
             if rate > 0:
                 out["eta_min_max"] = round((T - t1) / rate / 60, 1)
                 out["note"] = ("eta for the rest of the simulated time at this job's pace; a run longer than one job "

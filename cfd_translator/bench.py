@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.22.4
+Version: 2026.10.22.5
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -438,7 +438,8 @@ def _cases() -> dict:
         st = dict(C["cylinder_2d1"]["study"])
         st["bcs"] = [dict(b, velocity=1.0) if b["kind"] == "inlet" else b for b in st["bcs"]]
         st["reference"] = {"velocity": 1.0, "area": 1000, "length": 100}
-        st["solve"] = {"transient": {"end_time": 8.0, "average_from": 5.0, "max_co": 0.5, "write_interval": 1.0}}
+        st["solve"] = {"transient": {"end_time": 8.0, "average_from": 5.0, "max_co": 0.5, "write_interval": 1.0,
+                                     **({"max_jobs": 30} if extra_run else {})}}
         st.pop("probes", None)
         if extra_run:
             st["run"] = extra_run
