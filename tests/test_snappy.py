@@ -313,6 +313,10 @@ def test_mesh_snappy_end_to_end_with_stand_ins(tmp_path, monkeypatch):
     monkeypatch.setattr(snappy, "surface_premesh", lambda *a, **k: (pts, surf, np.array([1.0, 1.0, 5.0]),
                                                                        (np.array([-50, -10, 0.0]), np.array([50, 10, 10.0]))))
     monkeypatch.setattr(foam, "find_foam", lambda: {"bashrc": None})
+    # one rank: a machine whose config sets CFDT_PROCS would take the parallel path (decomposePar, mpirun)
+    monkeypatch.setenv("CFDT_PROCS", "1")
+    for k in ("SLURM_NTASKS", "SLURM_JOB_ID"):
+        monkeypatch.delenv(k, raising=False)
     ran = []
 
     def step(fm, cmd, logname, case, timeout, raise_on_error=True):

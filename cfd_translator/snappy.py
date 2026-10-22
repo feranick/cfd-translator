@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.22.2
+Version: 2026.10.22.8
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -593,6 +593,13 @@ def _read_cell_zones(d: Path) -> dict:
     return out
 
 
+def _read(path: Path) -> str:
+    try:
+        return Path(path).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
 # ---- the whole path -----------------------------------------------------------------------------------
 def mesh_snappy(study: dict, folder: Path):
     from . import foam
@@ -731,12 +738,15 @@ def mesh_snappy(study: dict, folder: Path):
                         shutil.copytree(sd / "constant" / sub, pd / "constant" / sub)
             rc = foam._step(fm, f"{foam.mpirun_command(procs)} -np {procs} snappyHexMesh -parallel",
                             "log.snappyHexMesh", sd, tmo, raise_on_error=False)
-            log = parse_log((sd / "log.snappyHexMesh").read_text(errors="replace"))
+            log = parse_log(_read(sd / "log.snappyHexMesh"))
             if rc == 0:
                 foam._step(fm, "reconstructPar -constant", "log.reconstructPar", sd, tmo)
         else:
             rc = foam._step(fm, "snappyHexMesh", "log.snappyHexMesh", sd, tmo, raise_on_error=False)
-            log = parse_log((sd / "log.snappyHexMesh").read_text(errors="replace"))
+            log = parse_log(_read(sd / "log.snappyHexMesh"))
+        if rc == 0 and not log["finished"]:
+            raise MeshError("snappyHexMesh left no finished log (log.snappyHexMesh): " + (_read(sd / "log.snappyHexMesh")[-1500:]
+                                                                                          or "the file is missing"))
         if rc != 0 or "fatal" in log:
             raise MeshError("snappyHexMesh stopped:\n" + (log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")))
         foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
@@ -784,7 +794,7 @@ def mesh_snappy(study: dict, folder: Path):
     mesh.tag_info = {int(t): v for t, v in info.items()}
     mesh.zones = {}
     snapped = _read_cell_zones(d)
-    report = parse_log((sd / "log.snappyHexMesh").read_text(errors="replace"))
+    report = parse_log(_read(sd / "log.snappyHexMesh"))
     lay = dict(st["layers"]) if st["layers"] else None
     if lay and lay.get("stack_to_surface_cell", 0) > 1.5:
         notes.append(f"mesh.layers: the stack ({lay['total_mm']} mm) is {lay['stack_to_surface_cell']} of the finest surface "
