@@ -1,5 +1,6 @@
-"""mesher.py — the fluid domain as a PolyMesh: a structured box, or Gmsh (tetrahedra, or a swept 2D mesh).
-Version: 2026.10.16.6
+"""mesher.py — the fluid domain as a PolyMesh: a structured box, Gmsh (tetrahedra, or a swept 2D mesh), or
+snappyHexMesh (mesh.mesher "snappy": snappy.py).
+Version: 2026.10.21.2
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -45,8 +46,8 @@ def _gmsh_init(gmsh):
     gmsh.option.setNumber("General.Terminal", 0)
 
 
-def _build_geometry(gmsh, study: dict, workdir: Path):
-    """The fluid volume tag and {surface tag: {"on", "box"}}."""
+def _part(gmsh, study: dict, workdir: Path) -> list:
+    """The part as one OpenCASCADE solid: [(3, tag)]."""
     occ = gmsh.model.occ
     g = study["geometry"]
     if "box" in g:
@@ -66,6 +67,13 @@ def _build_geometry(gmsh, study: dict, workdir: Path):
     occ.synchronize()
     if len(part) != 1:
         raise MeshError(f"the geometry has {len(part)} solids; a study is one solid")
+    return part
+
+
+def _build_geometry(gmsh, study: dict, workdir: Path):
+    """The fluid volume tag and {surface tag: {"on", "box"}}."""
+    occ = gmsh.model.occ
+    part = _part(gmsh, study, workdir)
     d = study.get("domain", {})
     info = {}
     if d.get("kind") == "external":
@@ -99,8 +107,26 @@ def _build_geometry(gmsh, study: dict, workdir: Path):
     return vol, info
 
 
-def _sizes(gmsh, study: dict, h: float, fields_too: bool = True):
-    """Size options, and (fields_too) one Ball field per refine sphere; returns the field tags."""
+def _field(gmsh, kind: str, values: dict) -> int:
+    f = gmsh.model.mesh.field.add(kind)
+    for k, v in values.items():
+        names = k if isinstance(k, tuple) else (k,)
+        for i, nm in enumerate(names):              # option names changed between Gmsh versions
+            try:
+                if isinstance(v, list):
+                    gmsh.model.mesh.field.setNumbers(f, nm, v)
+                else:
+                    gmsh.model.mesh.field.setNumber(f, nm, float(v))
+                break
+            except Exception:  # noqa: BLE001
+                if i == len(names) - 1:
+                    raise
+    return f
+
+
+def _sizes(gmsh, study: dict, h: float, fields_too: bool = True, info: dict | None = None):
+    """Size options, and (fields_too) one field per mesh.refine entry: sphere {at, r}, box, cylinder
+    {center, axis, radius, span} or distance (mm from the part's faces); returns the field tags."""
     m = study.get("mesh", {})
     refine = m.get("refine", [])
     gmsh.option.setNumber("Mesh.MeshSizeMax", h)
@@ -110,12 +136,31 @@ def _sizes(gmsh, study: dict, h: float, fields_too: bool = True):
     if not fields_too:
         return fields
     for r in refine:
-        f = gmsh.model.mesh.field.add("Ball")
-        (x, y, z), rad = r["at"], float(r["r"])
-        for k, v in (("XCenter", x), ("YCenter", y), ("ZCenter", z), ("Radius", rad), ("Thickness", rad),
-                     ("VIn", float(r["size"])), ("VOut", h)):
-            gmsh.model.mesh.field.setNumber(f, k, float(v))
-        fields.append(f)
+        sz = float(r["size"])
+        if "box" in r:
+            x0, y0, z0, x1, y1, z1 = (float(v) for v in r["box"])
+            fields.append(_field(gmsh, "Box", {"VIn": sz, "VOut": h, "XMin": x0, "XMax": x1, "YMin": y0, "YMax": y1,
+                                               "ZMin": z0, "ZMax": z1, "Thickness": 2 * sz}))
+        elif "cylinder" in r:
+            c = r["cylinder"]
+            a = np.asarray(c["axis"], float)
+            a /= np.linalg.norm(a)
+            s0, s1 = c.get("span", [-1e6, 1e6])
+            ctr = np.asarray(c.get("center", [0, 0, 0]), float) + 0.5 * (s0 + s1) * a
+            ha = 0.5 * (s1 - s0) * a                     # Gmsh: the axis vector is the half-length
+            fields.append(_field(gmsh, "Cylinder", {"VIn": sz, "VOut": h, "XCenter": ctr[0], "YCenter": ctr[1],
+                                                    "ZCenter": ctr[2], "XAxis": ha[0], "YAxis": ha[1], "ZAxis": ha[2],
+                                                    "Radius": float(c["radius"])}))
+        elif "distance" in r:
+            surfs = [int(t) for t, i in (info or {}).items() if i.get("on") == "part"]
+            fd = _field(gmsh, "Distance", {("SurfacesList", "FacesList"): surfs, "Sampling": 40})
+            d = float(r["distance"])
+            fields.append(_field(gmsh, "Threshold", {"InField": fd, ("SizeMin", "LcMin"): sz, ("SizeMax", "LcMax"): h,
+                                                     "DistMin": d, "DistMax": d + 3 * sz + h}))
+        else:
+            (x, y, z), rad = r["at"], float(r["r"])
+            fields.append(_field(gmsh, "Ball", {"XCenter": x, "YCenter": y, "ZCenter": z, "Radius": rad,
+                                                "Thickness": rad, "VIn": sz, "VOut": h}))
     return fields
 
 
@@ -143,6 +188,9 @@ def mesh_study(study: dict, workdir: Path, size_factor: float = 1.0):
     g = study["geometry"]
     external = study.get("domain", {}).get("kind") == "external"
     two_d = bool(study.get("2d"))
+    if m.get("mesher") == "snappy":
+        from .snappy import mesh_snappy
+        return mesh_snappy(study, workdir)
     if "box" in g and "cells" in m and not external:
         lx, ly, lz = (float(v) for v in g["box"])
         nx, ny, nz = (max(1, round(c / size_factor)) if size_factor != 1 else c for c in m["cells"])
@@ -177,7 +225,7 @@ def mesh_study(study: dict, workdir: Path, size_factor: float = 1.0):
 
 
 def _tets(gmsh, study, vol, info, h):
-    fields = _sizes(gmsh, study, h)
+    fields = _sizes(gmsh, study, h, info=info)
     if fields:
         fmin = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(fmin, "FieldsList", fields)
@@ -185,6 +233,12 @@ def _tets(gmsh, study, vol, info, h):
     gmsh.option.setNumber("Mesh.ElementOrder", 1)
     gmsh.option.setNumber("Mesh.Optimize", 1)
     gmsh.model.mesh.generate(3)
+    if study.get("mesh", {}).get("optimize", True):
+        # Netgen's optimiser removes slivers (88-degree non-orthogonality on the Rogue's tetrahedra diverged)
+        try:
+            gmsh.model.mesh.optimize("Netgen")
+        except Exception:  # noqa: BLE001 (a Gmsh build without Netgen)
+            pass
     pts, lut, surf = _surface_mesh(gmsh)
     et, _, en = gmsh.model.mesh.getElements(3, vol)
     tets = [lut[np.asarray(n, np.int64).reshape(-1, 4)] for t, n in zip(et, en) if int(t) == 4]
@@ -251,7 +305,7 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
         if float(np.abs(curves[best][1] - cb).max()) > tol:
             raise MeshError("lost track of the bottom face's edges")
         remap[c] = best
-    fields = _sizes(gmsh, study, h)
+    fields = _sizes(gmsh, study, h, info=info)
     if fields:
         fmin = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(fmin, "FieldsList", fields)
@@ -273,7 +327,12 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
         wall_curves = [c for c in now if curves[remap[c]][0] in walls]
         if wall_curves:
             L = m["layers"]
-            n, first, gr = int(L["n"]), float(L["first"]) * size_factor, float(L.get("growth", 1.2))
+            if "first" in L:
+                first = float(L["first"]) * size_factor
+            else:                            # from a target y+ (snappy.layer_plan's flat-plate estimate)
+                from .snappy import layer_plan
+                first = layer_plan(study, None, float(np.max(bb[3:] - bb[:3])))["first_mm"] * size_factor
+            n, gr = int(L["n"]), float(L.get("growth", 1.2))
             thick = first * n if abs(gr - 1) < 1e-12 else first * (gr ** n - 1) / (gr - 1)
             bl = gmsh.model.mesh.field.add("BoundaryLayer")
             gmsh.model.mesh.field.setNumbers(bl, "CurvesList", wall_curves)

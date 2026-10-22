@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -59,6 +59,9 @@ pending with job ids. They do not depend on this conversation. Report the expect
 stop; do not poll. Later, study_status(request) collects them; jobs() lists recent and active runs
 (also those started in other conversations); cancel(request) stops them. A study's "run": {timeout_s, mem,
 procs, queue} overrides the machine's defaults for that study, within the caps in study_format's status.
+Vehicles and 3D external aero: mesh.mesher "snappy" (snappyHexMesh: surface and edge refinement, refine boxes and
+distance bands, prism layers from mesh.layers.y_plus with a coverage report in mesh.layers, half models on a
+symmetry side); check mesh.layers.coverage_pct, mesh.snappy.attempts and warnings before trusting forces.
 Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
 get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""

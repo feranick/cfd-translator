@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -184,6 +184,16 @@ def _progress(d: Path, study: dict) -> dict:
     import re as _re
     log = d / "case" / "log.foamRun"
     if not log.is_file():
+        sl = d / "snappy" / "log.snappyHexMesh"
+        if sl.is_file() and not (d / "case").exists():
+            try:
+                t = sl.read_text(errors="replace")[-400000:]
+            except OSError:
+                t = ""
+            stage = ("adding layers" if "Layer addition iteration" in t or "Adding layers" in t else
+                     "snapping" if "Morphing phase" in t or "Snapping" in t else "refining")
+            return {"stage": f"meshing (snappyHexMesh: {stage})",
+                    "elapsed_min": round((time.time() - sl.stat().st_ctime) / 60, 1)}
         return {"stage": "meshing / writing the case" if (d / "case").exists() else "starting"}
     try:
         text = log.read_text(errors="replace")[-200000:]
@@ -248,7 +258,10 @@ def summarize(r: dict) -> dict:
                             for bc, v in r["selection"].items() if isinstance(v, list)}
     m = r.get("mesh") or {}
     if m:
-        out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality", "ok", "layers_y_plus") if k in m}
+        out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality", "ok", "layers_y_plus", "layers") if k in m}
+        if isinstance(m.get("snappy"), dict):
+            out["mesh"]["snappy"] = {k: v for k, v in m["snappy"].items()
+                                     if k in ("cells_by_stage", "illegal_faces", "narrow_gaps", "attempts", "surface_mm")}
     res = r.get("results")
     if isinstance(res, dict):
         rs = {k: v for k, v in res.items() if k not in _HEAVY_RESULTS}

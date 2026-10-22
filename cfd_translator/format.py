@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -90,24 +90,22 @@ CONVENTIONS = [
     "The flow needs a driver (inlet, opening or moving wall); an inlet needs an outlet or opening. inlet "
     "velocity as a number is normal into the domain; 'parabolic' gives the fully developed laminar profile "
     "with that mean velocity (or flow rate).",
-    "Mesh: box geometry (internal) with cells [nx, ny, nz] (+ grading [gx, gy, gz] = last/first cell) gives a "
-    "structured hex mesh; otherwise Gmsh: size (mm, default diagonal / 30), refine [{at, r, "
-    "size}], and for prisms along Z extrude: n layers (2d uses 1) with quads (default true) and boundary "
-    "layers {n, first (mm), growth} on the walls. 3D tetrahedral meshes have no boundary layers.",
+    "Mesh: box + cells (+ grading, last/first cell): structured hexes. Gmsh: size (mm, default diagonal / 30); "
+    "tetrahedra, or extrude n prisms along Z (2d: 1) with quads and layers. mesher snappy (3D, aero): hexes of size, "
+    "surface mm on the part ([finest, coarsest], size/8), features (sharp edges), gap (extra levels in narrow gaps, 1), "
+    "layers on the part's walls (or layers.on, e.g. a ground) with coverage and y+ estimate in mesh.layers; zones "
+    "snapped; part faces on a domain side (half model) are cut there; failing checkMesh: remade stricter. refine: "
+    "[{size, and at + r | box | cylinder {center, axis, radius, span} | distance (mm from the part)}].",
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
-    "Results: flow.<bc>.Q (m3/s, positive into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean (area mean, Pa), "
-    "p_total (flow-weighted total pressure); pressure_drop (inlet minus outlet mean static pressure), "
-    "total_pressure_drop, head_loss_m (total pressure drop / (rho g): use it for losses); forces.<wall bc>.fx/fy/fz (N, by the fluid on the wall, pressure + viscous) and "
-    ".mx/my/mz about reference.cofr; forces.part (external: every part face); coefficients.cd/cl (with "
-    "reference.velocity and area); probes.<name>.ux/uy/uz/p/u; max_velocity; wall_shear; y_plus; "
-    "feat_loads (external: fea-translator force bcs per part face); checks (balances, convergence, mesh).",
-    "energy: true solves temperature (OpenFOAM fluid, steady, subsonic to transonic): air is a perfect "
-    "gas, water has constant density. Temperatures in degrees C; pressures gauge "
-    "(relative to conditions.p, 101325 Pa). Walls are adiabatic unless given T, q (W/m2 into the fluid), "
-    "power (W) or h with T_inf. gravity [gx, gy, gz] adds buoyancy (natural convection). Results add "
-    "heat.<wall bc>.Q_W/q_mean/T_mean_C (and h, Nu with reference.T and length), flow.<bc>.mdot/T_mean_C/mach, "
-    "max_mach, T_min_C/T_max_C, checks.energy_balance, and for external flow feat_thermal (convection and "
-    "heat-flux bcs per part face for fea-translator).",
+    "Results: flow.<bc>.Q (m3/s, + into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total (flow-weighted); "
+    "pressure_drop (inlet - outlet static), total_pressure_drop, head_loss_m (use it for losses); "
+    "forces.<wall bc>.fx/fy/fz (N, on the wall) and mx/my/mz about reference.cofr; forces.part (external); "
+    "coefficients.cd/cl (reference.velocity, area); probes; max_velocity; wall_shear; y_plus; feat_loads "
+    "(external: fea-translator bcs per part face); checks.",
+    "energy: true solves temperature (OpenFOAM fluid, to transonic): air a perfect gas, water constant density; "
+    "degrees C; pressures gauge to conditions.p (101325). Walls adiabatic unless T, q (W/m2 into the fluid), power (W) "
+    "or h + T_inf; gravity adds buoyancy. Results add heat.<wall bc>.Q_W/q_mean/T_mean_C (h, Nu with reference.T, "
+    "length), flow.<bc>.mdot/T_mean_C/mach, max_mach, T_min_C/T_max_C, checks.energy_balance, feat_thermal (external).",
     "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
     "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
     "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
@@ -141,7 +139,9 @@ STUDY_KEYS = {
              "(liquid)}} (or a name plus overrides)",
     "model": "|".join(MODELS),
     "bcs": "list of boundary conditions",
-    "mesh": "{size, refine: [{at, r, size}], cells: [nx, ny, nz], grading, extrude, quads, layers: {n, first, growth}}",
+    "mesh": "{size, refine, cells: [nx, ny, nz], grading, extrude, quads, layers: {first | y_plus, n, growth, on, "
+            "feature_angle}, mesher: gmsh | snappy, surface, features, gap, quality: {max_non_ortho, max_skewness}, "
+            "max_cells, optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs (MPI ranks), "
              "energy: transonic (default: Mach > 0.7 or a total-pressure inlet), consistent (true), start (rest | "
              "estimate), ramp (400 its, total-pressure gas inlets); average (true | false | {window, min_iterations, drift, scatter})}",
@@ -169,7 +169,9 @@ STUDY_KEYS = {
               "{center, radius}} (mm), darcy 1/m2, forchheimer 1/m (number | [e1,e2,e3]) | ergun: {particle_diameter mm, "
               "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]]}]; results.porous",
 }
-MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers"}
+MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers", "mesher", "surface", "features",
+             "gap", "quality", "max_cells", "optimize"}
+LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average"}
 AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
@@ -575,18 +577,93 @@ def validate_study(st: dict) -> dict:
         errs.append("mesh.extrude: 2d already uses one layer; remove extrude")
     if "quads" in m and not isinstance(m["quads"], bool):
         errs.append("mesh.quads: true or false")
+    snappy = m.get("mesher") == "snappy"
+    if "mesher" in m and m["mesher"] not in ("gmsh", "snappy"):
+        errs.append("mesh.mesher: gmsh (default) or snappy")
+    if snappy:
+        if two_d or "extrude" in m or "cells" in m or "quads" in m:
+            errs.append("mesh.mesher snappy: 3D meshes only (no 2d, extrude, cells or quads)")
+        if not _num(m.get("size")):
+            errs.append("mesh.mesher snappy needs mesh.size: the background cell size (mm)")
+        sf = m.get("surface")
+        if sf is not None and not ((_num(sf) and sf > 0) or (isinstance(sf, list) and len(sf) == 2
+                                                             and all(_num(x) and x > 0 for x in sf))):
+            errs.append("mesh.surface: cell size on the part (mm), or [finest, coarsest]")
+        elif _num(m.get("size")) and sf is not None and max(sf if isinstance(sf, list) else [sf]) > m["size"]:
+            errs.append("mesh.surface: no larger than mesh.size")
+        if "features" in m and not (m["features"] is False or (_num(m["features"]) and m["features"] > 0)):
+            errs.append("mesh.features: cell size along sharp edges (mm), or false")
+        if "gap" in m and not (isinstance(m["gap"], int) and 0 <= m["gap"] <= 4):
+            errs.append("mesh.gap: extra refinement levels in narrow gaps, 0-4 (default 1)")
+        q = m.get("quality", {})
+        if not isinstance(q, dict) or set(q) - {"max_non_ortho", "max_skewness", "retry"}:
+            errs.append("mesh.quality: {max_non_ortho (65), max_skewness (4), retry (true)}")
+        elif ("max_non_ortho" in q and not (_num(q["max_non_ortho"]) and 30 <= q["max_non_ortho"] <= 85)) or \
+                ("max_skewness" in q and not (_num(q["max_skewness"]) and 1 <= q["max_skewness"] <= 20)):
+            errs.append("mesh.quality: max_non_ortho 30-85 degrees, max_skewness 1-20")
+        if "max_cells" in m and not (_num(m["max_cells"]) and m["max_cells"] >= 1e4):
+            errs.append("mesh.max_cells: a cell budget (>= 10000)")
+        if geo_kind == "box" and not external:
+            warns.append("mesh.mesher snappy on an internal box: mesh.cells gives an exact structured mesh")
+    else:
+        for k in ("surface", "features", "gap", "quality", "max_cells"):
+            if k in m:
+                errs.append(f"mesh.{k}: only with mesher snappy")
+    if "optimize" in m and not isinstance(m["optimize"], bool):
+        errs.append("mesh.optimize: true or false (Gmsh tetrahedra: Netgen's optimiser, default true)")
     if "layers" in m:
         L = m["layers"]
-        if not (isinstance(L, dict) and isinstance(L.get("n"), int) and L["n"] >= 1 and _num(L.get("first"))
-                and L["first"] > 0 and _num(L.get("growth", 1.2)) and L.get("growth", 1.2) >= 1):
-            errs.append("mesh.layers: {n (>= 1), first (mm, > 0), growth (>= 1, default 1.2)}")
-        if not (two_d or "extrude" in m):
-            errs.append("mesh.layers: boundary layers need a swept mesh (2d or extrude)")
+        ok = isinstance(L, dict) and not (set(L) - LAYER_KEYS) and (("first" in L) != ("y_plus" in L))
+        if ok:
+            ok = (("first" not in L or (_num(L["first"]) and L["first"] > 0))
+                  and ("y_plus" not in L or (_num(L["y_plus"]) and L["y_plus"] > 0))
+                  and ("n" not in L or (isinstance(L["n"], int) and 1 <= L["n"] <= 30))
+                  and _num(L.get("growth", 1.2)) and 1 <= L.get("growth", 1.2) <= 2
+                  and ("feature_angle" not in L or (_num(L["feature_angle"]) and 30 <= L["feature_angle"] <= 180)))
+        if not ok:
+            errs.append("mesh.layers: {first (mm) | y_plus, n (1-30; snappy: default so the last layer is half a "
+                        "surface cell), growth (1-2, default 1.2), on: [bc names] (snappy), feature_angle (snappy, 130)}")
+        elif not snappy:
+            if not (two_d or "extrude" in m):
+                errs.append("mesh.layers: with Gmsh, boundary layers need a swept mesh (2d or extrude); "
+                            "3D layers: mesher snappy")
+            if "n" not in L:
+                errs.append("mesh.layers.n: needed with Gmsh")
+            for k in ("on", "feature_angle"):
+                if k in L:
+                    errs.append(f"mesh.layers.{k}: only with mesher snappy")
+        if isinstance(L, dict) and "on" in L:
+            names = bc_names(st)
+            if not (isinstance(L["on"], list) and all(isinstance(x, str) for x in L["on"])):
+                errs.append("mesh.layers.on: [bc names]")
+            else:
+                for x in L["on"]:
+                    if x not in names:
+                        errs.append(f"mesh.layers.on: no bc named {x!r} (bcs: {names})")
+                    elif st["bcs"][names.index(x)].get("kind") != "wall":
+                        errs.append(f"mesh.layers.on: {x!r} is not a wall")
+        if isinstance(L, dict) and "y_plus" in L and not ((st.get("reference") or {}).get("velocity") or any(
+                b.get("kind") == "inlet" and "velocity" in b for b in st.get("bcs", []) if isinstance(b, dict))):
+            errs.append("mesh.layers.y_plus needs reference.velocity or an inlet velocity")
     if "refine" in m:
         r = m["refine"]
-        if not isinstance(r, list) or not all(isinstance(x, dict) and _vec(x.get("at")) and _num(x.get("r"))
-                                              and x["r"] > 0 and _num(x.get("size")) and x["size"] > 0 for x in r):
-            errs.append("mesh.refine: [{at: [x, y, z], r (mm), size (mm)}]")
+        good = isinstance(r, list)
+        for x in (r if good else []):
+            if not (isinstance(x, dict) and _num(x.get("size")) and x["size"] > 0):
+                good = False
+            elif "box" in x:
+                good &= _vec(x["box"], 6) and all(x["box"][i] < x["box"][i + 3] for i in range(3))
+            elif "cylinder" in x:
+                c = x["cylinder"]
+                good &= isinstance(c, dict) and _vec(c.get("axis")) and _num(c.get("radius")) and c["radius"] > 0 \
+                    and ("center" not in c or _vec(c["center"])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1]))
+            elif "distance" in x:
+                good &= _num(x["distance"]) and x["distance"] > 0
+            else:
+                good &= _vec(x.get("at")) and _num(x.get("r")) and x["r"] > 0
+        if not good:
+            errs.append("mesh.refine: [{size (mm), and at: [x, y, z] + r (sphere) | box: [x0, y0, z0, x1, y1, z1] | "
+                        "cylinder: {center, axis, radius, span: [s0, s1]} | distance: mm from the part}]")
     # solve
     s = st.get("solve", {})
     if not isinstance(s, dict):

@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.10.16.6
+Version: 2026.10.21.2
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -41,20 +41,31 @@ def _rows(a: np.ndarray) -> np.ndarray:
     return a.view(np.dtype((np.void, a.dtype.itemsize * a.shape[1]))).ravel()
 
 
-def face_geometry(points: np.ndarray, faces: np.ndarray):
-    """Area vectors (F, 3) and centres (F, 3) of faces given as (F, 4) node rings padded with -1,
-    computed as OpenFOAM does (triangles around the mean point, centre weighted by triangle area)."""
+def face_geometry(points: np.ndarray, faces: np.ndarray, chunk: int = 400_000):
+    """Area vectors (F, 3) and centres (F, 3) of faces given as (F, W) node rings padded with -1 (any
+    polygon), computed as OpenFOAM does (triangles around the mean point, centre weighted by triangle
+    area). Large meshes go in chunks so the (F, W, 3) temporaries stay small."""
+    nf = len(faces)
+    if nf > chunk:
+        Sf, Cf = np.empty((nf, 3)), np.empty((nf, 3))
+        for a in range(0, nf, chunk):
+            Sf[a:a + chunk], Cf[a:a + chunk] = face_geometry(points, faces[a:a + chunk], chunk)
+        return Sf, Cf
+    W = faces.shape[1]
     n = (faces >= 0).sum(axis=1)
-    P = points[np.where(faces >= 0, faces, 0)]                   # (F, 4, 3)
+    P = points[np.where(faces >= 0, faces, 0)]                   # (F, W, 3)
     mask = (faces >= 0)[:, :, None]
     xc = (P * mask).sum(axis=1) / n[:, None]
     Sf = np.zeros_like(xc)
     sumA = np.zeros(len(faces))
     sumAc = np.zeros_like(xc)
-    for k in range(4):
+    rows = np.arange(len(faces))
+    for k in range(W):
         valid = k < n
+        if not valid.any():
+            break
         a = P[:, k]
-        b = P[np.arange(len(faces)), np.where(k + 1 < n, k + 1, 0)]
+        b = P[rows, np.where(k + 1 < n, k + 1, 0)]
         tn = np.cross(b - a, xc - a)
         tn[~valid] = 0
         ta = np.linalg.norm(tn, axis=1)
@@ -176,8 +187,21 @@ class PolyMesh:
         missing = sorted(set(self.tags()) - set(seen))
         if missing:
             raise MeshError(f"boundary faces {missing} are in no patch")
-        pidx = np.array([seen[int(t)] for t in self.btag]) if len(self.btag) else np.zeros(0, int)
-        order = np.lexsort((self.owner[ni:], pidx))
+        lut = {int(t): k for t, k in seen.items()}
+        pidx = np.vectorize(lut.__getitem__, otypes=[np.int64])(self.btag) if len(self.btag) else np.zeros(0, int)
+        if self.info.get("foam_dir"):
+            # a mesh read from OpenFOAM (snappyHexMesh) keeps its face order: its files are copied as they are
+            if len(pidx) and np.any(np.diff(pidx) < 0):
+                raise MeshError("the patches do not follow the order of the OpenFOAM mesh's patches")
+            out, start = [], ni
+            for k, p in enumerate(patches):
+                n = int((pidx == k).sum())
+                out.append({"name": p["name"], "type": p["type"], "start": start, "n": n, "tags": list(p["tags"])})
+                start += n
+            self.patches = out                 # same faces, same order: the geometry stays valid
+            return
+        else:
+            order = np.lexsort((self.owner[ni:], pidx))
         self.faces = np.concatenate([self.faces[:ni], self.faces[ni:][order]])
         self.owner = np.concatenate([self.owner[:ni], self.owner[ni:][order]])
         self.btag = self.btag[order]
@@ -206,6 +230,14 @@ class PolyMesh:
         d.mkdir(parents=True, exist_ok=True)
         if not self.patches:
             raise MeshError("set_patches before writing")
+        src = self.info.get("foam_dir")
+        if src:                       # read from OpenFOAM (snappyHexMesh): copy its files, rewrite the patches
+            import shutil
+            for nm in ("points", "faces", "owner", "neighbour"):
+                if Path(src).resolve() != d.resolve():
+                    shutil.copyfile(Path(src) / nm, d / nm)
+            self._write_boundary_and_zones(d)
+            return d
         note = f"nPoints:{len(self.points)} nCells:{self.ncells} nFaces:{self.nfaces} nInternalFaces:{self.ninternal}"
         pts = self.points * SCALE
         _write_list(d / "points", "vectorField", "points", (f"({x:.12g} {y:.12g} {z:.12g})" for x, y, z in pts), len(pts))
@@ -214,6 +246,10 @@ class PolyMesh:
         _write_list(d / "faces", "faceList", "faces", fl, self.nfaces)
         _write_list(d / "owner", "labelList", "owner", map(str, self.owner.tolist()), self.nfaces, note)
         _write_list(d / "neighbour", "labelList", "neighbour", map(str, self.neighbour.tolist()), self.ninternal, note)
+        self._write_boundary_and_zones(d)
+        return d
+
+    def _write_boundary_and_zones(self, d: Path) -> None:
         lines = [header("polyBoundaryMesh", "boundary", "constant/polyMesh"), f"{len(self.patches)}", "("]
         for p in self.patches:
             lines += [f"    {p['name']}", "    {", f"        type            {p['type']};"]
@@ -234,7 +270,6 @@ class PolyMesh:
             zf.write_text("\n".join(z))
         elif zf.exists():
             zf.unlink()
-        return d
 
 
 def header(cls: str, obj: str, location: str, note: str | None = None) -> str:
@@ -333,6 +368,25 @@ def from_cells(points: np.ndarray, cells: dict, tag_faces, tag_info: dict | None
     fb = np.where(fb >= 0, remap[np.maximum(fb, 0)], -1)
     m = PolyMesh(points[used], np.concatenate([fi, fb]), np.concatenate([oi, ob]), ni_, tags, nc,
                  dict(tag_info or {}))
+    return m
+
+
+def from_foam(d: Path, tag_of_patch: dict | None = None, tag_info: dict | None = None) -> PolyMesh:
+    """A PolyMesh from an OpenFOAM constant/polyMesh (points in metres -> mm). Each patch's faces get the
+    tag tag_of_patch[name] (default: 1, 2, ... in patch order). The files stay where they are: write()
+    copies them (info['foam_dir']) and rewrites only boundary and cellZones."""
+    from .foamio import read_mesh_arrays
+    a = read_mesh_arrays(d)
+    ni = len(a["neighbour"])
+    nf = len(a["owner"])
+    btag = np.zeros(nf - ni, np.int64)
+    tags = {}
+    for k, p in enumerate(a["boundary"]):
+        t = int((tag_of_patch or {}).get(p["name"], k + 1))
+        tags[p["name"]] = t
+        btag[p["start"] - ni:p["start"] - ni + p["n"]] = t
+    m = PolyMesh(a["points"] / SCALE, a["faces"], a["owner"], a["neighbour"], btag, int(a["ncells"]), dict(tag_info or {}))
+    m.info.update({"foam_dir": str(Path(d)), "foam_patches": [{**p, "tag": tags[p["name"]]} for p in a["boundary"]]})
     return m
 
 

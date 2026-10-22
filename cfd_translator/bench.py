@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.19.3
+Version: 2026.10.21.2
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -30,6 +30,9 @@ Version: 2026.10.19.3
   pipe_turbulent   turbulent pipe, Re 5e4, kOmegaSST: friction factor vs Colebrook (slow; Gmsh)
   chain_plate      build123d-translator plate -> cfd-translator -> fea-translator: the FEA support
                    reaction equals minus the CFD force (needs Gmsh, b3dt and feat)
+  sphere_snappy_re100  snappyHexMesh with layers: sphere at Re 100, Cd vs the standard drag curve (b3dt, Gmsh)
+  sphere_half_snappy   the same as a half model on a symmetry plane (the cut face meshed by snappy.cut_at_box)
+  pipe_snappy          internal flow on a snappyHexMesh mesh: Hagen-Poiseuille as pipe_poiseuille
 Slow cases run only when named. The reference solver runs the 2D box cases (couette, channel, cavity).
 """
 from __future__ import annotations
@@ -375,6 +378,54 @@ def _cases() -> dict:
     C["chain_thermal"] = {"study": None, "chain": "thermal", "ref": False,
                           "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     C["chain_plate"] = {"study": None, "chain": True, "ref": False, "needs": ["gmsh", "build123d_translator", "fea_translator"]}
+    # ---- snappyHexMesh (snappy.py) ----
+    # sphere, D = 10 mm, Re 100 (water at 0.01 m/s): Cd 1.09 (standard drag curve, Clift, Grace & Weber 1978:
+    # 24/Re (1 + 0.15 Re^0.687) + 0.42 / (1 + 42500 Re^-1.16) = 1.095); 10 D wide domain adds ~2 % blockage
+    cd_sph = 24 / 100 * (1 + 0.15 * 100 ** 0.687) + 0.42 / (1 + 42500 * 100 ** -1.16)
+
+    def sphere(half: bool):
+        goal = {"features": [{"kind": "base_sphere", "params": {"r": 5}}]}
+        if half:
+            goal["features"].append({"kind": "split", "params": {"nx": 0, "ny": 1, "nz": 0, "off": 0}})
+        y0 = 0 if half else -50
+        far = ["ymax", "zmin", "zmax"] + ([] if half else ["ymin"])
+        bcs = [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 0.01},
+               {"kind": "outlet", "faces": {"box": "xmax"}},
+               {"kind": "slip", "name": "farfield", "faces": {"box": far}},
+               {"kind": "wall", "name": "sphere", "faces": {"all": True}}]
+        if half:
+            bcs.insert(3, {"kind": "symmetry", "name": "mid", "faces": {"box": "ymin"}})
+        return {"geometry": {"goal": goal}, "domain": {"kind": "external", "box": [-50, y0, -45, 150, 50, 55]},
+                "fluid": {"rho": 1000.0, "mu": 1e-3}, "model": "laminar", "bcs": bcs,
+                "reference": {"velocity": 0.01, "area": math.pi * 25 / (2 if half else 1)},
+                "mesh": {"mesher": "snappy", "size": 10, "surface": 0.625,
+                         "refine": [{"distance": 4, "size": 1.25}, {"box": [-10, y0 if half else -12, -7, 60, 12, 17], "size": 2.5}],
+                         "layers": {"n": 3, "first": 0.15, "growth": 1.2}},
+                "solve": {"iterations": 2000, "residual": 1e-6}}
+    C["sphere_snappy_re100"] = {
+        "study": sphere(False),
+        "checks": lambda r: [("Cd at Re 100 (standard drag curve %.3f)" % cd_sph, cd_sph, r["coefficients"]["cd"], {"tol": 0.06}),
+                             ("layers on the sphere (coverage, %)", 100.0, r["_mesh"]["layers"]["coverage_pct"], {"tol": 0.3})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    C["sphere_half_snappy"] = {
+        "study": sphere(True),
+        "checks": lambda r: [("Cd of the half sphere on a symmetry plane (%.3f)" % cd_sph, cd_sph, r["coefficients"]["cd"],
+                              {"tol": 0.06}),
+                             ("no lift across the symmetry plane", 0.0, r["forces"]["sphere"]["fz"] / max(abs(r["forces"]["sphere"]["fx"]), 1e-30),
+                              {"abs": 0.02})],
+        "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    C["pipe_snappy"] = {
+        "study": {"geometry": {"cylinder": [5, 200]}, "fluid": "water",
+                  "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "flow_rate_lpm": 0.5, "profile": "parabolic"},
+                          {"kind": "outlet", "faces": {"nz": 1}}],
+                  "mesh": {"mesher": "snappy", "size": 2, "surface": 0.5, "layers": {"n": 3, "first": 0.1, "growth": 1.2}},
+                  "solve": {"residual": 1e-7},
+                  "probes": [{"name": "a", "at": [0, 0, 50]}, {"name": "b", "at": [0, 0, 150]}]},
+        "checks": lambda r: [("dp over 0.1 m = 8 mu L Q / (pi R^4)", 8 * mu_w * 0.1 * Q / (math.pi * R ** 4),
+                              r["probes"]["a"]["p"] - r["probes"]["b"]["p"], {"tol": 0.03}),
+                             ("wall force = 8 pi mu L U_mean", 8 * math.pi * mu_w * 0.2 * Q / (math.pi * R ** 2),
+                              r["forces"]["walls"]["fz"], {"tol": 0.03})],
+        "ref": False, "needs": ["gmsh"]}
     return C
 
 
@@ -518,7 +569,7 @@ def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:
         return {"ok": False, "passed": False, "why": r.get("why"), "error": r.get("error") or r.get("errors")}
     checks = []
     try:
-        triples = c["checks"](r["results"])
+        triples = c["checks"](dict(r["results"], _mesh=r.get("mesh") or {}))
     except (KeyError, TypeError, ZeroDivisionError) as e:
         return {"ok": True, "passed": False, "error": f"a check could not be evaluated: {type(e).__name__}: {e}"}
     for what, exp, got, tol in triples:

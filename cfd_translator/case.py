@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -161,6 +161,18 @@ def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
 
 
 # ---- the case ----------------------------------------------------------------------------------
+def nonortho_schemes(q: dict) -> tuple[str, str, int, float]:
+    """(laplacian, snGrad, non-orthogonal correctors, relaxation factor) for the mesh's worst
+    non-orthogonality. 70-80 degrees: limited 0.33 and two correctors; above 80 (Gmsh tetrahedra reached 88 and
+    diverged): three correctors and relaxation scaled by 0.7."""
+    mx = float(q.get("max_non_orthogonality", 0))
+    if mx > 80:
+        return "Gauss linear limited corrected 0.33", "limited corrected 0.33", 3, 0.7
+    if mx > 70:
+        return "Gauss linear limited corrected 0.33", "limited corrected 0.33", 2, 1.0
+    return "Gauss linear limited corrected 0.5", "limited corrected 0.5", 1, 1.0
+
+
 def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     """Writes the case; returns the plan (inlet values, patches, schemes chosen) for the results."""
     case = Path(case)
@@ -191,6 +203,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         rad = np.linalg.norm(d - np.outer(ax, a), axis=1)
         s0, s1 = z.get("span", [-np.inf, np.inf])
         cells = np.nonzero((rad <= float(z["radius"])) & (ax >= s0) & (ax <= s1))[0]
+        snapped = (mesh.info.get("snapped_zones") or {}).get(name)
+        if snapped is not None and len(snapped):
+            cells = np.asarray(snapped, np.int64)          # snappyHexMesh's cellZone: faces on the cylinder
         if not len(cells):
             raise MeshError(f"rotating zone {name!r} contains no cell centres (check center, radius, span)")
         mesh.zones[name] = cells
@@ -390,8 +405,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     unstructured = q["max_non_orthogonality"] > 5.0
     plan["schemes"] = "unstructured" if unstructured else "orthogonal"
     relax = s.get("relax", {})
-    rU = float(relax.get("U", 0.7 if unstructured else 0.9))
-    rO = float(relax.get("other", 0.7 if unstructured else 0.9))
+    rf = nonortho_schemes(q)[3]                  # very skewed tetrahedra: gentler relaxation
+    rU = float(relax.get("U", (0.7 if unstructured else 0.9) * rf))
+    rO = float(relax.get("other", (0.7 if unstructured else 0.9) * rf))
     plan.update({"iterations": iters, "residual": res, "relax": {"U": rU, "other": rO}, "fixed_pressure": has_fixed_p})
     walls = [p["name"] for p in patches if p["type"] == "wall"]
     funcs = []
@@ -421,7 +437,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     (case / "system" / "controlDict").write_text(_dict("controlDict", "system", cd))
     if unstructured:
         grad = "default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n    grad(omega)     cellLimited Gauss linear 1;"
-        lap, sn, nonorth = "Gauss linear limited corrected 0.5", "limited corrected 0.5", 1
+        lap, sn, nonorth, _ = nonortho_schemes(q)
     else:
         grad, lap, sn, nonorth = "default         Gauss linear;", "Gauss linear corrected", "corrected", 0
     fs = (f"ddtSchemes\n{{\n    default         steadyState;\n}}\n\ngradSchemes\n{{\n    {grad}\n}}\n\n"
@@ -726,7 +742,7 @@ def _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, e
         grad = ("default         Gauss linear;\n    grad(U)         cellLimited Gauss linear 1;\n"
                 "    grad(h)         cellLimited Gauss linear 1;\n    grad(k)         cellLimited Gauss linear 1;\n"
                 "    grad(omega)     cellLimited Gauss linear 1;")
-        lap, sn, nonorth = "Gauss linear limited corrected 0.5", "limited corrected 0.5", 1
+        lap, sn, nonorth, _ = nonortho_schemes(q)
     else:
         grad, lap, sn, nonorth = "default         Gauss linear;", "Gauss linear corrected", "corrected", 0
     fs = (f"ddtSchemes\n{{\n    default         steadyState;\n}}\n\ngradSchemes\n{{\n    {grad}\n}}\n\n"

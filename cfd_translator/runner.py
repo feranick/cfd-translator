@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.20.1
+Version: 2026.10.21.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -26,8 +26,11 @@ def prepare(study: dict, folder: Path):
 
     external = study.get("domain", {}).get("kind") == "external"
     mesh = mesh_study(study, folder)
-    groups = mesh_groups(mesh, external)
-    patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
+    if "assigned" in mesh.info:            # snappyHexMesh: the bcs were chosen on the part's surface before meshing
+        patches, selection, warns = mesh.info.pop("assigned")
+    else:
+        groups = mesh_groups(mesh, external)
+        patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
     plan = write_case(study, mesh, patches, Path(folder) / "case")
     return mesh, patches, selection, plan, warns
 
@@ -64,7 +67,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out["selection"] = selection
         out["mesh"] = {k: v for k, v in plan["quality"].items()}
         out["mesh"].update({k: mesh.info[k] for k in ("kind", "size", "layers", "cells_2d", "quads_2d",
-                                                       "boundary_layers_on", "cells_xyz") if k in mesh.info})
+                                                       "boundary_layers_on", "cells_xyz", "snappy") if k in mesh.info})
         out["case"] = {"inlets": plan["inlets"], "schemes": plan["schemes"], "iterations": plan["iterations"],
                        "residual": plan["residual"], "relax": plan["relax"]}
         if solver == "ref":

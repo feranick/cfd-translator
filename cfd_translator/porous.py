@@ -1,5 +1,5 @@
 """porous.py — porous zones: packed beds, catalyst monoliths, filters and screens (Darcy-Forchheimer).
-Version: 2026.10.19.2
+Version: 2026.10.21.2
 
 A porous zone is the set of cells whose centres lie in a region (box, cylinder, sphere). The fluid there feels
 a resistance per unit volume  -(mu d + 1/2 rho |U| f) U  with d (1/m2) and f (1/m) given along the zone's axes
@@ -160,6 +160,9 @@ def build_zones(study: dict, mesh, plan: dict) -> None:
     plan["porous"] = {}
     for z in pz:
         cells = _cells(z["region"], g["C"])
+        snapped = (mesh.info.get("snapped_zones") or {}).get(z["name"])
+        if snapped is not None and len(snapped):
+            cells = np.asarray(snapped, np.int64)          # snappyHexMesh's cellZone: faces on the region
         if not len(cells):
             raise MeshError(f"porous zone {z['name']!r} contains no cell centres (check its region)")
         if taken[cells].any():

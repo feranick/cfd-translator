@@ -170,10 +170,31 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 
 - **mesh**:
   - A box geometry with `cells [nx, ny, nz]` (+ `grading`) gets a structured hex mesh, as blockMesh would make.
-  - Otherwise Gmsh meshes the domain. `size` is in mm. `refine` takes `[{at, r, size}]`.
+  - Otherwise Gmsh meshes the domain (`mesher: "gmsh"`, the default). `size` is in mm.
   - For prisms along Z, `extrude: n` sweeps a 2D mesh of the bottom face (quads by default) into n layers.
-  - `layers: {n, first, growth}` adds boundary layers on the walls, in 2D or swept meshes only.
-  - Plain 3D meshes are tetrahedra.
+  - `layers: {n, first | y_plus, growth}` adds boundary layers on the walls, in 2D or swept Gmsh meshes.
+  - Plain 3D Gmsh meshes are tetrahedra, improved by Netgen's optimiser (`optimize`, default true).
+  - `refine`: `[{size, and one of: at + r (sphere) | box: [x0, y0, z0, x1, y1, z1] | cylinder: {center, axis, radius, span} | distance (mm from the part's faces)}]`, for both meshers.
+  - **`mesher: "snappy"`** (3D; vehicles, external aero; `snappy.py`): snappyHexMesh.
+    - `size` is the background hex. `surface` is the cell size on the part: a number, or `[finest, coarsest]`; the finest is used where the surface curves or meets itself at an angle. The default is size/8.
+    - `features` is the cell size along sharp edges (default: the finest surface size; `false` turns it off). The edges come from surfaceFeatures (angles sharper than 30°) and are snapped to, so spoiler and tailgate edges stay sharp.
+    - `gap` adds levels where facing walls are closer than about a cell (snappy's `gapLevelIncrement`, default 1). Gaps still narrower than three of the finest cells are listed in `mesh.snappy.narrow_gaps` with a warning.
+    - `layers: {first (mm) | y_plus, n, growth (1.2), on, feature_angle (130)}`.
+      - The layers go on the part's walls, or on the bcs named in `on` (a ground wall too).
+      - With `y_plus`, the first height comes from a flat-plate estimate (`reference.velocity` and `length`, else the part's size).
+      - Without `n`, the number of layers is chosen so the last one is about half a surface cell.
+      - Layers end gracefully at sharp corners and in wedges such as a tyre on the ground (feature angle, medial-axis thinning).
+      - `mesh.layers` reports `first_mm`, `total_mm`, `y_plus_first_cell_estimate`, and the coverage per patch (faces, mean layers, % of the thickness reached), with `coverage_pct` over the layered walls.
+    - `quality: {max_non_ortho (65), max_skewness (4), retry (true)}`.
+      - checkMesh judges the mesh (non-orthogonality, skewness, minimum volume).
+      - A mesh that fails, or has illegal faces, is made again once with stricter settings.
+      - Both attempts are reported in `mesh.snappy.attempts`.
+    - `max_cells` caps snappyHexMesh's cell count (2e7).
+    - The bcs are chosen on the part's surface before meshing, with the same selectors as on a Gmsh mesh. After meshing, each boundary face gets the tag of the CAD face it lies on, so per-face results (`feat_loads`) and rotating-wheel or moving-ground bcs carry over.
+    - Part faces that lie on a domain side (a half car's cut at y = 0, a tyre's flattened contact patch) are left out, and the faces around them are extended past that side. snappyHexMesh then cuts the part cleanly there.
+    - A part that touches a side only at an edge or a point is warned about: let it cross the side by a millimetre, or end on it with a flat face.
+    - Porous and rotating zones become cellZones whose faces are snapped to their box, cylinder or sphere.
+    - Runs on `run.procs` ranks (decomposePar, mpirun, reconstructPar). The files are in `<study>/snappy`.
 - **solve**: `iterations` (2000; 3000 for kOmegaSST), `residual` (1e-5), `relax {U, other, p}`, `procs` (MPI ranks; default `CFDT_PROCS` or 1), `average`; energy runs also `transonic`, `consistent`, `start`, `ramp`.
 - **run**: `{timeout_s, mem, procs, queue}`, this study's overrides of the machine's defaults (see Running on SLURM).
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
@@ -296,7 +317,8 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 1. `format.py` validates the study. Every error names the key and the fix.
 2. `mesher.py` builds the fluid domain, which is one of:
    - a structured box;
-   - Gmsh (OpenCASCADE): the goal/STEP/primitive, cut out of the domain box for external flow, meshed as tetrahedra or as a 2D mesh of the bottom face (quads, boundary layers) swept along Z.
+   - Gmsh (OpenCASCADE): the goal/STEP/primitive, cut out of the domain box for external flow, meshed as tetrahedra or as a 2D mesh of the bottom face (quads, boundary layers) swept along Z;
+   - snappyHexMesh (`snappy.py`): Gmsh triangulates the part's surface; the bcs are chosen on it; an OBJ with one region per bc, blockMesh, surfaceFeatures and snappyHexMesh make the mesh; `polymesh.from_foam` reads it back (binary files, faces of any size) and tags every boundary face with its CAD face.
 
    Boundary faces keep the tag of the CAD face they lie on.
 3. `polymesh.py` turns cells into OpenFOAM's polyMesh. Faces are oriented outward from their cells (checked against centroids, so mesher node order never matters). Internal faces are matched and sorted by owner and neighbour. Boundary faces are grouped by patch. Geometry is computed with OpenFOAM's formulas.
@@ -329,7 +351,8 @@ Polling costs tokens: every `study_status` call is a model turn. The server's in
 cfd_translator/
   format.py     study format, validation          case.py       the OpenFOAM case
   polymesh.py   cells -> polyMesh, box, extrusion  foam.py       runs OpenFOAM, reads fields
-  mesher.py     Gmsh meshing                       foamio.py     readers (fields, logs, checkMesh)
+  mesher.py     Gmsh meshing                       foamio.py     readers (fields, logs, checkMesh, polyMesh)
+  snappy.py     snappyHexMesh meshing (surface, dictionaries, layers report, face tags)
   select.py     selectors, bc -> patches           post.py       results and invariants
   refsolver.py  2D MAC reference solver            runner.py     one study end to end
   render.py     images (matplotlib), saved state
@@ -337,7 +360,7 @@ cfd_translator/
   executor.py   SLURM jobs: submit, run-study, states, jobs, cancel
   average.py    per-iteration monitors, window averages, 'settled'
   scalars.py    tracers and the mean age            porous.py     porous zones
-tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py
+tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py
 examples/studies.json      planning.md (session context)
 ```
 
@@ -345,6 +368,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.21.2 | **snappyHexMesh** (`mesh.mesher: "snappy"`, `snappy.py`), for 3D external aero. Surface and feature-edge levels from sizes in mm; refinement shapes (box, cylinder, sphere, distance from the part, also for Gmsh); narrow-gap refinement and a gap report. Layers on the part's walls (or `layers.on`) from `first` or a target `y_plus`, with the number of layers automatic; the report gives coverage per patch. Half models cut at a domain side, with a warning for tangent contacts. Porous and rotating zones become snapped cellZones. checkMesh is reported, and a failing mesh is made again once with stricter quality. The bcs are chosen on the part's surface, and every mesh face is tagged with its CAD face. `polymesh` reads binary polyMesh files and faces of any size (chunked geometry). Gmsh tetrahedra: Netgen optimisation; 70-80° non-orthogonality gets limited 0.33 and 2 correctors, above 80° 3 correctors and gentler relaxation. Job cell estimate for snappy studies. Benchmarks `sphere_snappy_re100`, `sphere_half_snappy`, `pipe_snappy`. OpenFOAM-14 keywords taken from its source and tutorials; not yet run on OpenFOAM. |
 | 2026.10.21.1 | Vehicle-aero quick fixes. **y+** from the wall shear (u_tau = sqrt(tau/rho), y = wall to cell centre), so a moving ground reads its velocity relative to the wall (OpenFOAM's k-based yPlus, ~26,000 on a 30 m/s ground, kept as `y_plus.<wall>.openfoam`); each wall says `part` (and `moving`), and the 30-300 warning judges only the part's walls (`y_plus_part_mean`, area-weighted). **Cd/Cl averaging**: external turbulent studies with reference velocity and area average by default; a forces monitor on the part's walls gives `averaged.cd/cl` (mean, std, drift, scatter, history) and `coefficients.cd/cl` become the means (`cd_last`). **Memory**: jobs ask for `--mem` = 2 GB + 4 GB per million estimated cells when larger than the default (`run.mem` still wins; `"auto"` = the estimate); job.json records `cells_estimate`, `mem_from`. **Summary mode**: `run_studies` / `study_status` return `detail="summary"` by default (selection as faces and area per bc, no per-face feat bcs, no averaging history); `detail="full"` for everything. **Images**: field `cp` ((p - reference.p) / (½ρU²)) on slices and surfaces; `clim`: [lo, hi] | full | robust (2nd-98th percentile, the surface default). |
 | 2026.10.20.1 | Per-study run settings: `"run": {timeout_s, mem, procs, queue}` override `config/env`'s defaults for one study (the job's `--time`, `--mem` replacing the one in `CFDT_SLURM_ARGS`, `--ntasks`, the solver's timeout), within ceilings `CFDT_MAX_TIMEOUT`, `CFDT_MAX_MEM`, `CFDT_MAX_PROCS` (validation names the variable). `tool_status().executor` adds `timeout_s` and `caps`; results add `execution.limits`; `job.json` keeps `run`. Specified for every translator in llm-translators' EXECUTION.md. |
 | 2026.10.19.4 | SLURM jobs ask only for the ranks their mesh can use: an upper estimate of the cell count before meshing (box cells exact; Gmsh sections ~1.3 cells per size² with quads, 2.5 with triangles, times the layers; tetrahedra ~10 per size³; plus each refine sphere; goals built with build123d-translator for their volume), divided by `CFDT_CELLS_PER_RANK`, capped at the study's `procs`. The six small benchmarks held 18 CPUs each on mochi for 1–3 ranks; now 2 (porous: 1 rank) to 10 (mixing layer: 5, an upper estimate for 3). Unknown sizes (STEP, no mesh.size) keep the study's procs. |

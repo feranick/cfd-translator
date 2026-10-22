@@ -167,6 +167,8 @@ with local runs (as for the venturi). README: format, results, the new checks, v
 
 ## State
 
+**2026.10.21.2**: snappyHexMesh path (#1 layers + coverage + y+ plan, #5 refinement shapes, #10 quality: checkMesh report, stricter retry, Netgen for Gmsh tets, non-orthogonal schemes). User's list from the vehicle chat also covered: per-CAD-face tags survive meshing, ground layers optional (layers.on), feature-edge snapping, half-car cut at a domain side, radiator/MRF as snapped cellZones, narrow gaps refined (gapLevelIncrement) and flagged, quality retry. Unverified on OpenFOAM (no OpenFOAM/Gmsh in the sandbox): run sphere_snappy_re100, sphere_half_snappy, pipe_snappy on mochi first; then the 2D layer regression, Ahmed 25/35 at three levels, Rogue v3 (underbody, radiator) as the stress test. Watch: region renaming (patch names = bc names, else part_r<k> aliases are accepted), parallel snappy finding constant/extendedFeatureEdgeMesh (copied into processor dirs), reconstructPar -constant, binary label size (no 'arch' in v14).
+
 **2026.10.21.1**: vehicle-aero quick fixes (#4 y+ from shear, part-only warning; #3 Cd/Cl averaged from a forces monitor on the part walls; #6 --mem from the cell estimate; #8 summary detail; #9 cp and clim). Next, in order: snappyHexMesh path (#1 layers with collapse + y+ report, #5 box/cylinder/distance refinement, #10 quality controls), geometry by reference and mesh variants (#7), transient URANS/DDES with averaging and restarts across SLURM jobs (#2); acceptance: Ahmed body 25 and 35 degrees, three meshes, layers, y+ 30-300, Cd within ~10 % (0.285 / 0.26).
 
 **2026.10.20.1**: per-study `run` {timeout_s, mem, procs, queue} over config/env, with CFDT_MAX_* caps (the user cannot ask Claude to edit config/env on mochi); execution.limits in results; EXECUTION.md section 'Per-study run settings' for lmpt and feat; translators.json lists CFDT_MAX_*.
@@ -275,3 +277,37 @@ Open ideas:
 - `converge: true`; 3D prism layers; cyclic patches;
 - heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones and tracers (plan above);
 - a pump example (volute + impeller goal) once MRF is confirmed.
+
+## Plan: snappyHexMesh path (#23, in progress — nothing coded yet)
+
+OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
+- snappyHexMesh overwrites constant/polyMesh by default (-noOverwrite to keep times). No fvSchemes/fvSolution needed;
+  controlDict: writeFormat ascii needs mergeTolerance >= 10^-writePrecision (1e-6 with 6 digits is fine).
+- Geometry: `type triSurface; file "part.stl";` from constant/geometry; `type box; min; max;`; `type cylinder; point1;
+  point2; radius;`; `type sphere; centre; radius;`. Multi-solid STL surface `part` gives patches `part_<solid>`
+  (single solid: `part`); `regions { <solid> { name <patch>; } }` renames.
+- refinementSurfaces: `part { level (a b); regions { <solid> { level (a b); patchInfo { type wall; } } } }` (level
+  mandatory per region; no patchInfo -> wall). refinementRegions: `mode inside|outside; level N;` or
+  `mode distance; levels ((d1 l1) (d2 l2));` (increasing d, non-increasing level), allowed on the part surface too.
+- castellatedMeshControls mandatory: maxGlobalCells, maxLocalCells, minRefinementCells, resolveFeatureAngle,
+  nCellsBetweenLevels, allowFreeStandingZoneFaces, insidePoint. features ( { file "part.eMesh"; level N; } ) from
+  `surfaceFeatures` (system/surfaceFeaturesDict: surfaces ("part.stl"); includedAngle 150;).
+- snapControls mandatory: nSmoothPatch, tolerance, nSolveIter, nRelaxIter; optional nFeatureSnapIter,
+  explicitFeatureSnap, implicitFeatureSnap.
+- addLayersControls mandatory: relativeSizes, minThickness, featureAngle, nGrow, maxFaceThicknessRatio,
+  nBufferCellsNoExtrude, nLayerIter, layers {"<patch regex>" {nSurfaceLayers N;}}, nSmoothSurfaceNormals,
+  minMedialAxisAngle, nSmoothNormals, maxThicknessToMedialRatio, nSmoothThickness, nRelaxIter; exactly two of
+  firstLayerThickness / finalLayerThickness / thickness / expansionRatio. nRelaxedIter enables meshQualityControls.relaxed.
+- meshQualityControls mandatory: maxNonOrtho, minVol, minTetQuality, maxConcave, maxInternalSkewness,
+  maxBoundarySkewness, minFaceWeight, minVolRatio, minTwist, minDeterminant, errorReduction, nSmoothScale
+  (minFaceFlatness optional; tutorial's minFlatness is ignored). `#includeEtc "caseDicts/mesh/generation/meshQualityDict"`.
+- Log: layer table after "patch faces layers overall thickness" / "[m] [%]" / "----- -----" header: rows
+  `patch faces avgLayers thickness_m percent`; "Layer mesh : cells:N faces:.. points:.."; "Finished meshing ...".
+- Parallel: decomposePar (-force), mpirun snappyHexMesh -parallel, then `reconstructPar -constant` (no times otherwise).
+- blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
+
+Design (to implement): mesh.mesher "snappy": blockMesh background (mesh.size), STL per bc from Gmsh's surface mesh of
+the STEP (one solid per bc), levels from sizes in mm, regions [{box|cylinder|distance, size}], layers {n, first |
+y_plus, growth, feature_angle}, quality {max_non_ortho...}. Mesh in <study>/snappy/, read polyMesh back (faces of any
+size: PolyMesh faces padded wider, face_geometry grouped by node count), keep boundary face order (no lexsort),
+case writes only boundary + cellZones. Report: layer coverage per patch, predicted first-cell y+, checkMesh.

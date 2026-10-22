@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -193,6 +193,8 @@ def cell_estimate(study: dict) -> float | None:
     if not h:
         return None
     h = float(h)
+    if m.get("mesher") == "snappy":
+        return snappy_estimate(study)
     dom = study.get("domain") or {}
     vol = thick = None
     if dom.get("kind") == "external" and dom.get("box"):
@@ -224,6 +226,75 @@ def cell_estimate(study: dict) -> float | None:
         n = vol / thick / h ** 2 * per + sum(math.pi * float(r["r"]) ** 2 / float(r["size"]) ** 2 * per for r in refine)
         return n * layers
     return vol / h ** 3 * 10 + sum(4 / 3 * math.pi * float(r["r"]) ** 3 / float(r["size"]) ** 3 * 10 for r in refine)
+
+
+def _part_size(study: dict) -> tuple[float, float] | None:
+    """(volume mm3, surface area mm2) of the part, or None."""
+    import math
+    g = study.get("geometry") or {}
+    if "box" in g:
+        a, b, c = (float(v) for v in g["box"])
+        return a * b * c, 2 * (a * b + b * c + a * c)
+    if "cylinder" in g:
+        r, hh = (float(v) for v in g["cylinder"])
+        return math.pi * r * r * hh, 2 * math.pi * r * (r + hh)
+    if "annulus" in g:
+        ri, ro, hh = (float(v) for v in g["annulus"])
+        return math.pi * (ro * ro - ri * ri) * hh, 2 * math.pi * (ro + ri) * hh + 2 * math.pi * (ro * ro - ri * ri)
+    if "goal" in g:
+        try:
+            from build123d_translator import translate as T
+            solid, _ = T.build(g["goal"])
+            return float(solid.volume), float(solid.area)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def snappy_estimate(study: dict) -> float | None:
+    """Cells of a snappyHexMesh mesh: background hexahedra, a band of about four cells per level towards the
+    part's surface (nCellsBetweenLevels 3), refinement regions, distance bands and layers; 20 % margin."""
+    import math
+
+    import numpy as np
+
+    from .snappy import settings
+    ps = _part_size(study)
+    if ps is None:
+        return None
+    vol_p, area = ps
+    ext = (study.get("domain") or {}).get("kind") == "external"
+    if ext:
+        b = [float(v) for v in study["domain"]["box"]]
+    else:
+        e = vol_p ** (1 / 3)
+        b = [-e, -e, 0, e, e, 2 * e]
+    try:
+        st = settings(study, ext, b, None)
+    except Exception:  # noqa: BLE001
+        return None
+    h0 = st["h0"]
+    vol = (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]) - (vol_p if ext else 0) if ext else vol_p
+    n = vol / h0 ** 3
+    Lmin, Lmax = st["surface"]
+    for L in range(1, Lmax + 1):
+        hl = h0 / 2 ** L
+        n += area / hl ** 2 * 4 * (1 if L <= Lmin else 0.5)
+    for e in st["regions"]:
+        hl = e["cell_mm"]
+        if e["shape"] == "box":
+            bx = e["box"]
+            v = (bx[3] - bx[0]) * (bx[4] - bx[1]) * (bx[5] - bx[2])
+        elif e["shape"] == "cylinder":
+            v = math.pi * e["radius"] ** 2 * float(np.linalg.norm(np.subtract(e["p2"], e["p1"])))
+        else:
+            v = 4 / 3 * math.pi * e["radius"] ** 3
+        n += min(v, vol) / hl ** 3
+    for d, L in st["distance"]:
+        n += area * d / (h0 / 2 ** L) ** 3
+    if st["layers"]:
+        n += area / (h0 / 2 ** Lmin) ** 2 * st["layers"]["n"]
+    return 1.2 * n
 
 
 def procs_for_job(study: dict, est: float | None = None) -> int:
