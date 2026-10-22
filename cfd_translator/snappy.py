@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.21.2
+Version: 2026.10.21.3
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -491,6 +491,33 @@ def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zone
     return "".join(out)
 
 
+def split3(procs: int, lengths) -> tuple:
+    """Ranks along x, y, z (product procs) giving the most cube-like pieces of a box of these lengths."""
+    L = [float(v) for v in lengths]
+    best, bcost = (procs, 1, 1), float("inf")
+    for a in range(1, procs + 1):
+        if procs % a:
+            continue
+        for b in range(1, procs // a + 1):
+            if (procs // a) % b:
+                continue
+            c = procs // a // b
+            piece = [L[0] / a, L[1] / b, L[2] / c]
+            cost = max(piece) / max(min(piece), 1e-30)
+            if cost < bcost - 1e-12:
+                best, bcost = (a, b, c), cost
+    return best
+
+
+def decompose_dict(procs: int, lengths) -> str:
+    """snappyHexMesh in parallel also needs a distributor (to rebalance while refining; OpenFOAM 14 stops
+    without one). hierarchical is built in (ptscotch needs the third-party library)."""
+    n = split3(procs, lengths)
+    return (_hdr("decomposeParDict") + f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n"
+            f"distributor     hierarchical;\n\nhierarchical\n{{\n    n               ({n[0]} {n[1]} {n[2]});\n"
+            "    order           xyz;\n}\n")
+
+
 def control_dict() -> str:
     return (_hdr("controlDict") + "startFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime 1;\ndeltaT 1;\n"
             "writeControl timeStep;\nwriteInterval 1;\npurgeWrite 0;\nwriteFormat binary;\nwritePrecision 10;\n"
@@ -672,8 +699,8 @@ def mesh_snappy(study: dict, folder: Path):
     if os.environ.get("SLURM_NTASKS", "").isdigit():
         procs = max(1, min(procs, int(os.environ["SLURM_NTASKS"])))
     if procs > 1:
-        (sd / "system" / "decomposeParDict").write_text(_hdr("decomposeParDict") +
-                                                        f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
+        (sd / "system" / "decomposeParDict").write_text(
+            decompose_dict(procs, np.asarray(st["hi"], float) - np.asarray(st["lo"], float)))
     fm = foam.find_foam()
     if not fm or "error" in (fm or {}):
         raise MeshError((fm or {}).get("error", "snappy meshes need OpenFOAM (not found)"))

@@ -342,3 +342,10 @@ def test_mesh_snappy_end_to_end_with_stand_ins(tmp_path, monkeypatch):
     assert sel["inlet"][0]["normal"] == [-1.0, 0.0, 0.0]
     case = tmp_path / "case" / "constant" / "polyMesh"
     assert (case / "faces").read_bytes() == (tmp_path / "snappy" / "constant" / "polyMesh" / "faces").read_bytes()
+
+
+def test_parallel_snappy_has_a_distributor():
+    assert snappy.split3(8, [200, 100, 100]) == (2, 2, 2) and snappy.split3(6, [600, 100, 100]) == (6, 1, 1)
+    assert snappy.split3(19, [100, 100, 100]) in ((19, 1, 1), (1, 19, 1), (1, 1, 19))
+    t = snappy.decompose_dict(12, [400, 200, 100])
+    assert "distributor     hierarchical;" in t and "n               (4 3 1);" in t and "decomposer      scotch;" in t
