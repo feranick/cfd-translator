@@ -124,7 +124,9 @@ def test_levels_and_layers_from_a_target_y_plus():
     assert st["distance"] == [(10.0, 3), (30.0, 2)]
     L = st["layers"]
     assert L["y_plus_target"] == 50 and L["y_plus_first_cell_estimate"] == pytest.approx(50, rel=1e-3)
-    assert L["last_mm"] >= 0.5 * st["surface_mm"][0] > L["last_mm"] / L["growth"]       # n: last ~ half a cell
+    # n: the most layers whose stack fits in one of the finest surface cells
+    assert L["total_mm"] <= st["surface_mm"][1] < L["total_mm"] + L["last_mm"] * L["growth"]
+    assert L["stack_to_surface_cell"] <= 1
     # nearer distance bands are at least as fine as farther ones
     st2 = snappy.settings(dict(EXT, mesh=dict(EXT["mesh"], refine=[{"distance": 5, "size": 20}, {"distance": 50, "size": 5}])),
                           True, EXT["domain"]["box"])

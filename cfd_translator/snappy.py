@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.22.1
+Version: 2026.10.22.2
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -70,8 +70,9 @@ def _velocity(study: dict) -> float | None:
 
 def layer_plan(study: dict, surface_cell_mm: float | None, extent_mm: float | None) -> dict | None:
     """Prism layers: first height (given, or from a target y+ with a flat-plate friction estimate), growth,
-    number (given, or so that the last layer is about half the surface cell), total; and the y+ the first
-    cell should see (at its centre: half the first height, as results.y_plus measures it)."""
+    number (given, or the most whose whole stack fits in one of the finest surface cells: on the Ahmed body
+    13 layers, 57 mm, on 10-20 mm cells collapsed to 1.5 on mochi), total; and the y+ the first cell should see
+    (at its centre: half the first height, as results.y_plus measures it). surface_cell_mm: the finest."""
     L = (study.get("mesh") or {}).get("layers")
     if not L:
         return None
@@ -97,21 +98,24 @@ def layer_plan(study: dict, surface_cell_mm: float | None, extent_mm: float | No
     else:
         raise MeshError("mesh.layers: give first (mm) or y_plus")
     r = float(L.get("growth", 1.2))
+    def stack(k):
+        return first * k if abs(r - 1) < 1e-12 else first * (r ** k - 1) / (r - 1)
     if "n" in L:
         n = int(L["n"])
     elif surface_cell_mm:
-        target = 0.5 * surface_cell_mm
-        n = 1 if first >= target else (int(math.ceil(math.log(target / first) / math.log(r))) + 1 if r > 1 else 3)
-        n = max(1, min(n, 30))
+        n = 1
+        while n < 30 and stack(n + 1) <= surface_cell_mm:
+            n += 1
     else:
         n = 5
-    total = first * n if abs(r - 1) < 1e-12 else first * (r ** n - 1) / (r - 1)
+    total = stack(n)
     out.update({"n": n, "first_mm": float(f"{first:.4g}"), "growth": r, "total_mm": float(f"{total:.4g}"),
                 "last_mm": float(f"{first * r ** (n - 1):.4g}")})
     if u_tau:
         out["y_plus_first_cell_estimate"] = float(f"{u_tau * first * SCALE / 2 / nu:.3g}")
     if surface_cell_mm:
         out["last_to_surface_cell"] = float(f"{first * r ** (n - 1) / surface_cell_mm:.3g}")
+        out["stack_to_surface_cell"] = float(f"{total / surface_cell_mm:.3g}")
     return out
 
 
@@ -158,7 +162,7 @@ def settings(study: dict, external: bool, box: list, part_bb: tuple | None = Non
     dist.sort()
     dist = [(d, max(L for _, L in dist[i:])) for i, (d, _) in enumerate(dist)]     # nearer: at least as fine
     ext = float(np.max(np.asarray(part_bb[1]) - np.asarray(part_bb[0]))) if part_bb else None
-    lay = layer_plan(study, h0 / 2 ** Ls[0], ext)
+    lay = layer_plan(study, h0 / 2 ** Ls[1], ext)
     q = m.get("quality") or {}
     quality = {"maxNonOrtho": float(q.get("max_non_ortho", 65)), "maxBoundarySkewness": 20.0,
                "maxInternalSkewness": float(q.get("max_skewness", 4)), "maxConcave": 80.0, "minVol": -1e30,
@@ -782,6 +786,9 @@ def mesh_snappy(study: dict, folder: Path):
     snapped = _read_cell_zones(d)
     report = parse_log((sd / "log.snappyHexMesh").read_text(errors="replace"))
     lay = dict(st["layers"]) if st["layers"] else None
+    if lay and lay.get("stack_to_surface_cell", 0) > 1.5:
+        notes.append(f"mesh.layers: the stack ({lay['total_mm']} mm) is {lay['stack_to_surface_cell']} of the finest surface "
+                     "cells; snappyHexMesh tends to collapse stacks thicker than about one cell (fewer layers, or leave n out)")
     if lay and report.get("layers"):
         cov = {r["patch"]: {k: r[k] for k in ("faces", "layers", "thickness_mm", "thickness_pct")} for r in report["layers"]}
         lay["coverage"] = cov

@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.21.1
+Version: 2026.10.22.2
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -50,7 +50,10 @@ def settings(study: dict, plan: dict | None = None) -> dict | None:
         # turbulent external flow with a reference (drag and lift coefficients): the forces wobble the same way
         ext = (study.get("domain") or {}).get("kind") == "external" and study.get("model", "laminar") != "laminar" \
             and bool((study.get("reference") or {}).get("velocity")) and bool((study.get("reference") or {}).get("area"))
-        if not (has_zones or ext):
+        # snappyHexMesh meshes: residuals often stop at a floor while nothing changes (pipe_snappy: p 4.5e-5 at
+        # iteration 2000 and 4000 alike); 'settled' tells a converged run from one still moving
+        snappy = (study.get("mesh") or {}).get("mesher") == "snappy"
+        if not (has_zones or ext or snappy):
             return None
         a = True
     cfg = dict(DEFAULTS)
