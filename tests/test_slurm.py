@@ -189,10 +189,17 @@ def test_local_cancel_flag_kills_the_process_group(tmp_path):
     flag = tmp_path / "cancel"
     threading.Timer(1.0, flag.write_text, args=("x",)).start()
     t0 = time.time()
+    # a sleep length no other process on the machine uses: other test suites (feat, lmpt) run 'sleep 30' too,
+    # and a parallel run of theirs made pgrep find one (2026.10.22, a new installation)
+    nap = f"{30 + (os.getpid() % 997) / 1000:.3f}"
     with pytest.raises(Cancelled):
-        _bash({}, "sleep 30 & sleep 30; wait", tmp_path, timeout=60, cancel_file=flag)
+        _bash({}, f"sleep {nap} & sleep {nap}; wait", tmp_path, timeout=60, cancel_file=flag)
     assert time.time() - t0 < 10
-    out = subprocess.run(["pgrep", "-f", "sleep 30"], capture_output=True, text=True).stdout.split()
+    for _ in range(20):                                                # killed processes may take a moment to go
+        out = subprocess.run(["pgrep", "-f", f"sleep {nap}"], capture_output=True, text=True).stdout.split()
+        if not out:
+            break
+        time.sleep(0.1)
     assert not out                                                     # the whole group is gone
 
 
