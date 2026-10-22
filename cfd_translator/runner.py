@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.21.2
+Version: 2026.10.22.4
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -59,8 +59,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
     if (folder / "cancel").exists():
         out.update(ok=False, state="cancelled", why="cancelled before it started")
         return _save(out, folder, name)
+    transient = solver != "ref" and bool((study.get("solve") or {}).get("transient"))
+    t_job = time.time()
     try:
-        mesh, patches, selection, plan, w = prepare(study, folder)
+        if transient:
+            mesh, patches, selection, plan, w, tstate = _prepare_transient(study, folder)
+        else:
+            mesh, patches, selection, plan, w = prepare(study, folder)
         warns += w
         t1 = time.perf_counter()
         case = folder / "case"
@@ -86,14 +91,27 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             if use < procs:
                 warns.append(f"ran on {use} MPI rank{'s' if use > 1 else ''} instead of {procs}: {mesh.ncells} cells "
                              f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
-            info = foam.run(case, timeout, use)
+            if transient:
+                info = _solve_transient(case, study, plan, timeout, use, folder, tstate, t_job, warns)
+                if info.get("continued"):
+                    return {"name": name, "continued": True, **info}      # the next SLURM job carries on
+            else:
+                info = foam.run(case, timeout, use)
             out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
-            fields = foam.read_fields(case, mesh, plan)
+            fields = foam.read_fields(case, mesh, plan, mean=transient)
             lg = info["log"]
             out["solve"] = {"openfoam": info.get("openfoam"), "procs": info.get("procs"), "iterations": lg["iterations"],
                             "converged": lg["converged"], "residuals": lg["residuals"],
                             "first_residuals": lg["first_residuals"], "time": fields["time"],
                             "checkMesh": info["checkMesh"]}
+            if transient:
+                tr = plan["transient"]
+                out["solve"].update(converged=False, transient=True, model=tr["model"], end_time=tr["end_time"],
+                                    reached_time=info.get("time"), time_steps=tstate.get("time_steps"),
+                                    jobs=tstate.get("segments", 0) + 1, init_iterations=tstate.get("init_iterations"),
+                                    averaged_fields=bool(fields.get("averaged")))
+                out["solve"].pop("first_residuals", None)
+                lg = dict(lg, converged=True)            # residual convergence is not the question in time
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
             if not lg["converged"]:
@@ -134,9 +152,19 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 out["solve"]["settled"] = bool(avg.get("settled"))
                 if avg.get("settled"):
                     q = avg["quantities"]
-                    out["solve"]["settled_by"] = "; ".join(
-                        f"{k}: drift {q[k]['drift']:.2%}, scatter {q[k]['scatter']:.2%}" for k in avg["judged"]) + \
-                        f" over iterations {q[avg['judged'][0]]['window'][0]}..{q[avg['judged'][0]]['window'][1]}"
+                    if transient:
+                        out["solve"]["settled_by"] = "; ".join(
+                            f"{k}: drift {q[k]['drift']:.2%}, standard error {q[k]['stderr']:.2%}" for k in avg["judged"]) + \
+                            f" over t = {q[avg['judged'][0]]['window'][0]}..{q[avg['judged'][0]]['window'][1]} s"
+                    else:
+                        out["solve"]["settled_by"] = "; ".join(
+                            f"{k}: drift {q[k]['drift']:.2%}, scatter {q[k]['scatter']:.2%}" for k in avg["judged"]) + \
+                            f" over iterations {q[avg['judged'][0]]['window'][0]}..{q[avg['judged'][0]]['window'][1]}"
+        if transient:
+            for k in ("momentum_balance", "angular_momentum_balance"):
+                if k in res.get("checks", {}):
+                    res["checks"][k]["note"] = ("from the time-averaged fields: the Reynolds stresses and the time "
+                                                "derivative are not in it, so it is not judged")
         out["results"] = res
         from .render import default_images, render, save_state
         try:
@@ -230,6 +258,20 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
     quantities neither drift nor scatter over the averaging window), mass and momentum balanced."""
     why = []
     sv = out.get("solve", {})
+    if sv.get("transient"):
+        av = res.get("averaged", {})
+        if not sv.get("settled"):
+            why.append("the time averages have not converged "
+                       f"({'; '.join(av.get('why', [])) or 'no averaged history: see results.averaged'})")
+        if sv.get("reached_time") is not None and sv["reached_time"] < sv.get("end_time", 0) * (1 - 1e-6):
+            why.append(f"the run stopped at t = {sv['reached_time']} s of {sv['end_time']} s")
+        ch = res.get("checks", {})
+        if ch.get("mass_balance", {}).get("error", 0) > 1e-3:
+            why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
+        if why:
+            why.append("do not report these numbers as results: raise solve.transient.end_time (a longer average), "
+                       "or check the flow with images")
+        return not why, why
     if not sv.get("converged") and not sv.get("settled"):
         if "settled" in sv:
             av = res.get("averaged", {})
@@ -266,6 +308,75 @@ def _archive(case: Path, path: Path) -> str | None:
         return str(path)
     except OSError:
         return None
+
+
+def _prepare_transient(study: dict, folder: Path):
+    """prepare(), once: a later SLURM job of the same transient study reloads the mesh, patches and plan instead
+    of meshing and writing the case again. Returns (..., state) with state from <folder>/transient.json."""
+    import pickle
+    sf, pf = folder / "transient.json", folder / "prepared.pkl"
+    state = json.loads(sf.read_text()) if sf.is_file() else {}
+    if state.get("prepared") and pf.is_file():
+        with open(pf, "rb") as f:
+            mesh, patches, selection, plan, warns = pickle.load(f)
+        return mesh, patches, selection, plan, list(warns), state
+    mesh, patches, selection, plan, warns = prepare(study, folder)
+    with open(pf, "wb") as f:
+        pickle.dump((mesh, patches, selection, plan, warns), f)
+    state = {"prepared": True, "segments": 0, "init_done": False, "started": False, "time_steps": 0}
+    sf.write_text(json.dumps(state))
+    return mesh, patches, selection, plan, warns, state
+
+
+def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs: int, folder: Path, state: dict,
+                     t_job: float, warns: list) -> dict:
+    """The steady start (once), then the transient run up to this job's time budget. When end_time is not reached
+    and this is a SLURM job, the next job is submitted (after this one) and {'continued': True, ...} returned."""
+    from . import foam
+    from .transient import after_init, write_transient
+    tr = plan["transient"]
+    sf = folder / "transient.json"
+
+    def save():
+        sf.write_text(json.dumps(state))
+    margin = min(900.0, max(60.0, 0.1 * timeout))
+    if tr["init"] and not state.get("init_done"):
+        info0 = foam.run(case, timeout, procs)
+        state["init_iterations"] = info0["log"]["iterations"]
+        after_init(case)
+        write_transient(case, study, plan)
+        state.update(init_done=True, started=True)
+        save()
+        resume = True
+    else:
+        resume = bool(state.get("started"))
+        state["started"] = True
+        save()
+    left = timeout - (time.time() - t_job)
+    info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
+    state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
+    state["time"] = info.get("time")
+    if info.get("reached_end"):
+        save()
+        return info
+    state["segments"] = int(state.get("segments", 0)) + 1
+    save()
+    job = os.environ.get("SLURM_JOB_ID")
+    if job and state["segments"] < tr["max_jobs"]:
+        from .executor import submit
+        nxt = submit(folder.parent, folder.name, study, after=job, segment=state["segments"] + 1)
+        if nxt.get("job_id"):
+            return {"continued": True, "time": info.get("time"), "end_time": tr["end_time"], "next_job": nxt["job_id"],
+                    "segment": state["segments"] + 1}
+        warns.append(f"could not submit the next job ({nxt.get('why')}): results at t = {info.get('time')} s")
+    else:
+        warns.append(f"the run stopped at t = {info.get('time')} s of {tr['end_time']} s "
+                     f"({'max_jobs reached' if job else 'one local run: raise run.timeout_s'}): the averages cover less "
+                     "time than asked")
+    if procs > 1:
+        fm = foam.find_foam()
+        foam._step(fm, "reconstructPar -latestTime", "log.reconstructPar", case, 3600)
+    return info
 
 
 def _save(out: dict, folder: Path, name: str) -> dict:

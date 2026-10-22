@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.21.2
+Version: 2026.10.22.4
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -359,10 +359,17 @@ def job_script(request: Path, name: str, procs: int, study: dict | None = None) 
         ""])
 
 
-def submit(request: Path, name: str, study: dict) -> dict:
+def submit(request: Path, name: str, study: dict, after: str | None = None, segment: int | None = None) -> dict:
     """Writes <request>/<name>/job.sh, submits it, writes job.json. On failure writes the study's result
-    {"ok": false, "why": "could not submit: ..."} (never falls back to local)."""
+    {"ok": false, "why": "could not submit: ..."} (never falls back to local). after: a job this one waits for
+    (a transient study's next job: --dependency=afterany), segment: its number."""
     d = request / name
+    prev = None
+    if after and (d / "job.json").is_file():
+        try:
+            prev = json.loads((d / "job.json").read_text())
+        except json.JSONDecodeError:
+            prev = None
     d.mkdir(parents=True, exist_ok=True)
     est = cell_estimate(study)
     procs = procs_for_job(study, est)
@@ -370,7 +377,7 @@ def submit(request: Path, name: str, study: dict) -> dict:
     script.write_text(job_script(request, name, procs, study))
     script.chmod(0o755)
     sargs, mem_from = sbatch_args(study, est)
-    cmd = ["sbatch", "--parsable"] + sargs + [str(script)]
+    cmd = ["sbatch", "--parsable"] + sargs + ([f"--dependency=afterany:{after}"] if after else []) + [str(script)]
     try:
         r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60)
         ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
@@ -379,12 +386,16 @@ def submit(request: Path, name: str, study: dict) -> dict:
     if not ok:
         res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}",
                "execution": {"executor": "slurm", "slurm_job": None}}
-        write_atomic(d / f"{name}.json", json.dumps(res, indent=1))
+        if not after:                    # a continuation that fails leaves the running job to write its result
+            write_atomic(d / f"{name}.json", json.dumps(res, indent=1))
         return res
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
     info = {"executor": "slurm", "job_id": job_id, "submitted": time.time(), "procs": procs,
             "time_min": time_limit_min(study), "command": cmd,
             "run": dict(study.get("run") or {}), "cells_estimate": int(est) if est else None, "mem_from": mem_from}
+    if segment:
+        info["segment"] = segment
+        info["previous_jobs"] = list((prev or {}).get("previous_jobs", [])) + ([str(prev["job_id"])] if prev else [])
     write_atomic(d / "job.json", json.dumps(info, indent=1))
     return info
 
@@ -404,6 +415,8 @@ def run_study_job(request: str, name: str) -> int:
         os.environ["CFDT_EXECUTION"] = "by hand"            # the run record's executor
     t0 = time.perf_counter()
     r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s(study))
+    if r.get("continued"):              # a transient study goes on in the next job (job.json has its id)
+        return 0
     r.setdefault("seconds", {})
     if isinstance(r["seconds"], dict):
         r["seconds"]["wall"] = round(time.perf_counter() - t0, 3)

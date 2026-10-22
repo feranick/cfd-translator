@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.22.1
+Version: 2026.10.22.4
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -33,6 +33,9 @@ Version: 2026.10.22.1
   sphere_snappy_re100  snappyHexMesh with layers: sphere at Re 100, Cd vs the standard drag curve (b3dt, Gmsh)
   sphere_half_snappy   the same as a half model on a symmetry plane (the cut face meshed by snappy.cut_at_box)
   pipe_snappy          internal flow on a snappyHexMesh mesh: Hagen-Poiseuille as pipe_poiseuille
+  cylinder_2d2         transient (laminar, Re 100): Schaefer & Turek 2D-2 vortex shedding, cD max, cL max, Strouhal
+  cylinder_2d2_restart the same in 2-minute SLURM jobs: continues from job to job, same answers
+  ahmed25_des, ahmed35_des   DES (kOmegaSSTDES) on the L3 mesh, 0.4 s averaged from 0.1 s (slow; by name)
   ahmed25_L1..L3, ahmed35_L1..L3   Ahmed body (half, moving ground, kOmegaSST, layers at y+ ~60), three meshes:
                        Cd vs the wind tunnel (0.285, 0.26) within 10 %, y+ 30-300, layer coverage (slow; by name)
 Slow cases run only when named. The reference solver runs the 2D box cases (couette, channel, cavity).
@@ -428,6 +431,36 @@ def _cases() -> dict:
                              ("wall force = 8 pi mu L U_mean", 8 * math.pi * mu_w * 0.2 * Q / (math.pi * R ** 2),
                               r["forces"]["walls"]["fz"], {"tol": 0.03})],
         "ref": False, "needs": ["gmsh"]}
+    # ---- transient (transient.py) ----
+    # Schaefer & Turek 2D-2: the 2D-1 channel at mean inflow 1 m/s (Re 100), periodic vortex shedding:
+    # cD max 3.22-3.24, cL max 0.99-1.01, St = f D / U_mean 0.295-0.305
+    def st2d2(extra_run=None):
+        st = dict(C["cylinder_2d1"]["study"])
+        st["bcs"] = [dict(b, velocity=1.0) if b["kind"] == "inlet" else b for b in st["bcs"]]
+        st["reference"] = {"velocity": 1.0, "area": 1000, "length": 100}
+        st["solve"] = {"transient": {"end_time": 8.0, "average_from": 5.0, "max_co": 0.5, "write_interval": 1.0}}
+        st.pop("probes", None)
+        if extra_run:
+            st["run"] = extra_run
+        return st
+    st_checks = lambda r: [("cD max (3.22-3.24)", 3.23, r["coefficients"]["cd_max"], {"tol": 0.03}),
+                           ("cL max (0.99-1.01)", 1.0, r["coefficients"]["cl_max"], {"tol": 0.06}),
+                           ("Strouhal f D / U_mean (0.295-0.305)", 0.30, r["coefficients"]["strouhal"], {"tol": 0.03}),
+                           ("reliable (the time averages converged)", 1.0, 1.0 if r["_reliable"] else 0.0, {"abs": 0.5})]
+    C["cylinder_2d2"] = {"study": st2d2(), "checks": st_checks, "ref": False, "needs": ["gmsh"]}
+    # the same in SLURM jobs of 2 minutes each: it must continue from job to job (stopAt writeNow, startFrom
+    # latestTime, the averages carried over) and give the same answers
+    C["cylinder_2d2_restart"] = {"study": st2d2({"timeout_s": 120, "queue": True}), "checks": st_checks, "ref": False,
+                                 "needs": ["gmsh"]}
+    # Ahmed body, the fine steady mesh (L3) with DES (kOmegaSSTDES) from a 1000-iteration RANS start, 0.4 s
+    # (15 body lengths) averaged from 0.1 s
+    for phi, cd_exp in ((25, 0.285), (35, 0.26)):
+        st = ahmed_study(phi, 0.5, 19)
+        st["model"] = "kOmegaSSTDES"
+        st["solve"] = {"transient": {"end_time": 0.4, "average_from": 0.1, "init": 1000, "max_co": 1.0,
+                                     "write_interval": 0.05}}
+        C[f"ahmed{phi}_des"] = {"study": st, "checks": _ahmed_des_checks(cd_exp), "ref": False,
+                                "needs": ["gmsh", "build123d_translator"], "slow": True}
     # Ahmed body (Ahmed, Ramm & Faltin 1984), half model on a symmetry plane, no stilts, 50 mm over a moving
     # ground, 40 m/s (Re_L 2.8e6, as Lienhart & Becker 2003), kOmegaSST with wall functions and prism layers at
     # y+ ~ 60; three meshes, each sqrt(2) finer than the last. Wind tunnel: Cd 0.285 (25 deg), 0.26 (35 deg).
@@ -476,6 +509,13 @@ def ahmed_study(phi: float, f: float, procs: int) -> dict:
             "solve": {"iterations": 4000},
             "run": {"procs": procs},
             "images": True}
+
+
+def _ahmed_des_checks(cd_exp: float):
+    return lambda r: [
+        ("Cd, time-averaged (wind tunnel %.3f)" % cd_exp, cd_exp, r["coefficients"]["cd"], {"tol": 0.10}),
+        ("mean y+ on the body (wall functions want 30-300)", 165.0, r["y_plus_part_mean"], {"abs": 135.0}),
+        ("reliable (the time averages converged)", 1.0, 1.0 if r["_reliable"] else 0.0, {"abs": 0.5})]
 
 
 def _ahmed_checks(cd_exp: float):

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.21.2
+Version: 2026.10.22.4
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -28,7 +28,8 @@ FLUIDS = {
               "note": "20 degrees C; with energy: constant density, temperature solved"},
 }
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
-MODELS = ("laminar", "kOmegaSST")
+MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
+TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -106,14 +107,13 @@ CONVENTIONS = [
     "degrees C; pressures gauge to conditions.p (101325). Walls adiabatic unless T, q (W/m2 into the fluid), power (W) "
     "or h + T_inf; gravity adds buoyancy. Results add heat.<wall bc>.Q_W/q_mean/T_mean_C (h, Nu with reference.T, "
     "length), flow.<bc>.mdot/T_mean_C/mach, max_mach, T_min_C/T_max_C, checks.energy_balance, feat_thermal (external).",
-    "Rotating machines (pumps, fans, mixers): a rotating zone (MRF) around the impeller and its faces as a wall "
-    "with rotation: the zone's name. Results: rotating.<zone>.torque_Nm (by the fluid on its rotating walls, "
-    "about the axis), power_W (to the fluid), and with an inlet and an outlet pump.head_m, pump.efficiency "
-    "(rho g Q H / power). Keep the cylinder clear of stationary walls.",
-    "Averaging (solve.average; on with a rotating zone, or external turbulent flow with reference velocity and "
-    "area): torque, total pressures and part forces each iteration; results.averaged: mean, std, drift, scatter "
-    "over the last 25 % (>= 500 its); the means replace torque, power, head, efficiency, total_pressure_drop, "
-    "cd, cl (final iteration: *_last). settled (drift < 1 %, scatter < 2 %) counts as converged.",
+    "Pumps, fans: a rotating zone (MRF) around the impeller, its faces a wall with rotation: the zone's name. "
+    "Results: rotating.<zone>.torque_Nm, power_W; with an inlet and an outlet pump.head_m, efficiency.",
+    "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
+    "torque, total pressures, part forces per iteration; results.averaged: mean, std, drift, scatter over the last "
+    "25 % (>= 500 its); the means replace torque, power, head, total_pressure_drop, cd, cl (*_last: the final "
+    "iteration). settled (drift < 1 %, scatter < 2 %) counts as converged; transient: drift < 2 %, standard error "
+    "< 1 %.",
     "reliable: false (with reasons) when the solver neither converged nor settled, or a balance is off: do not "
     "report the numbers; rerun with more iterations, lower relax or a better mesh.",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
@@ -142,9 +142,11 @@ STUDY_KEYS = {
     "mesh": "{size, refine, cells: [nx, ny, nz], grading, extrude, quads, layers: {first | y_plus, n, growth, on, "
             "feature_angle}, mesher: gmsh | snappy, surface, features, gap, quality: {max_non_ortho, max_skewness}, "
             "max_cells, optimize}",
-    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs (MPI ranks), "
-             "energy: transonic (default: Mach > 0.7 or a total-pressure inlet), consistent (true), start (rest | "
-             "estimate), ramp (400 its, total-pressure gas inlets); average (true | false | {window, min_iterations, drift, scatter})}",
+    "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
+             "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
+             "transient: {end_time s, average_from (end/3), max_co (1), write_interval, init (steady its first, 500 "
+             "turbulent), max_jobs (10)}: PIMPLE, time averages (results from UMean/pMean; cd/cl mean, min, max, "
+             "frequency_Hz, strouhal); continues over SLURM jobs; model kOmegaSSTDES (DES) needs it}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -174,7 +176,8 @@ STUDY_KEYS = {
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers", "mesher", "surface", "features",
              "gap", "quality", "max_cells", "optimize"}
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle"}
-SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average"}
+SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
+              "transient"}
 AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
@@ -549,7 +552,7 @@ def validate_study(st: dict) -> dict:
         errs.append("bcs: nothing drives the flow (add an inlet, an opening, a moving wall, or with energy a heated wall)")
     if "inlet" in kinds and not ({"outlet", "opening"} & set(kinds)):
         errs.append("bcs: an inlet needs an outlet or an opening for the flow to leave")
-    if model == "kOmegaSST" and "inlet" not in kinds:
+    if model != "laminar" and "inlet" not in kinds:
         warns.append("kOmegaSST without an inlet: turbulence initial values use reference.velocity (or 1 m/s)")
     # mesh
     m = st.get("mesh", {})
@@ -709,6 +712,34 @@ def validate_study(st: dict) -> dict:
             errs.append("solve.average: true, false or {window, min_iterations, drift, scatter}")
         if av and st.get("energy"):
             warns.append("solve.average: not available with energy (the fluid solver) yet; final-iteration values are reported")
+    tr = s.get("transient")
+    if tr is not None:
+        if not isinstance(tr, dict) or set(tr) - TRANSIENT_KEYS or not _num(tr.get("end_time")) or tr["end_time"] <= 0:
+            errs.append("solve.transient: {end_time (s, required), average_from (s; end_time / 3), max_co (1), "
+                        "write_interval (s; end_time / 10), init (steady iterations first; 500 turbulent, 0 laminar), "
+                        "max_jobs (SLURM jobs in a row, 10), dt (first time step, s)}")
+        else:
+            T = float(tr["end_time"])
+            if "average_from" in tr and (not _num(tr["average_from"]) or not 0 <= tr["average_from"] < T):
+                errs.append("solve.transient.average_from: a time (s) from 0 to before end_time")
+            if "max_co" in tr and (not _num(tr["max_co"]) or not 0.05 <= tr["max_co"] <= 20):
+                errs.append("solve.transient.max_co: Courant number limit, 0.05-20 (default 1)")
+            for k in ("write_interval", "dt"):
+                if k in tr and (not _num(tr[k]) or not 0 < tr[k] <= T):
+                    errs.append(f"solve.transient.{k}: seconds, > 0 and <= end_time")
+            if "init" in tr and (not isinstance(tr["init"], int) or tr["init"] < 0):
+                errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
+            if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
+                errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
+        if st.get("energy") or st.get("scalars") or st.get("age"):
+            errs.append("solve.transient: not with energy, scalars or age yet")
+        for k in ("iterations", "residual", "average"):
+            if k in s:
+                warns.append(f"solve.{k}: a transient run uses solve.transient (end_time, average_from); "
+                             f"{k} applies only to its steady start (init)" if k == "iterations" else
+                             f"solve.{k}: not used by a transient run")
+    elif model == "kOmegaSSTDES":
+        errs.append("model kOmegaSSTDES is a transient model: add solve.transient {end_time, ...}")
     if "queue" in st and not isinstance(st["queue"], bool):
         errs.append("queue: true (always a SLURM job) or false (always local)")
     # energy, conditions, gravity

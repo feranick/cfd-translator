@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.22.3
+Version: 2026.10.22.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -240,6 +240,28 @@ def _progress(d: Path, study: dict) -> dict:
         return {"stage": "solving"}
     it = _re.findall(r"^Time = ([-+0-9.eE]+)", text, _re.M)
     s = study.get("solve", {})
+    trs = s.get("transient")
+    init = int(trs.get("init", 0 if study.get("model", "laminar") == "laminar" else 500)) if trs else 0
+    if trs and (init == 0 or (d / "case" / "log.foamRun.init").exists()):
+        from .transient import progress as _tp
+        T = float(trs["end_time"])
+        pr = _tp(text, T)
+        el = max(time.time() - log.stat().st_ctime, 1e-3)
+        out = {"stage": "solving (transient)", **pr, "elapsed_min": round(el / 60, 1)}
+        if len(it) >= 2:
+            t0, t1 = float(it[0]), float(it[-1])
+            rate = (t1 - t0) / el
+            if rate > 0:
+                out["eta_min_max"] = round((T - t1) / rate / 60, 1)
+                out["note"] = ("eta for the rest of the simulated time at this job's pace; a run longer than one job "
+                               "goes on in the next (job.json segment)")
+        try:
+            out["job_segment"] = json.loads((d / "job.json").read_text()).get("segment", 1)
+        except (OSError, json.JSONDecodeError):
+            pass
+        return out
+    if trs:
+        s = dict(s, iterations=init)
     nmax = int(s.get("iterations", 3000 if study.get("model", "laminar") != "laminar" else 2000))
     start = (d / "case" / "log.checkMesh").stat().st_mtime if (d / "case" / "log.checkMesh").exists() else log.stat().st_ctime
     el = max(time.time() - start, 1e-3)

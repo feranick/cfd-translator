@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.22.2
+Version: 2026.10.22.4
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -41,7 +41,13 @@ def _r(x, n=6):
 
 
 def settings(study: dict, plan: dict | None = None) -> dict | None:
-    """The averaging settings, or None when off."""
+    """The averaging settings, or None when off. Transient runs (solve.transient) always average, in time, from
+    average_from on."""
+    tr = (study.get("solve") or {}).get("transient")
+    if tr:
+        T = float(tr["end_time"])
+        return {"transient": True, "from": float(tr.get("average_from", T / 3)), "drift": 0.02, "stderr": 0.01,
+                "min_samples": 20}
     a = (study.get("solve") or {}).get("average")
     if a is False:
         return None
@@ -282,14 +288,91 @@ def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict, scale: float | None 
             "window": [int(its[-w]), int(its[-1])], "n": int(w)}
 
 
-def _calibrate(last: float, ref: float, rho: float) -> float | None:
-    """The units factor (1, rho or 1/rho) that makes the monitor's last value match the field value, or None."""
+def _calibrate(last: float, ref: float, rho: float, tol: float = AGREE) -> float | None:
+    """The units factor (1, rho or 1/rho) that makes the monitor's last value match the field value, or None.
+    Transient runs compare the window's mean with the mean fields, more loosely (tol 0.3: the factors differ by
+    rho, a thousand for water)."""
     if ref is None or not np.isfinite(last):
         return None
     if abs(ref) < 1e-12:
         return 1.0 if abs(last) < 1e-9 else None
     best = min((1.0, rho, 1.0 / rho), key=lambda s: abs(s * last - ref))
-    return best if abs(best * last - ref) <= AGREE * abs(ref) else None
+    return best if abs(best * last - ref) <= tol * abs(ref) else None
+
+
+def time_window_stats(t: np.ndarray, v: np.ndarray, cfg: dict, scale: float | None = None,
+                      period: float | None = None) -> dict | None:
+    """Transient: time-weighted mean, std, min, max, drift (second half of the window against the first) and the
+    standard error of the mean from batch means (ten, or whole numbers of periods when the signal has a period,
+    so a few vortex-shedding cycles do not look like drift), over t >= cfg['from']; None with too few samples."""
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    m = t >= cfg["from"]
+    if m.sum() < int(cfg.get("min_samples", 20)):
+        return None
+    tt, x = t[m], v[m]
+    w = np.gradient(tt) if len(tt) > 1 else np.ones(1)
+    w = np.maximum(w, 0)
+    if w.sum() <= 0:
+        return None
+
+    def wmean(sel):
+        return float((w[sel] * x[sel]).sum() / max(w[sel].sum(), 1e-300))
+    span = tt[-1] - tt[0]
+    if period and span >= 4 * period:
+        # whole periods only: the mean over the last k periods, drift between the two halves of them, and
+        # batches of whole periods
+        k = int(span // period)
+        t0 = tt[-1] - k * period
+        sel = tt >= t0 - 1e-12
+        tt, x, w = tt[sel], x[sel], np.maximum(np.gradient(tt[sel]), 0)
+        h = k // 2
+        first = (tt < t0 + h * period)
+        second = (tt >= tt[-1] - h * period)
+        nb = min(10, k)
+        per = k // nb
+        edges = [t0 + i * per * period for i in range(nb + 1)]
+    else:
+        mid = 0.5 * (tt[0] + tt[-1])
+        first, second = tt < mid, tt >= mid
+        edges = list(np.linspace(tt[0], tt[-1], 11))
+    mean = wmean(np.ones(len(x), bool))
+    std = float(np.sqrt((w * (x - mean) ** 2).sum() / w.sum()))
+    d = wmean(second) - wmean(first) if first.any() and second.any() else 0.0
+    bm = [wmean((tt >= a) & (tt < b)) for a, b in zip(edges[:-1], edges[1:]) if ((tt >= a) & (tt < b)).any()]
+    se = float(np.std(bm, ddof=1) / np.sqrt(len(bm))) if len(bm) > 2 else float("inf")
+    sc = abs(mean) if scale is None else max(abs(mean), float(scale))
+    return {"mean": _r(mean), "std": _r(std), "min": _r(x.min()), "max": _r(x.max()), "last": _r(x[-1]),
+            "drift": _r(abs(d) / sc) if sc > 0 else float("inf"),
+            "scatter": _r(std / sc) if sc > 0 else float("inf"),
+            "stderr": _r(se / sc) if sc > 0 else float("inf"),
+            "window": [_r(tt[0]), _r(tt[-1])], "n": int(len(tt))}
+
+
+def dominant_frequency(t: np.ndarray, v: np.ndarray, t0: float) -> dict | None:
+    """The strongest frequency (Hz) of v(t) for t >= t0 (resampled uniformly, Hann window, parabolic peak),
+    and how many periods the window holds."""
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    m = t >= t0
+    if m.sum() < 32:
+        return None
+    tt, x = t[m], v[m]
+    n = int(min(8192, max(256, 2 * len(tt))))
+    tu = np.linspace(tt[0], tt[-1], n)
+    xu = np.interp(tu, tt, x)
+    xu = (xu - xu.mean()) * np.hanning(n)
+    spec = np.abs(np.fft.rfft(xu))
+    f = np.fft.rfftfreq(n, d=(tu[-1] - tu[0]) / (n - 1))
+    if len(spec) < 4 or spec[1:].max() <= 0:
+        return None
+    k = int(np.argmax(spec[1:])) + 1
+    if 1 <= k < len(spec) - 1:
+        a, b, c = spec[k - 1], spec[k], spec[k + 1]
+        den = a - 2 * b + c
+        dk = 0.5 * (a - c) / den if den != 0 else 0.0
+    else:
+        dk = 0.0
+    fr = float((k + dk) * (f[1] - f[0]))
+    return {"frequency_Hz": _r(fr), "periods": _r(fr * (tt[-1] - tt[0]))}
 
 
 # ---- the averaged results -----------------------------------------------------------------------------
@@ -303,6 +386,15 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     cfg = mon.get("settings") or dict(DEFAULTS)
     rho = float(plan["rho"])
     warns, series = [], {}
+    tr = bool(cfg.get("transient"))
+
+    def cal(its, raw, ref):
+        """Units factor from the last value (steady) or the window's mean against the mean fields (transient)."""
+        if tr:
+            mm = np.asarray(its) >= cfg["from"]
+            x = float(np.asarray(raw)[mm].mean()) if mm.any() else float(raw[-1])
+            return _calibrate(x, ref, rho, 0.3)
+        return _calibrate(float(raw[-1]), ref, rho)
     # torque per rotating zone
     for zn, fo in mon.get("torque", {}).items():
         got = _moment_series(case, fo)
@@ -313,7 +405,7 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
         a = np.asarray(plan["zones"][zn]["axis"], float)
         T = M @ a
         ref = (res.get("rotating") or {}).get(zn, {}).get("torque_Nm")
-        s = _calibrate(float(T[-1]), ref, rho)
+        s = cal(its, T, ref)
         if s is None:
             warns.append(f"averaging: zone {zn}: the monitored torque at the last iteration ({T[-1]:.6g}) does not "
                          f"match the fields' ({ref}); its history is not used")
@@ -352,14 +444,14 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                 tp = None
                 if all(cols[n][2] is not None for n in cols):
                     d = side(ins, 1) - side(outs, 1)
-                    s = _calibrate(float(d[-1]), ref, rho)
+                    s = cal(common, d, ref)
                     if s is not None:
                         tp, method = s * d, "flow-weighted total pressure"
                 if tp is None and all(cols[n][1] is not None for n in cols) and ref is not None:
                     # static pressure history plus the final iteration's dynamic-pressure difference
                     d = side(ins, 0) - side(outs, 0)
                     sp = res.get("pressure_drop")
-                    s = _calibrate(float(d[-1]), sp, rho) if sp is not None else None
+                    s = cal(common, d, sp) if sp is not None else None
                     if s is not None:
                         tp, method = s * d + (ref - sp), "static pressure + final dynamic-pressure difference"
                 if tp is None:
@@ -379,7 +471,7 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
             d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
             qa = float(co["q_Pa"]) * float(co["area_m2"])
             cd_ref = co.get("cd")
-            s = _calibrate(float(Fh[-1] @ d) / qa, cd_ref, rho)
+            s = cal(its, (Fh @ d) / qa, cd_ref)
             if s is None:
                 warns.append(f"averaging: the monitored drag at the last iteration ({float(Fh[-1] @ d) / qa:.6g}) does not "
                              f"match the fields' cd ({cd_ref}); its history is not used")
@@ -408,13 +500,24 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
             with np.errstate(divide="ignore", invalid="ignore"):
                 series["efficiency"] = (com, np.where(P > 0, rho * G0 * Q * H / P, np.nan))
     stats = {}
+    fq, period = None, None
+    if tr:
+        sig = series.get("cl") or series.get("cd")
+        fq = dominant_frequency(sig[0], sig[1], cfg["from"]) if sig is not None else None
+        if fq and fq["periods"] >= 4:
+            period = 1.0 / fq["frequency_Hz"]
     for k, (its, v) in series.items():
         # cl is judged against the drag's size (its own mean can be near zero)
         sc = float(np.abs(series["cd"][1][-len(v):]).mean()) if k == "cl" and "cd" in series else None
-        st = window_stats(its, v, cfg, sc)
+        st = time_window_stats(its, v, cfg, sc, period) if tr else window_stats(its, v, cfg, sc)
         if st is not None:
             stats[k] = st
     total = max(len(v) for _, v in series.values())
+    if not stats and tr:
+        warns.append(f"averaging: fewer than {cfg['min_samples']} time steps after average_from ({cfg['from']:g} s); "
+                     "last-time values kept")
+        return {"settings": cfg, "time_steps_recorded": total, "settled": False,
+                "why": ["too few time steps to average"]}, warns
     if not stats:
         warns.append(f"averaging: {total} iterations recorded, fewer than min_iterations ({cfg['min_iterations']}); "
                      "final-iteration values kept")
@@ -429,17 +532,41 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
         st = stats[k]
         if st["drift"] > cfg["drift"]:
             bad.append(f"{k} drifts {st['drift']:.2%} (> {cfg['drift']:.0%})")
-        if st["scatter"] > cfg["scatter"]:
+        if tr:
+            if st["stderr"] > cfg["stderr"]:
+                bad.append(f"{k}: the mean's standard error is {st['stderr']:.2%} (> {cfg['stderr']:.0%}): run longer")
+        elif st["scatter"] > cfg["scatter"]:
             bad.append(f"{k} scatters {st['scatter']:.2%} (> {cfg['scatter']:.0%})")
-    block = {"basis": "mean over the window (the last iterations); *_last in the results are the final iteration",
-             "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
-             "quantities": stats, "iterations_recorded": total}
+    if tr:
+        block = {"basis": f"time averages from {cfg['from']:g} s to the end (time-weighted); *_last: the last time step",
+                 "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
+                 "quantities": stats, "time_steps_recorded": total}
+        if fq:
+            L, U = (plan.get("transient") or {}).get("length_m"), (plan.get("transient") or {}).get("velocity")
+            if L and U:
+                fq["strouhal"] = _r(fq["frequency_Hz"] * L / U)
+            fq["of"] = "cl" if "cl" in series else "cd"
+            block["frequency"] = fq
+    else:
+        block = {"basis": "mean over the window (the last iterations); *_last in the results are the final iteration",
+                 "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
+                 "quantities": stats, "iterations_recorded": total}
     if "cd" in series:                               # coefficient history, at most 200 points, for plots
         its, cd = series["cd"]
         k = max(1, len(its) // 200)
-        block["history"] = {"iteration": [int(i) for i in its[::k]], "cd": [_r(x) for x in cd[::k]],
+        xk = "time" if tr else "iteration"
+        block["history"] = {xk: [(_r(i) if tr else int(i)) for i in its[::k]], "cd": [_r(x) for x in cd[::k]],
                             "cl": [_r(x) for x in series["cl"][1][::k]]}
     _apply_means(res, stats, plan)
+    co = res.get("coefficients")
+    if tr and co is not None:
+        for k in ("cd", "cl"):
+            if k in stats:
+                co[f"{k}_min"], co[f"{k}_max"] = stats[k]["min"], stats[k]["max"]
+        if block.get("frequency"):
+            co["frequency_Hz"] = block["frequency"]["frequency_Hz"]
+            if "strouhal" in block["frequency"]:
+                co["strouhal"] = block["frequency"]["strouhal"]
     return block, warns
 
 

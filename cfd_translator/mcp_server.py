@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.22.3
+Version: 2026.10.22.4
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -62,6 +62,9 @@ procs, queue} overrides the machine's defaults for that study, within the caps i
 Vehicles and 3D external aero: mesh.mesher "snappy" (snappyHexMesh: surface and edge refinement, refine boxes and
 distance bands, prism layers from mesh.layers.y_plus with a coverage report in mesh.layers, half models on a
 symmetry side); check mesh.layers.coverage_pct, mesh.snappy.attempts and warnings before trusting forces.
+Unsteady flow (vortex shedding, separated wakes): solve.transient {end_time, average_from} with model laminar,
+kOmegaSST (URANS) or kOmegaSSTDES (DES); results are time averages (coefficients.cd mean, cd_min/max,
+frequency_Hz, strouhal); a run longer than one SLURM job continues in the next by itself.
 Pictures: add "images": true (or slices and surfaces) to a study; results.images.<name>.path then
 get_image shows each; render_images makes other views of a finished study without solving again.
 Units: geometry mm; velocity m/s; pressure Pa; flow m3/s; forces N."""

@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.19.1
+Version: 2026.10.22.4
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -64,15 +64,21 @@ def find_foam() -> dict | None:
     return res
 
 
-def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None):
+def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None,
+          deadline: float | None = None, on_deadline=None):
     """Runs cmd in a bash that sources OpenFOAM. Long commands (not capture) run in their own process group,
-    which a timeout or the cancel flag kills as a whole (mpirun and every rank, not only bash)."""
+    which a timeout or the cancel flag kills as a whole (mpirun and every rank, not only bash). At the epoch
+    time deadline, on_deadline() is called once (a transient run asked to write and stop)."""
     src = f"source '{foam['bashrc']}' >/dev/null 2>&1; " if foam.get("bashrc") else ""
     if capture:
         return subprocess.run(["bash", "-c", src + cmd], cwd=str(cwd), timeout=timeout, capture_output=True, text=True)
     p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True)
     t0 = time.time()
+    fired = False
     while True:
+        if deadline is not None and on_deadline is not None and not fired and time.time() >= deadline:
+            fired = True
+            on_deadline()
         try:
             return subprocess.CompletedProcess(p.args, p.wait(timeout=1.0))
         except subprocess.TimeoutExpired:
@@ -105,10 +111,11 @@ def _tail(path: Path, n: int = 40) -> str:
         return "(no log)"
 
 
-def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_on_error: bool = True) -> int:
+def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_on_error: bool = True,
+          deadline: float | None = None, on_deadline=None) -> int:
     try:
         rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
-                   cancel_file=Path(case).parent / "cancel").returncode
+                   cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline).returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
     if rc != 0 and raise_on_error:
@@ -116,45 +123,73 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     return rc
 
 
-def run(case: Path, timeout: float = 3600, procs: int | None = None) -> dict:
-    """checkMesh, then the solver. Returns the parsed logs; raises FoamError on failure."""
+def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: bool = False,
+        deadline: float | None = None) -> dict:
+    """checkMesh, then the solver. Returns the parsed logs; raises FoamError on failure.
+    resume (transient runs): continue from the latest time (no cleaning, no checkMesh; the decomposition is
+    kept when it has as many ranks). deadline (epoch seconds): ask the run to write and stop then
+    (transient.request_stop); info['reached_end'] says whether endTime was reached. The fields are
+    reconstructed only when it was (or the run is steady)."""
     foam = find_foam()
     if not foam or "error" in (foam or {}):
         raise FoamError((foam or {}).get("error", "OpenFOAM not found (install openfoam.org >= 11, or set CFDT_FOAM)"))
     case = Path(case)
     out = {"openfoam": foam.get("version")}
-    for p in case.iterdir():                 # results of an earlier run must not be read as this one's
-        try:
-            if p.is_dir() and float(p.name) > 0:
-                shutil.rmtree(p)
-        except ValueError:
-            pass
-    shutil.rmtree(case / "postProcessing", ignore_errors=True)     # monitors of an earlier run (average.py)
-    _step(foam, "checkMesh", "log.checkMesh", case, min(timeout, 900), raise_on_error=False)
-    out["checkMesh"] = foamio.parse_checkmesh((case / "log.checkMesh").read_text(errors="replace"))
+    if not resume:
+        for p in case.iterdir():                 # results of an earlier run must not be read as this one's
+            try:
+                if p.is_dir() and float(p.name) > 0:
+                    shutil.rmtree(p)
+            except ValueError:
+                pass
+        shutil.rmtree(case / "postProcessing", ignore_errors=True)     # monitors of an earlier run (average.py)
+        _step(foam, "checkMesh", "log.checkMesh", case, min(timeout, 900), raise_on_error=False)
+    else:
+        k = len(list(case.glob("log.foamRun.part*"))) + 1
+        if (case / "log.foamRun").exists():
+            (case / "log.foamRun").rename(case / f"log.foamRun.part{k}")
+    cm = case / "log.checkMesh"
+    out["checkMesh"] = foamio.parse_checkmesh(cm.read_text(errors="replace")) if cm.exists() else {"ok": True}
     procs = int(procs or os.environ.get("CFDT_PROCS", "1"))
     out["procs"] = procs
+    transient = resume or deadline is not None
     if procs > 1:
-        (case / "system" / "decomposeParDict").write_text(
-            "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
-            f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
-        _step(foam, "decomposePar -force", "log.decomposePar", case, timeout)
+        have = len(list(case.glob("processor*")))
+        if not (resume and have == procs):
+            if resume and have:                  # another rank count: gather the latest time, decompose again
+                _step(foam, "reconstructPar -latestTime", "log.reconstructPar", case, timeout)
+            (case / "system" / "decomposeParDict").write_text(
+                "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
+                f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
+            _step(foam, "decomposePar -force" + (" -latestTime" if resume else ""), "log.decomposePar", case, timeout)
         launch = f"{mpirun_command(procs)} -np {procs}"
         out["launch"] = launch
         out["binding"] = "hwthread" if "--map-by hwthread" in launch else "default"
-        steps = [(f"{launch} foamRun -parallel", "log.foamRun"),
-                 ("reconstructPar -latestTime", "log.reconstructPar")]
+        solve = (f"{launch} foamRun -parallel", "log.foamRun")
     else:
-        steps = [("foamRun", "log.foamRun")]
-    for i, (cmd, logname) in enumerate(steps):
-        rc = _step(foam, cmd, logname, case, timeout, raise_on_error=False)
-        if i == 0:
-            log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
-            out["log"] = foamio.parse_log(log)
-            if "fatal" in out["log"]:
-                raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
-        if rc != 0:
-            raise FoamError(f"{cmd} exited with code {rc}:\n" + _tail(case / logname))
+        solve = ("foamRun", "log.foamRun")
+    stop = None
+    if deadline is not None:
+        from .transient import request_stop
+        stop = (lambda: request_stop(case))
+    rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
+    log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
+    out["log"] = foamio.parse_log(log)
+    if "fatal" in out["log"]:
+        raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
+    if rc != 0:
+        raise FoamError(f"{solve[0]} exited with code {rc}:\n" + _tail(case / solve[1]))
+    reached = True
+    if transient:
+        from .transient import latest_time, reset_stop
+        reset_stop(case)
+        m = re.search(r"endTime\s+([-+0-9.eE]+);", (case / "system" / "controlDict").read_text())
+        t = latest_time(case)
+        reached = bool(m and t is not None and t >= float(m.group(1)) * (1 - 1e-6))
+        out["time"] = t
+    out["reached_end"] = reached
+    if procs > 1 and reached:
+        _step(foam, "reconstructPar -latestTime", "log.reconstructPar", case, timeout)
     return out
 
 
@@ -187,9 +222,10 @@ def mpirun_command(procs: int) -> str:
     return "mpirun"
 
 
-def read_fields(case: Path, mesh, plan: dict) -> dict:
+def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
     """The last time directory's U, p, phi (and wallShearStress, nut, yPlus) in post.results' layout.
-    Boundary values not written (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does."""
+    Boundary values not written (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does.
+    mean (transient runs): UMean and pMean (fieldAverage) stand for U and p when they were written."""
     case = Path(case)
     t = foamio.latest_time(case)
     if t is None:
@@ -201,6 +237,11 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
     U, p, phi = load("U"), load("p"), load("phi")
     if U is None or p is None or phi is None:
         raise FoamError(f"{t.name}: U, p or phi missing")
+    averaged = False
+    if mean:
+        Um, pm = load("UMean"), load("pMean")
+        if Um is not None and pm is not None:
+            U, p, averaged = Um, pm, True
     wss, nut, yp = load("wallShearStress"), load("nut"), load("yPlus")
     T, rho, whf, alphat = load("T"), load("rho"), load("wallHeatFlux"), load("alphat")
     nc = mesh.ncells
@@ -266,7 +307,10 @@ def read_fields(case: Path, mesh, plan: dict) -> dict:
         patches[nm] = rec
         for sn, (sf, scc) in scal.items():          # tracers and age (scalars.py)
             scal_b.setdefault(sn, {})[nm] = bval(sf, 1, scc)
-    out = {"U": Uc, "p": pc, "patches": patches, "time": t.name, "notes": notes, "source": "openfoam"}
+    out = {"U": Uc, "p": pc, "patches": patches, "time": t.name, "notes": notes, "source": "openfoam",
+           "averaged": averaged}
+    if mean and not averaged:
+        notes.append("no UMean/pMean written (the run ended before average_from?): the last time's fields are used")
     if scal:
         out["scalars"] = {sn: {"internal": scc, "patches": scal_b.get(sn, {})} for sn, (sf, scc) in scal.items()}
     if T:

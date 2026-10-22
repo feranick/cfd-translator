@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.21.2
+Version: 2026.10.22.4
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -401,6 +401,11 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     # system
     s = study.get("solve", {})
     iters = int(s.get("iterations", 3000 if turb else 2000))
+    from .transient import settings as _transient
+    tr = _transient(study, mesh)
+    if tr:
+        plan["transient"] = tr
+        iters = max(int(tr["init"]), 1)      # the steady start (its solution is the transient run's initial field)
     res = float(s.get("residual", 1e-5))
     unstructured = q["max_non_orthogonality"] > 5.0
     plan["schemes"] = "unstructured" if unstructured else "orthogonal"
@@ -465,6 +470,12 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     if (case / "system" / "fvConstraints").exists():      # left by an energy run in the same folder
         (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
+    plan["functions"] = funcs
+    plan["laplacian"], plan["sngrad"], plan["nonorth"] = lap, sn, nonorth
+    plan["grad"] = grad
+    if tr and not tr["init"]:
+        from .transient import write_transient
+        write_transient(case, study, plan)
     return plan
 
 
