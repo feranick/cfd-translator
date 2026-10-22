@@ -366,7 +366,7 @@ cfd_translator/
   scalars.py    tracers and the mean age            porous.py     porous zones
   variants.py   geometry by reference, mesh_scales / variants, mesh-convergence comparison
   transient.py  URANS / DES / laminar unsteady runs, steady start, stop-and-continue over SLURM jobs
-tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py
+tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py
 examples/studies.json      planning.md (session context)
 ```
 
@@ -374,6 +374,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.22.9 | Tests no longer follow the machine's config/env: on a machine with CFDT_EXECUTOR=slurm whose controller was down, three benchmark tests failed with 'could not submit'. tests/conftest.py makes every test start from local execution, a temporary CFDT_OUT, one rank and no caps or SLURM variables; the SLURM tests set up their fake SLURM on top. The suite passes with CFDT_EXECUTOR=slurm, CFDT_PROCS=8 and CFDT_SLURM_ARGS set. |
 | 2026.10.22.8 | `test_mesh_snappy_end_to_end_with_stand_ins` failed where the configuration sets CFDT_PROCS > 1: the mesher then runs snappyHexMesh through mpirun, which the test's stand-in did not answer. The test now pins one rank; the whole suite also passes with CFDT_PROCS=8. A snappyHexMesh that leaves no finished log is now a clear MeshError. |
 | 2026.10.22.7 | `test_local_cancel_flag_kills_the_process_group` looked for any `sleep 30` on the machine, and found one from another suite (feat and lmpt use the same pattern). It now uses a sleep length of its own and gives killed processes two seconds to go. |
 | 2026.10.22.6 | Tests on a new installation: study_format measured 12,098 characters there (its `status` lists the installed tools and caps, so it is longer than on a bare checkout): the format text is shortened to 11,532 here, leaving room. `test_external_y_plus_marks_the_part_walls` ran the 2D reference solver on a Gmsh mesh, which it cannot solve (structured boxes only): it now evaluates the results from made-up fields on the Gmsh mesh. |
