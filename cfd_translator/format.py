@@ -56,8 +56,8 @@ BC_KINDS = {
     "wall": ({"faces": ""}, {"velocity": "m/s [vx, vy, vz]: moving wall (tangential part)",
                              "rotation": "a rotating zone's name or {axis, center mm, rpm}: rotating wall (u = omega x r)",
                              "T": "energy: wall temperature, degrees C", "q": "energy: heat flux into the fluid, W/m2",
-                             "power": "energy: total heat into the fluid, W (spread over the area)",
-                             "h": "energy: film coefficient to an outside temperature T_inf, W/(m2 K)",
+                             "power": "energy: total heat into the fluid, W",
+                             "h": "energy: film coefficient to T_inf, W/(m2 K)",
                              "T_inf": "energy: outside temperature for h, degrees C"},
              "No-slip wall (every face no bc takes is a wall)."),
     "slip": ({"faces": ""}, {}, "Free-slip wall: no friction, no flow through (far-field sides)."),
@@ -114,9 +114,8 @@ CONVENTIONS = [
     "area): torque, total pressures and part forces each iteration; results.averaged: mean, std, drift, scatter "
     "over the last 25 % (>= 500 its); the means replace torque, power, head, efficiency, total_pressure_drop, "
     "cd, cl (final iteration: *_last). settled (drift < 1 %, scatter < 2 %) counts as converged.",
-    "reliable: false (with reasons) when the solver neither converged nor settled, or the mass or momentum balance is off: "
-    "then do not report the numbers as results; rerun with more solve.iterations, lower solve.relax, or a "
-    "better mesh. Long runs: use solve.procs (MPI ranks).",
+    "reliable: false (with reasons) when the solver neither converged nor settled, or a balance is off: do not "
+    "report the numbers; rerun with more iterations, lower relax or a better mesh.",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
     "(pressure_drop, flow.inlet.Q, coefficients.cd, probes.line.ux.4); tol is "
     "relative (default 0.02), or give abs (absolute).",
@@ -132,7 +131,8 @@ EXAMPLE = {"pipe_laminar": {
     "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]}}
 
 STUDY_KEYS = {
-    "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': [r_in, r_out, h]}",
+    "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': "
+                "[r_in, r_out, h]} | {'ref': name (add_geometry) or '<request>/<study>'}",
     "domain": "{'kind': 'internal'} (default) | {'kind': 'external', 'box': [x0, y0, z0, x1, y1, z1]}",
     "2d": "true: one cell along Z, empty front/back",
     "fluid": f"one of {sorted(FLUIDS)} or {{rho, mu}}; with energy {{mu, cp, pr (or k), molar_mass (gas) or rho "
@@ -161,6 +161,8 @@ STUDY_KEYS = {
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
     "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
+    "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
+                   "'variants'); or variants: {suffix: {changes}}",
     "analysis": "steady (the only one for now)",
     "scalars": "[{name, inlets: {<inlet bc>: value} (others 0), Sc (1) | diffusivity m2/s, Sct (0.7)}]: passive "
                "tracers (mixing); results.scalars.<name>.outlets.<bc>.mean/mixing_index, volume_mean",

@@ -333,7 +333,7 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 
 ## For LLM tools: the MCP server
 
-Tools: `study_format`, `validate_studies`, `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: state, iteration, s/iteration, `eta_min_max`, job id), `study_status`, `jobs` (SLURM runs from any conversation), `cancel`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks` (with SLURM: submits and returns; `bench_status(bench)` collects), `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Tools: `study_format`, `validate_studies`, `add_geometry` / `list_geometry` (geometry by reference), `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: state, iteration, s/iteration, `eta_min_max`, job id), `study_status`, `jobs` (SLURM runs from any conversation), `cancel`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks` (with SLURM: submits and returns; `bench_status(bench)` collects), `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
@@ -360,7 +360,8 @@ cfd_translator/
   executor.py   SLURM jobs: submit, run-study, states, jobs, cancel
   average.py    per-iteration monitors, window averages, 'settled'
   scalars.py    tracers and the mean age            porous.py     porous zones
-tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py
+  variants.py   geometry by reference, mesh_scales / variants, mesh-convergence comparison
+tests/test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py
 examples/studies.json      planning.md (session context)
 ```
 
@@ -368,6 +369,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.22.3 | **Geometry by reference and study variants** (`variants.py`). `add_geometry(name, goal | step | step_base64)` registers a geometry once on the machine (a goal is built to check it: volume, area, bounding box); studies then say `"geometry": {"ref": name}`, or `{"ref": "<request>/<study>"}` for an earlier study's geometry; `list_geometry`. `"mesh_scales": [1, 0.707, 0.5]` runs one study per factor on every mesh size (`<name>_L1`..; prism layers keep their first height), `"variants": {suffix: {changes}}` one per deep-merged patch; the request's `variants` compares them side by side (cells, reliable, Cd, Cl, pressure drops, y+, pump head...) and, with mesh_scales, gives the change between the two finest levels, the observed order and Richardson's extrapolation when the changes shrink fast enough (order >= 0.5). `detail="brief"` for run_studies / study_status: verdict, warnings, main numbers, mesh and layers, timing (~0.5 KB a study). Slices: when matplotlib refuses a triangulation for streamlines (Ahmed 35 L2: 'Triangulation is invalid'), SciPy interpolates. Ahmed L2/L3 on mochi (.2): L3 Cd 0.266 (25 deg, -6.7 %) and 0.273 (35 deg, +5.1 %), settled, layers 97-98 %, y+ ~60; but Cd still falls ~10 % per level and the angles are in the wrong order: L4 and a larger domain running. |
 | 2026.10.22.2 | Ahmed L1 on mochi (.1): layers collapsed (1.5 of 13 layers, 20 % of the thickness: the automatic count stacked 57 mm on 10-20 mm cells), so y+ on the body was ~365 and Cd 0.311 (25 deg) / 0.331 (35 deg). The automatic layer count is now the most layers whose stack fits in one of the finest surface cells (Ahmed: 5 / 4 / 3 layers on L1 / L2 / L3 at y+ 60); a given n with a stack over 1.5 cells gets a warning; `mesh.layers.stack_to_surface_cell` is reported. Averaging is on by default for snappy meshes (pipe_snappy's residuals froze at p 4.5e-5 with the solution unchanged: 'settled' now makes it reliable). cylinder_2d1 (2D layers, Gmsh) passes. |
 | 2026.10.22.1 | snappy benchmarks pass on mochi with .3: sphere Re 100 Cd 1.080 (-1.3 %), half sphere on a symmetry plane 1.082 (-1.0 %), layers 100 % on both; pipe dp +1.9 %, wall force +0.6 %. The pipe stalled at residuals ~5e-5 (p) against its 1e-7 target: the benchmark now asks 1e-5 in at most 4000 iterations. Levels allow 7 % slack (a background cell of 161 mm for size 160 cost a whole extra level). Ahmed body benchmarks `ahmed25_L1..L3`, `ahmed35_L1..L3` (half model, moving ground, layers at y+ ~60, three meshes sqrt(2) apart): Cd within 10 % of 0.285 / 0.26, mean y+ 30-300, layer coverage, reliable. |
 | 2026.10.21.3 | First snappy run on mochi: snappyHexMesh in parallel stopped on 'keyword distributor is undefined' (OpenFOAM 14 rebalances while refining). The meshing decomposeParDict now has `distributor hierarchical` with ranks split to the most cube-like pieces of the background box (blockMesh, surfaceFeatures and decomposePar had run). |

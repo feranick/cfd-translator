@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.21.1
+Version: 2026.10.22.3
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
     default_images(study, mesh) -> specs (for "images": true)
@@ -194,8 +194,22 @@ def _slice(study, mesh, plan, fields, spec, title, path):
         n = 300
         nx, ny = (n, max(20, int(n * (y1 - y0) / (x1 - x0)))) if x1 - x0 >= y1 - y0 else (max(20, int(n * (x1 - x0) / (y1 - y0))), n)
         gx, gy = np.meshgrid(np.linspace(x0, x1, nx), np.linspace(y0, y1, ny))
-        ui = mtri.LinearTriInterpolator(tri, U[:, i])(gx, gy)
-        vi = mtri.LinearTriInterpolator(tri, U[:, j])(gx, gy)
+        try:
+            ui = mtri.LinearTriInterpolator(tri, U[:, i])(gx, gy)
+            vi = mtri.LinearTriInterpolator(tri, U[:, j])(gx, gy)
+        except RuntimeError:
+            # matplotlib's tri-finder refuses some triangulations ("Triangulation is invalid": flat triangles
+            # from the collinear points of a hex mesh, Ahmed L2 on mochi): interpolate with SciPy instead and
+            # blank grid points farther than a cell and a half from the data (solids, outside the fluid)
+            from scipy.interpolate import LinearNDInterpolator
+            from scipy.spatial import cKDTree
+            q = np.column_stack([gx.ravel(), gy.ravel()])
+            dist, near = cKDTree(X).query(q)
+            far = (dist > 1.5 * H[near]).reshape(gx.shape)
+            ui = np.ma.masked_invalid(LinearNDInterpolator(X, U[:, i])(gx, gy))
+            vi = np.ma.masked_invalid(LinearNDInterpolator(X, U[:, j])(gx, gy))
+            ui[far] = np.ma.masked
+            vi[far] = np.ma.masked
         if np.ma.count(ui) > 10:
             ax.streamplot(gx, gy, ui.filled(np.nan), vi.filled(np.nan), density=1.6, color="white",
                           linewidth=0.6, arrowsize=0.7)

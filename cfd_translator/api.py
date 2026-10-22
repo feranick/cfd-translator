@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.2
+Version: 2026.10.22.3
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -69,8 +69,44 @@ def study_format() -> dict:
     return {**_format(), "translator": __version__, "status": tool_status()}
 
 
+def prepare_studies(studies: dict) -> tuple[dict, dict, dict]:
+    """Variants spelled out and geometry references resolved: (studies, groups, errors per study)."""
+    from .variants import expand, resolve
+    if not isinstance(studies, dict):
+        return {}, {}, {}
+    ex, groups, errs = expand(studies)
+    out = {}
+    for n, st in ex.items():
+        if isinstance(st, dict):
+            st, e = resolve(st)
+            if e:
+                errs.setdefault(n, []).append(e)
+        out[n] = st
+    return out, groups, errs
+
+
 def validate(studies: dict) -> dict:
-    return _validate(studies)
+    ex, groups, errs = prepare_studies(studies)
+    v = _validate(ex) if ex else {"ok": not errs, "studies": {}, "errors": [] if errs else
+                                   ["studies: a non-empty dict {name: study}"]}
+    for n, e in errs.items():
+        rec = v["studies"].setdefault(n, {"ok": False, "errors": [], "warnings": []})
+        rec["ok"] = False
+        rec["errors"] = e + rec.get("errors", [])
+        v["ok"] = False
+    if groups:
+        v["variants"] = {b: g["names"] for b, g in groups.items()}
+    return v
+
+
+def add_geometry(name: str, goal=None, step=None, step_base64=None) -> dict:
+    from .variants import add_geometry as _add
+    return _add(name, goal, step, step_base64)
+
+
+def list_geometry() -> dict:
+    from .variants import list_geometry as _list
+    return _list()
 
 
 def _run_one(job: dict) -> dict:
@@ -174,7 +210,10 @@ def _collect(folder: Path) -> dict:
         else:
             res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
                            f"(now {eta:.0f} min) is more than about 5 min, tell the user when to come back and stop polling")
-    else:
+    if meta.get("groups"):
+        from .variants import compare
+        res["variants"] = {b: compare(out, g) for b, g in meta["groups"].items()}
+    if not pending:
         (folder / "results.json").write_text(json.dumps(res, indent=1, default=float))
     return res
 
@@ -218,17 +257,22 @@ def start(studies: dict, solver: str | None = None) -> Path:
     folder = _request_dir("run")
     (folder / "studies.json").write_text(json.dumps(studies, indent=1))
     s = _solver(solver)
+    studies, groups, pre = prepare_studies(studies)
     invalid, jobs = {}, []
     for n, st in studies.items():
-        v = validate_study(st)
+        v = validate_study(st) if n not in pre else {"ok": False, "errors": pre[n]}
         if not v["ok"]:
             invalid[n] = {"ok": False, "why": "invalid study", "errors": v["errors"]}
         else:
             jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s})
+    for n, e in pre.items():              # a study whose variants could not be spelled out
+        if n not in studies:
+            invalid[n] = {"ok": False, "why": "invalid study", "errors": e}
     from . import executor as _ex
     (folder / "request.json").write_text(json.dumps({"names": [j["name"] for j in jobs], "invalid": invalid,
                                                      "solver": s, "started": time.time(), "executor": _ex.kind(),
-                                                     "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
+                                                     "studies": {j["name"]: j["study"] for j in jobs},
+                                                     "groups": groups}, default=float))
     from . import executor
     local = []
     for j in jobs:
@@ -296,7 +340,48 @@ def status(request: str, wait: float = 0.0, detail: str = "full") -> dict:
         time.sleep(2.0)
 
 
+def brief(r: dict) -> dict:
+    """A study result in a few lines: verdict, warnings, the main numbers, mesh size and layers, timing."""
+    if not isinstance(r, dict) or "results" not in r:
+        return r
+    res = r["results"]
+    out = {k: r[k] for k in ("ok", "reliable", "unreliable_because", "warnings") if k in r}
+    keep = {}
+    for k in ("coefficients", "pressure_drop", "total_pressure_drop", "head_loss_m", "y_plus_part_mean",
+              "max_mach", "pump", "rotating", "age"):
+        if k in res:
+            keep[k] = res[k]
+    if isinstance(keep.get("coefficients"), dict):
+        keep["coefficients"] = {k: v for k, v in keep["coefficients"].items()
+                                if k in ("cd", "cl", "cm", "cd_std", "cl_std", "cd_last", "averaged_over")}
+    if "flow" in res:
+        keep["flow"] = {b: {k: v for k, v in f.items() if k in ("Q", "mdot", "U_mean")} for b, f in res["flow"].items()}
+    if "forces" in res:
+        keep["forces"] = {b: {k: f[k] for k in ("fx", "fy", "fz") if k in f} for b, f in res["forces"].items()}
+    if "heat" in res:
+        keep["heat"] = {b: {k: h[k] for k in ("Q_W", "T_mean_C") if k in h} for b, h in res["heat"].items()}
+    out["results"] = keep
+    ck = res.get("checks") or {}
+    out["checks"] = {k: (v.get("error") if isinstance(v, dict) else v) for k, v in ck.items()
+                     if k in ("mass_balance", "momentum_balance", "energy_balance")}
+    sv = r.get("solve") or {}
+    out["solve"] = {k: sv[k] for k in ("iterations", "converged", "settled", "procs") if k in sv}
+    m = r.get("mesh") or {}
+    out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality") if k in m}
+    lay = m.get("layers")
+    if isinstance(lay, dict):
+        out["mesh"]["layers"] = {k: lay[k] for k in ("n", "first_mm", "coverage_pct", "layers_mean",
+                                                    "y_plus_first_cell_estimate") if k in lay}
+    if r.get("images"):
+        out["images"] = {k: v.get("path") for k, v in r["images"].items() if isinstance(v, dict)}
+    out["seconds"] = (r.get("seconds") or {}).get("wall")
+    out["detail"] = "brief"
+    return out
+
+
 def _detail(res: dict, detail: str) -> dict:
+    if detail == "brief":
+        return dict(res, studies={n: brief(r) for n, r in (res.get("studies") or {}).items()})
     if detail != "summary":
         return res
     return dict(res, studies={n: summarize(r) for n, r in (res.get("studies") or {}).items()})

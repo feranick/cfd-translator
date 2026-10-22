@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.21.2
+Version: 2026.10.22.3
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -89,7 +89,11 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail:
     fea-translator), what each bc's selector took, solver convergence, mass and momentum balance,
     'expect' checks, warnings, and files (the OpenFOAM case and a .tgz of it). Returns after at most
     wait_s seconds: studies still running are listed in 'pending'; collect them with study_status.
-    detail: "summary" (default: bc selections as counts, no per-face loads) or "full"."""
+    A study with "mesh_scales": [1, 0.707, 0.5] or "variants": {suffix: {changes}} runs as several
+    (<name>_L1.., <name>_<suffix>); 'variants' in the result compares them (mesh convergence). geometry
+    {"ref": name} uses a geometry registered with add_geometry.
+    detail: "summary" (default: bc selections as counts, no per-face loads), "brief" (verdict, main
+    numbers, mesh, timing) or "full"."""
     return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0), detail=detail)
 
 
@@ -97,9 +101,24 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail:
 def study_status(request: str, wait_s: float = 45, detail: str = "summary") -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results,
     the others in 'pending'. Waits up to wait_s seconds (at most 50) for them to finish. detail: "summary"
-    (default: coefficients, forces, checks, image paths; bc selections as counts, no per-face loads) or
-    "full" (everything, as in <request>/<name>/<name>.json)."""
+    (default: coefficients, forces, checks, image paths; bc selections as counts, no per-face loads),
+    "brief" (verdict, warnings, main numbers, mesh and layers, timing: for many studies) or "full"
+    (everything, as in <request>/<name>/<name>.json). Variants and mesh_scales are compared in 'variants'."""
     return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail)
+
+
+@server.tool()
+def add_geometry(name: str, goal: dict | None = None, step: str | None = None, step_base64: str | None = None) -> dict:
+    """Registers a geometry on this machine once, so studies name it instead of carrying it: a
+    build123d-translator goal (checked by building it: volume, area, bounding box), a STEP file already on
+    this machine (step: path), or one uploaded as base64. Studies then use "geometry": {"ref": name}."""
+    return api.add_geometry(name, goal, step, step_base64)
+
+
+@server.tool()
+def list_geometry() -> dict:
+    """The registered geometries (name, kind, size, bounding box, when added)."""
+    return api.list_geometry()
 
 
 @server.tool()
