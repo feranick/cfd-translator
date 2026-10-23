@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.22.4
+Version: 2026.10.22.10
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -309,10 +309,113 @@ def procs_for_job(study: dict, est: float | None = None) -> int:
     return max(1, min(procs, int(math.ceil(est / max(per, 1)))))
 
 
-def estimate_minutes(study: dict, solver: str) -> float | None:
-    """The study's own time estimate, or None (cfdt cannot tell an OpenFOAM run's length before meshing;
-    the 2D reference solver takes seconds)."""
-    return 0.1 if solver == "ref" else None
+# Time per cell and iteration on one rank (kOmegaSST, SIMPLE), and how ranks speed it up: mochi, 2026-10-19..22.
+# The 900k-cell pump: 283 / 210 / 178 s for 200 iterations on 6 / 10 / 19 ranks (memory-bandwidth bound: little
+# gain past 10). The Ahmed body's 600k-cell snappy mesh: 0.45 s per iteration (and per DES time step) on 19.
+SEC_PER_CELL_ITER = 4.6e-6
+
+
+def rank_speedup(p: int) -> float:
+    p = max(1, int(p))
+    return p ** 0.6 if p <= 10 else 10 ** 0.6 * (p / 10) ** 0.25
+
+
+def _finest_mm(study: dict) -> float | None:
+    """The smallest cell size the study asks for (mm): what limits a transient run's time step."""
+    m = study.get("mesh") or {}
+    sizes = []
+    for k in ("size", "features"):
+        if isinstance(m.get(k), (int, float)) and not isinstance(m.get(k), bool):
+            sizes.append(float(m[k]))
+    sf = m.get("surface")
+    if sf is not None:
+        sizes += [float(x) for x in (sf if isinstance(sf, list) else [sf])]
+    sizes += [float(r["size"]) for r in (m.get("refine") or []) if "size" in r]
+    if m.get("cells"):
+        g = (study.get("geometry") or {}).get("box")
+        if g:
+            sizes += [float(L) / int(n) for L, n in zip(g, m["cells"]) if int(n) > 1]
+    return min(sizes) if sizes else None
+
+
+def transient_steps(study: dict) -> float | None:
+    """Time steps of a transient study: the Courant limit on its finest cells at 1.5 x the reference speed
+    (dt = 0.3 maxCo h / U: thin layer cells and fast spots make the steps about that small: the Ahmed body ran
+    at 2.8e-5 s with 5 mm cells at 40 m/s, the 2D-2 cylinder at 2.6e-4 s with 2.5 mm at 1 m/s), and maxDeltaT."""
+    tr = (study.get("solve") or {}).get("transient")
+    if not tr:
+        return None
+    from .transient import _velocity
+    T = float(tr["end_time"])
+    h = _finest_mm(study)
+    U = _velocity(study)
+    W = float(tr.get("write_interval", T / 10))
+    dt = min(W / 10, T / 500)
+    if h and U:
+        dt = min(dt, 0.3 * float(tr.get("max_co", 1.0)) * h * 1e-3 / (1.5 * U))
+    return T / dt
+
+
+def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs: int | None = None) -> float | None:
+    """An upper bound of the run's wall time (minutes) on procs ranks: meshing, the solve (iterations, or the
+    steady start plus time steps of a transient run, from the cell estimate and the per-rank rate above) and the
+    results and pictures, plus 30 %. None when the cells cannot be estimated (a STEP file). The 2D reference
+    solver takes seconds."""
+    if solver == "ref":
+        return 0.1
+    n = cell_estimate(study) if cells is None else cells
+    if not n:
+        return None
+    p = procs or procs_for_job(study, n)
+    model = study.get("model", "laminar")
+    per = SEC_PER_CELL_ITER * (0.7 if model == "laminar" else 1.0) * (1.6 if study.get("energy") else 1.0) * \
+        (1.3 if (study.get("scalars") or study.get("age")) else 1.0)
+    it = per * n / rank_speedup(p)
+    s = study.get("solve") or {}
+    tr = s.get("transient")
+    if tr:
+        init = int(tr.get("init", 0 if model == "laminar" else 500))
+        solve = (init + (transient_steps(study) or 0)) * it
+    else:
+        solve = int(s.get("iterations", 3000 if model != "laminar" else 2000)) * it
+    snappy = (study.get("mesh") or {}).get("mesher") == "snappy"
+    mesh = n * (1.2e-4 if snappy else 5e-5)
+    post = n * (6e-5 + (4e-5 if study.get("images") else 0))
+    return round(1.3 * (mesh + solve + post) / 60 + 0.5, 1)
+
+
+def mem_needed_mb(study: dict, cells: float | None = None) -> float:
+    """The memory the job asks for, as sbatch_args sets --mem: run.mem; else the cell estimate's need (2 GB +
+    4 GB per million cells), at least the default --mem of CFDT_SLURM_ARGS, within CFDT_MAX_MEM."""
+    mem = (study.get("run") or {}).get("mem")
+    if mem and str(mem).lower() != "auto":
+        return float(mem_mb(mem) or 0)
+    _, default = _strip_mem(shlex.split(os.environ.get("CFDT_SLURM_ARGS", "")))
+    cap = mem_mb(caps()["mem"]) if caps().get("mem") else None
+    need = mem_estimate_mb(cells)
+    if need is None:
+        return float(default or 2048)
+    mb = need if str(mem).lower() == "auto" or default is None else max(need, default)
+    return float(min(mb, cap) if cap else mb)
+
+
+def estimate(study: dict, solver: str) -> dict | None:
+    """llm-translators' contract (docs/EXECUTION.md, 'Estimates in validation'): {minutes, procs, mem_mb} from the
+    same sizing as a SLURM job (ranks after the cell cap, memory as --mem, minutes an upper bound)."""
+    ref_ok = bool(study.get("2d")) and "box" in (study.get("geometry") or {}) and \
+        bool((study.get("mesh") or {}).get("cells")) and study.get("model", "laminar") == "laminar"
+    if solver == "ref" and ref_ok:
+        return {"minutes": 0.1, "procs": 1, "mem_mb": 1024}
+    solver = "foam"                    # what the study needs (the reference solver runs 2D boxes only)
+    n = cell_estimate(study)
+    p = procs_for_job(study, n)
+    minutes = estimate_minutes(study, solver, n, p)
+    if minutes is None:
+        return None
+    out = {"minutes": minutes, "procs": int(p), "mem_mb": int(round(mem_needed_mb(study, n)))}
+    if n:
+        out["cells"] = int(n)
+    return out
 
 
 def use_slurm(study: dict, solver: str) -> bool:

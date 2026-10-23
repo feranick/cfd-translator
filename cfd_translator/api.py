@@ -96,6 +96,20 @@ def validate(studies: dict) -> dict:
         v["ok"] = False
     if groups:
         v["variants"] = {b: g["names"] for b, g in groups.items()}
+    # what the run will take, for llm-translators' router (docs/EXECUTION.md, 'Estimates in validation')
+    from .executor import estimate
+    try:
+        solver = _solver(None)
+    except ValueError:
+        solver = "foam"
+    for n, rec in (v.get("studies") or {}).items():
+        if rec.get("ok") and isinstance(ex.get(n), dict):
+            try:
+                e = estimate(ex[n], solver)
+            except Exception:  # noqa: BLE001 (an estimate must never fail a validation)
+                e = None
+            if e:
+                rec["estimate"] = e
     return v
 
 

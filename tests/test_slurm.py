@@ -324,3 +324,24 @@ def test_job_memory_rises_with_the_cell_estimate(monkeypatch):
     assert small == ["--mem=8G", "--nice=5"] and src == "default"            # the default when it suffices
     auto = dict(COUETTE, run={"mem": "auto"})
     assert executor.sbatch_args(auto, 200)[0][-1] == "--mem=3G" and executor.sbatch_args(auto, 200)[1] == "estimate"
+
+
+def test_validation_returns_the_job_estimate(monkeypatch):
+    """docs/EXECUTION.md 'Estimates in validation': {minutes, procs, mem_mb} from the job sizing."""
+    from cfd_translator import bench
+    monkeypatch.setenv("CFDT_SOLVER", "foam")
+    monkeypatch.setenv("CFDT_PROCS", "19")
+    C = bench._cases()
+    pipe = C["pipe_poiseuille"]["study"]                 # 2D section swept: ~41k cells
+    e = api.validate({"p": pipe})["studies"]["p"]["estimate"]
+    assert set(e) >= {"minutes", "procs", "mem_mb"} and e["procs"] == 9          # 41k cells / 5000 per rank
+    assert 0.5 < e["minutes"] < 60 and e["mem_mb"] >= 2048
+    e2 = api.validate({"p": dict(pipe, run={"mem": "12G", "procs": 4})})["studies"]["p"]["estimate"]
+    assert e2["mem_mb"] == 12288 and e2["procs"] == 4 and e2["minutes"] > e["minutes"]
+    # transient: steps from the Courant limit on the finest cells
+    cyl = C["cylinder_2d2"]["study"]
+    assert executor.transient_steps(cyl) == pytest.approx(8.0 / (0.3 * 0.5 * 2.5e-3 / 1.5), rel=1e-6)
+    # the reference solver's 2D boxes take seconds; a study it cannot run is estimated as an OpenFOAM run
+    monkeypatch.setenv("CFDT_SOLVER", "ref")
+    assert api.validate({"c": COUETTE})["studies"]["c"]["estimate"]["minutes"] == 0.1
+    assert api.validate({"p": pipe})["studies"]["p"]["estimate"]["minutes"] > 0.1
