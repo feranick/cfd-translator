@@ -141,5 +141,17 @@ def sinfo(args):
     return 0
 
 
+def scontrol(args):
+    """scontrol -o show node: one line per node of FAKE_NODES (name host cpus threads [addr])."""
+    if args[:3] == ["-o", "show", "node"]:
+        for line in os.environ.get("FAKE_NODES", "node1 localhost 128 1").split(";"):
+            f = line.split()
+            addr = f[4] if len(f) > 4 else f[1]
+            print(f"NodeName={f[0]} Arch=x86_64 CPUTot={f[2]} NodeAddr={addr} NodeHostName={f[1]} State=IDLE")
+        return 0
+    return 1
+
+
 if __name__ == "__main__":
-    sys.exit({"sbatch": sbatch, "squeue": squeue, "scancel": scancel, "sacct": sacct, "sinfo": sinfo}[sys.argv[1]](sys.argv[2:]))
+    sys.exit({"sbatch": sbatch, "squeue": squeue, "scancel": scancel, "sacct": sacct, "sinfo": sinfo,
+              "scontrol": scontrol}[sys.argv[1]](sys.argv[2:]))

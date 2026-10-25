@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.25.1
+Version: 2026.10.25.2
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -79,11 +79,11 @@ def mem_mb(text) -> float | None:
 _NODES: dict = {}
 
 
-def slurm_nodes() -> list[dict]:
-    """The SLURM nodes jobs may go to: [{name, host, cpus, threads, cores}] (sinfo; CFDT_SLURM_NODES narrows them);
-    [] without SLURM. cores = CPUs / threads per core: with --ntasks-per-core=1 a job gets at most that many ranks
-    on one node (mochi: 40 CPUs, 2 threads per core: 20; a 36-rank request was 'Requested node configuration is
-    not available')."""
+def slurm_nodes(all_nodes: bool = False) -> list[dict]:
+    """The SLURM nodes jobs may go to (all of the cluster's with all_nodes): [{name, host, cpus, threads, cores}]
+    from sinfo; [] without SLURM. cores = CPUs / threads per core: with --ntasks-per-core=1 a job gets at most that
+    many ranks on one node (mochi: 40 CPUs, 2 threads per core: 20; a 36-rank request was 'Requested node
+    configuration is not available')."""
     if kind() != "slurm":
         return []
     if "v" not in _NODES:
@@ -97,31 +97,73 @@ def slurm_nodes() -> list[dict]:
                     nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2]), "threads": thr,
                                    "cores": max(1, int(f[2]) // max(thr, 1))}
         _NODES["v"] = list(nodes.values())
-    want = node_list()
+    want = None if all_nodes else node_list()
     return [n for n in _NODES["v"] if not want or n["name"] in want.split(",")]
 
 
+def _my_addresses() -> set:
+    import socket
+    out = set()
+    try:
+        for a in socket.getaddrinfo(socket.gethostname(), None):
+            out.add(a[4][0])
+    except OSError:
+        pass
+    rc, txt, _ = _run(["hostname", "-I"])
+    if rc == 0:
+        out.update(txt.split())
+    return out
+
+
 def local_node() -> str | None:
-    """This machine's SLURM node name (its NodeHostname is this host)."""
+    """This machine's node in the SLURM cluster (llm-translators docs/EXECUTION.md, 'Clusters of several nodes'):
+    `scontrol -o show node`, the host name matched to NodeName or NodeHostName, else one of this machine's
+    addresses to NodeAddr."""
+    if "local" in _NODES:
+        return _NODES["local"]
     import socket
     host = socket.gethostname().split(".")[0]
-    if "v" not in _NODES:
-        slurm_nodes()
-    for n in _NODES.get("v", []):
-        if n["host"].split(".")[0] == host or n["name"] == host:
-            return n["name"]
-    return None
+    rc, out, _ = _run(["scontrol", "-o", "show", "node"])
+    recs = []
+    if rc == 0:
+        for line in out.splitlines():
+            kv = dict(re.findall(r"(\w+)=(\S+)", line))
+            if kv.get("NodeName"):
+                recs.append(kv)
+    hit = next((r["NodeName"] for r in recs if host in (r["NodeName"], r.get("NodeHostName", "").split(".")[0])), None)
+    if hit is None and recs:
+        mine = _my_addresses()
+        hit = next((r["NodeName"] for r in recs if r.get("NodeAddr") in mine), None)
+    _NODES["local"] = hit
+    return hit
+
+
+def _args_nodelist() -> bool:
+    a = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
+    return any(x in ("-w", "--nodelist") or x.startswith(("--nodelist=", "-w")) for x in a)
+
+
+def node_setting() -> str:
+    """CFDT_SLURM_NODE: local (default) | any | a node list."""
+    return os.environ.get("CFDT_SLURM_NODE", "").strip() or "local"
 
 
 def node_list() -> str | None:
-    """CFDT_SLURM_NODES: 'local' (only this machine's node: where the nodes do not share CFDT_OUT's
-    filesystem, as spark1 and spark-0808 do not) or a SLURM node list; unset: any node."""
-    v = os.environ.get("CFDT_SLURM_NODES", "").strip()
-    if not v:
+    """The --nodelist cfdt adds (llm-translators docs/EXECUTION.md, 'Clusters of several nodes'): with
+    CFDT_SLURM_NODE=local (the default) this machine's node when the cluster has several (the sparks: spark1 is
+    spark-5da5, spark2 spark-0808, and their home folders are not shared, so a job sent to the other node vanished
+    without a log); 'any': none (SLURM chooses; shared home folders); a node list: those. A --nodelist / -w in
+    CFDT_SLURM_ARGS wins (then cfdt adds none). One-node clusters: none."""
+    if _args_nodelist():
         return None
-    if v.lower() == "local":
-        return local_node() or None
-    return v
+    v = node_setting()
+    if v.lower() == "any":
+        return None
+    if v.lower() != "local":
+        return v
+    if len(slurm_nodes(all_nodes=True)) <= 1:
+        return None
+    return local_node()
 
 
 def node_cores() -> int | None:
@@ -500,7 +542,8 @@ def status() -> dict:
                 "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "time_limit_min": time_limit_min(),
                 "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
                 "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
-                "node_list": node_list()}
+                "node": {"setting": node_setting(), "nodelist": node_list(),
+                         "cluster_nodes": len(slurm_nodes(all_nodes=True))}}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
             "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
 
@@ -741,8 +784,8 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
         if (state in ("failed", "cancelled") and "by user" not in why and not (request / n / "job.log").exists()
                 and node and here and node != here):
             state, why = "failed", (f"the job went to node {node} and left no job.log: that node cannot see {request} "
-                                    "(its filesystem is not shared with this one). Put CFDT_OUT on a filesystem every "
-                                    "node sees, or set CFDT_SLURM_NODES=local in config/env to keep jobs on this node")
+                                    "(its filesystem is not shared with this one). Keep jobs on this node "
+                                    "(CFDT_SLURM_NODE=local, the default, in config/env) or share the home folders")
         if state == "failed" and (request / n / "cancel").exists():
             state, why = "cancelled", "cancelled with cancel(request) (it left the queue before running)"
         res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid,

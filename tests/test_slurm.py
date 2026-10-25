@@ -27,7 +27,7 @@ def slurm(tmp_path, monkeypatch):
     bindir, state = tmp_path / "bin", tmp_path / "slurm"
     bindir.mkdir()
     state.mkdir()
-    for cmd in ("sbatch", "squeue", "scancel", "sacct", "sinfo"):
+    for cmd in ("sbatch", "squeue", "scancel", "sacct", "sinfo", "scontrol"):
         w = bindir / cmd
         w.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{REPO / "tests" / "fake_slurm.py"}" {cmd} "$@"\n')
         w.chmod(0o755)
@@ -347,30 +347,49 @@ def test_validation_returns_the_job_estimate(monkeypatch):
     assert api.validate({"p": pipe})["studies"]["p"]["estimate"]["minutes"] > 0.1
 
 
-def test_ranks_are_capped_at_a_nodes_cores_and_jobs_can_stay_on_this_node(slurm, tmp_path, monkeypatch):
+def test_ranks_are_capped_at_a_nodes_cores_and_jobs_stay_on_this_node(slurm, tmp_path, monkeypatch):
     """mochi: 40 CPUs, 2 threads per core: a 36-rank job was 'Requested node configuration is not available'.
-    spark1: jobs went to the other node, which does not see CFDT_OUT, and vanished without a log."""
+    The sparks (one cluster, two nodes, no shared home): jobs went to the other node and vanished without a log.
+    CFDT_SLURM_NODE (llm-translators docs/EXECUTION.md): local (default) | any | a node list."""
     import socket
     host = socket.gethostname().split(".")[0]
-    monkeypatch.setenv("FAKE_NODES", f"mochi {host} 40 2;other otherhost 64 1")
+    monkeypatch.setenv("FAKE_NODES", f"spark-5da5 {host} 40 2;spark-0808 otherhost 64 1")
     executor._NODES.clear()
-    assert executor.node_cores() == 64
-    monkeypatch.setenv("CFDT_SLURM_NODES", "local")
-    executor._NODES.clear()
-    assert executor.local_node() == "mochi" and executor.node_list() == "mochi" and executor.node_cores() == 20
-    assert executor.caps()["procs"] == "20"
+    # default local: this machine's node only
+    assert executor.local_node() == "spark-5da5" and executor.node_list() == "spark-5da5"
+    assert executor.node_cores() == 20 and executor.caps()["procs"] == "20"
     errs = executor.run_errors(dict(COUETTE, run={"procs": 36}))
     assert errs and "at most 20" in errs[0] and "cores" in errs[0]
     monkeypatch.setenv("CFDT_PROCS", "36")
     assert executor.procs_for_job(COUETTE, 1e6) == 20
     js = executor.job_script(tmp_path, "s", 20, COUETTE)
-    assert "#SBATCH --nodelist=mochi" in js and "#SBATCH --nodes=1" in js
-    assert executor.status()["nodes"][0] == {"name": "mochi", "cpus": 40, "cores": 20}
+    assert "#SBATCH --nodelist=spark-5da5" in js and "#SBATCH --nodes=1" in js
+    node = executor.status()["node"]
+    assert node == {"setting": "local", "nodelist": "spark-5da5", "cluster_nodes": 2}
+    # any: SLURM chooses; a node list: those; a --nodelist in CFDT_SLURM_ARGS wins
+    monkeypatch.setenv("CFDT_SLURM_NODE", "any")
+    assert executor.node_list() is None and executor.node_cores() == 64
+    monkeypatch.setenv("CFDT_SLURM_NODE", "spark-0808")
+    assert executor.node_list() == "spark-0808"
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=16G -w spark-5da5")
+    assert executor.node_list() is None and "--nodelist" not in executor.job_script(tmp_path, "s", 4, COUETTE)
+    # found by address when the host name is not the node's
+    monkeypatch.delenv("CFDT_SLURM_ARGS")
+    monkeypatch.delenv("CFDT_SLURM_NODE")
+    monkeypatch.setenv("FAKE_NODES", "n1 elsewhere 8 1 127.0.0.1;n2 far 8 1 10.9.9.9")
+    executor._NODES.clear()
+    monkeypatch.setattr(executor, "_my_addresses", lambda: {"127.0.0.1"})
+    assert executor.local_node() == "n1"
+    # a one-node cluster: no --nodelist
+    monkeypatch.setenv("FAKE_NODES", f"mochi {host} 40 2")
+    executor._NODES.clear()
+    assert executor.node_list() is None and executor.node_cores() == 20
 
 
 def test_a_job_lost_on_another_node_says_so(slurm, tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_PENDING", "1")
     import socket
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    monkeypatch.setenv("CFDT_SLURM_NODE", "any")
     monkeypatch.setenv("FAKE_NODES", f"here {socket.gethostname().split('.')[0]} 8 1;far farhost 8 1")
     executor._NODES.clear()
     req = tmp_path / "req"
@@ -378,4 +397,4 @@ def test_a_job_lost_on_another_node_says_so(slurm, tmp_path, monkeypatch):
     info = executor.submit(req, "s", COUETTE)
     _set(slurm, info["job_id"], final="FAILED", node="far", pending=False)
     st = executor.slurm_states(req, ["s"], {"s": COUETTE})
-    assert st["s"]["state"] == "failed" and "node far" in st["s"]["why"] and "CFDT_SLURM_NODES=local" in st["s"]["why"]
+    assert st["s"]["state"] == "failed" and "node far" in st["s"]["why"] and "CFDT_SLURM_NODE=local" in st["s"]["why"]
