@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.22.10
+Version: 2026.10.25.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -76,13 +76,72 @@ def mem_mb(text) -> float | None:
     return float(m.group(1)) * {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 ** 2}[m.group(2).upper()]
 
 
+_NODES: dict = {}
+
+
+def slurm_nodes() -> list[dict]:
+    """The SLURM nodes jobs may go to: [{name, host, cpus, threads, cores}] (sinfo; CFDT_SLURM_NODES narrows them);
+    [] without SLURM. cores = CPUs / threads per core: with --ntasks-per-core=1 a job gets at most that many ranks
+    on one node (mochi: 40 CPUs, 2 threads per core: 20; a 36-rank request was 'Requested node configuration is
+    not available')."""
+    if kind() != "slurm":
+        return []
+    if "v" not in _NODES:
+        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %n %c %Z"])
+        nodes = {}
+        if rc == 0:
+            for line in out.splitlines():
+                f = line.split()
+                if len(f) >= 4 and f[2].isdigit():
+                    thr = int(f[3]) if f[3].isdigit() else 1
+                    nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2]), "threads": thr,
+                                   "cores": max(1, int(f[2]) // max(thr, 1))}
+        _NODES["v"] = list(nodes.values())
+    want = node_list()
+    return [n for n in _NODES["v"] if not want or n["name"] in want.split(",")]
+
+
+def local_node() -> str | None:
+    """This machine's SLURM node name (its NodeHostname is this host)."""
+    import socket
+    host = socket.gethostname().split(".")[0]
+    if "v" not in _NODES:
+        slurm_nodes()
+    for n in _NODES.get("v", []):
+        if n["host"].split(".")[0] == host or n["name"] == host:
+            return n["name"]
+    return None
+
+
+def node_list() -> str | None:
+    """CFDT_SLURM_NODES: 'local' (only this machine's node: where the nodes do not share CFDT_OUT's
+    filesystem, as spark1 and spark-0808 do not) or a SLURM node list; unset: any node."""
+    v = os.environ.get("CFDT_SLURM_NODES", "").strip()
+    if not v:
+        return None
+    if v.lower() == "local":
+        return local_node() or None
+    return v
+
+
+def node_cores() -> int | None:
+    """The most ranks one job can have: the largest node's cores (one rank per core)."""
+    ns = slurm_nodes()
+    return max(n["cores"] for n in ns) if ns else None
+
+
 def caps() -> dict:
-    """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none."""
+    """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none. With
+    SLURM, procs is also at most a node's cores."""
     out = {}
     for k, env in (("timeout_s", "CFDT_MAX_TIMEOUT"), ("mem", "CFDT_MAX_MEM"), ("procs", "CFDT_MAX_PROCS")):
         v = os.environ.get(env, "").strip()
         if v:
             out[k] = v
+    nc = node_cores()
+    if nc and (not out.get("procs") or int(out["procs"]) > nc):
+        out["procs"] = str(nc)
+        out["procs_from"] = "a node's cores (SLURM, one rank per core)"
     return out
 
 
@@ -116,7 +175,8 @@ def run_errors(st: dict) -> list[str]:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
             errs.append("run.procs: MPI ranks (integer >= 1)")
         elif "procs" in cap and n > int(cap["procs"]):
-            errs.append(f"run.procs: at most {cap['procs']} on this machine (CFDT_MAX_PROCS)")
+            errs.append(f"run.procs: at most {cap['procs']} on this machine "
+                        f"({cap.get('procs_from', 'CFDT_MAX_PROCS')})")
         sp = (st.get("solve") or {}).get("procs")
         if sp is not None and sp != n:
             errs.append(f"run.procs ({n}) and solve.procs ({sp}) differ: give one")
@@ -302,6 +362,9 @@ def procs_for_job(study: dict, est: float | None = None) -> int:
     at CFDT_CELLS_PER_RANK, so small studies do not hold cores they cannot use (the benchmarks on mochi held
     18 CPUs each for 1-3 ranks)."""
     procs = procs_of(study)
+    nc = node_cores()
+    if nc:
+        procs = min(procs, nc)                 # one node, one rank per core (CFDT_PROCS may say more)
     est = cell_estimate(study) if est is None else est
     if est is None:
         return procs
@@ -435,7 +498,9 @@ def status() -> dict:
     if kind() == "slurm":
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
                 "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "time_limit_min": time_limit_min(),
-                "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps()}
+                "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
+                "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
+                "node_list": node_list()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
             "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
 
@@ -455,7 +520,9 @@ def job_script(request: Path, name: str, procs: int, study: dict | None = None) 
         f"#SBATCH --chdir={d}",
         f"#SBATCH --output={d / 'job.log'}",
         f"#SBATCH --ntasks={procs}",
+        "#SBATCH --nodes=1",                    # one node: the case is in one directory, on one machine
         "#SBATCH --ntasks-per-core=1",          # a whole core per rank (OpenMPI 5 maps ranks by core)
+        *([f"#SBATCH --nodelist={node_list()}"] if node_list() else []),
         f"#SBATCH --time={time_limit_min(study)}",
         "#SBATCH --export=ALL",
         f"exec {shlex.quote(sys.executable)} -m cfd_translator.cli run-study {shlex.quote(str(request))} {shlex.quote(name)}",
@@ -588,15 +655,21 @@ def sacct(ids: list[str]) -> dict | None:
     """{id: state} from accounting, or None when sacct fails or knows nothing."""
     if not ids:
         return {}
-    rc, out, _ = _run(["sacct", "-n", "-P", "-X", "-j", ",".join(ids), "-o", "JobID,State"])
+    rc, out, _ = _run(["sacct", "-n", "-P", "-X", "-j", ",".join(ids), "-o", "JobID,State,NodeList"])
     if rc != 0:
         return None
     st = {}
     for line in out.splitlines():
-        i, _, s = line.partition("|")
-        if i.strip() and "." not in i:
-            st[i.strip()] = s.strip()
+        f = line.split("|")
+        i = f[0].strip()
+        if i and "." not in i:
+            st[i] = f[1].strip() if len(f) > 1 else ""
+            if len(f) > 2 and f[2].strip() and f[2].strip() != "None assigned":
+                _JOB_NODE[i] = f[2].strip()
     return st or None
+
+
+_JOB_NODE: dict = {}
 
 
 def _tail(path: Path, n: int = 30) -> str:
@@ -664,6 +737,12 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
             out[n] = st
             continue
         state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"))
+        node, here = _JOB_NODE.get(jid), local_node()
+        if (state in ("failed", "cancelled") and "by user" not in why and not (request / n / "job.log").exists()
+                and node and here and node != here):
+            state, why = "failed", (f"the job went to node {node} and left no job.log: that node cannot see {request} "
+                                    "(its filesystem is not shared with this one). Put CFDT_OUT on a filesystem every "
+                                    "node sees, or set CFDT_SLURM_NODES=local in config/env to keep jobs on this node")
         if state == "failed" and (request / n / "cancel").exists():
             state, why = "cancelled", "cancelled with cancel(request) (it left the queue before running)"
         res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid,

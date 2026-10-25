@@ -127,12 +127,16 @@ def sacct(args):
     for i in ids:
         if (D / f"{i}.json").exists():
             r = rec(i)
-            print(f"{i}|{r.get('final') or ('RUNNING' if state(r) else 'COMPLETED')}")
+            print(f"{i}|{r.get('final') or ('RUNNING' if state(r) else 'COMPLETED')}|{r.get('node', 'node1')}")
             print(f"{i}.batch|COMPLETED")
     return 0
 
 
 def sinfo(args):
+    if "-N" in args:                     # node list: name, host, CPUs, threads per core (FAKE_NODES overrides)
+        for line in os.environ.get("FAKE_NODES", "node1 localhost 128 1").split(";"):
+            print(line)
+        return 0
     print("2/6/0/8")
     return 0
 

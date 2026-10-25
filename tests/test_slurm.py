@@ -345,3 +345,37 @@ def test_validation_returns_the_job_estimate(monkeypatch):
     monkeypatch.setenv("CFDT_SOLVER", "ref")
     assert api.validate({"c": COUETTE})["studies"]["c"]["estimate"]["minutes"] == 0.1
     assert api.validate({"p": pipe})["studies"]["p"]["estimate"]["minutes"] > 0.1
+
+
+def test_ranks_are_capped_at_a_nodes_cores_and_jobs_can_stay_on_this_node(slurm, tmp_path, monkeypatch):
+    """mochi: 40 CPUs, 2 threads per core: a 36-rank job was 'Requested node configuration is not available'.
+    spark1: jobs went to the other node, which does not see CFDT_OUT, and vanished without a log."""
+    import socket
+    host = socket.gethostname().split(".")[0]
+    monkeypatch.setenv("FAKE_NODES", f"mochi {host} 40 2;other otherhost 64 1")
+    executor._NODES.clear()
+    assert executor.node_cores() == 64
+    monkeypatch.setenv("CFDT_SLURM_NODES", "local")
+    executor._NODES.clear()
+    assert executor.local_node() == "mochi" and executor.node_list() == "mochi" and executor.node_cores() == 20
+    assert executor.caps()["procs"] == "20"
+    errs = executor.run_errors(dict(COUETTE, run={"procs": 36}))
+    assert errs and "at most 20" in errs[0] and "cores" in errs[0]
+    monkeypatch.setenv("CFDT_PROCS", "36")
+    assert executor.procs_for_job(COUETTE, 1e6) == 20
+    js = executor.job_script(tmp_path, "s", 20, COUETTE)
+    assert "#SBATCH --nodelist=mochi" in js and "#SBATCH --nodes=1" in js
+    assert executor.status()["nodes"][0] == {"name": "mochi", "cpus": 40, "cores": 20}
+
+
+def test_a_job_lost_on_another_node_says_so(slurm, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    import socket
+    monkeypatch.setenv("FAKE_NODES", f"here {socket.gethostname().split('.')[0]} 8 1;far farhost 8 1")
+    executor._NODES.clear()
+    req = tmp_path / "req"
+    (req / "s").mkdir(parents=True)
+    info = executor.submit(req, "s", COUETTE)
+    _set(slurm, info["job_id"], final="FAILED", node="far", pending=False)
+    st = executor.slurm_states(req, ["s"], {"s": COUETTE})
+    assert st["s"]["state"] == "failed" and "node far" in st["s"]["why"] and "CFDT_SLURM_NODES=local" in st["s"]["why"]

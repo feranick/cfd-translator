@@ -17,3 +17,7 @@ def _bare_machine(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("CFDT_PROCS", "1")
     for k in _CLEAR:
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("CFDT_SLURM_NODES", raising=False)
+    from cfd_translator import executor
+    executor._NODES.clear()                  # sinfo's answer is cached per process
+    executor._JOB_NODE.clear()
