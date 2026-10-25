@@ -10,6 +10,12 @@ _CLEAR = ("CFDT_SLURM_ARGS", "CFDT_SLURM_MIN_MINUTES", "CFDT_MAX_TIMEOUT", "CFDT
           "CFDT_CELLS_PER_RANK", "CFDT_MPIRUN", "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_MEM_PER_NODE")
 
 
+def pytest_configure(config):
+    # lib3mf (pulled in by build123d for geometry goals) declares ctypes Structures with _pack_ and no _layout_:
+    # Python 3.14 warns about it 14 times per run (carbonio, 2026.10.25). Not ours to fix; harmless until 3.19.
+    config.addinivalue_line("filterwarnings", "ignore:Due to '_pack_':DeprecationWarning:lib3mf")
+
+
 @pytest.fixture(autouse=True)
 def _bare_machine(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("CFDT_EXECUTOR", "local")
