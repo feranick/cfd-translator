@@ -21,3 +21,16 @@ def _bare_machine(monkeypatch, tmp_path_factory):
     from cfd_translator import executor
     executor._NODES.clear()                  # sinfo's answer is cached per process
     executor._JOB_NODE.clear()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _close_worker_pool():
+    """The local worker pool some tests start is closed before the interpreter goes (otherwise Pool.__del__
+    complains at exit)."""
+    yield
+    from cfd_translator import api
+    for holder, key in ((api._POOL.__dict__, "pool"), (api._AUX, "pool")):
+        if holder.get(key) is not None:
+            holder[key].terminate()
+            holder[key].join()
+            holder[key] = None

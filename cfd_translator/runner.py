@@ -320,12 +320,52 @@ def _prepare_transient(study: dict, folder: Path):
         with open(pf, "rb") as f:
             mesh, patches, selection, plan, warns = pickle.load(f)
         return mesh, patches, selection, plan, list(warns), state
+    tr = (study.get("solve") or {}).get("transient") or {}
+    if tr.get("continue"):
+        return _continue_transient(study, folder)
     mesh, patches, selection, plan, warns = prepare(study, folder)
     with open(pf, "wb") as f:
         pickle.dump((mesh, patches, selection, plan, warns), f)
     state = {"prepared": True, "segments": 0, "init_done": False, "started": False, "time_steps": 0}
     sf.write_text(json.dumps(state))
     return mesh, patches, selection, plan, warns, state
+
+
+def _continue_transient(study: dict, folder: Path):
+    """solve.transient.continue: a finished transient run, carried on to a later end_time in a new study folder.
+    Its prepared mesh and plan, the case (latest time only, decomposed or not) and the monitors' history are copied;
+    the averages go on, or start again from average_from when that is later than the old run's."""
+    import pickle
+
+    from .transient import continue_problems, copy_case, restart_averages, settings, source_folder, write_transient
+    bad = continue_problems(study)
+    if bad:
+        raise ValueError(bad[0])
+    tr = study["solve"]["transient"]
+    src = source_folder(tr["continue"])
+    with open(src / "prepared.pkl", "rb") as f:
+        mesh, patches, selection, plan, warns = pickle.load(f)
+    old = json.loads((src / "transient.json").read_text())
+    folder.mkdir(parents=True, exist_ok=True)
+    t = copy_case(src / "case", folder / "case")
+    old_from = float((plan.get("transient") or {}).get("average_from", 0.0))
+    new = settings(study, mesh)
+    if "average_from" not in tr:
+        new["average_from"] = old_from
+    new["init"] = 0
+    plan["transient"] = new
+    notes = [f"continued from {src} at t = {t:g} s"]
+    if new["average_from"] > old_from * (1 + 1e-9) and new["average_from"] > 0:
+        restart_averages(folder / "case")
+        notes.append(f"time averages start again at {new['average_from']:g} s")
+    write_transient(folder / "case", study, plan)
+    state = {"prepared": True, "segments": 0, "init_done": True, "started": True,
+             "time_steps": int(old.get("time_steps", 0)), "init_iterations": old.get("init_iterations"),
+             "continued_from": str(src), "continued_at": t}
+    with open(folder / "prepared.pkl", "wb") as f:
+        pickle.dump((mesh, patches, selection, plan, list(warns) + notes), f)
+    (folder / "transient.json").write_text(json.dumps(state))
+    return mesh, patches, selection, plan, list(warns) + notes, state
 
 
 def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs: int, folder: Path, state: dict,

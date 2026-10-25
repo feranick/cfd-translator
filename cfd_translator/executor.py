@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.25.2
+Version: 2026.10.25.5
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -86,7 +86,9 @@ def slurm_nodes(all_nodes: bool = False) -> list[dict]:
     configuration is not available')."""
     if kind() != "slurm":
         return []
-    if "v" not in _NODES:
+    if "v" in _NODES:
+        known = _NODES["v"]
+    else:
         rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %n %c %Z"])
         nodes = {}
         if rc == 0:
@@ -96,9 +98,11 @@ def slurm_nodes(all_nodes: bool = False) -> list[dict]:
                     thr = int(f[3]) if f[3].isdigit() else 1
                     nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2]), "threads": thr,
                                    "cores": max(1, int(f[2]) // max(thr, 1))}
-        _NODES["v"] = list(nodes.values())
-    want = None if all_nodes else node_list()
-    return [n for n in _NODES["v"] if not want or n["name"] in want.split(",")]
+        known = list(nodes.values())
+        if rc == 0 and known:                 # a failed sinfo is asked again next time, not remembered as empty
+            _NODES["v"] = known
+    want = None if all_nodes else effective_nodelist()
+    return [n for n in known if not want or n["name"] in want.split(",")]
 
 
 def _my_addresses() -> set:
@@ -134,13 +138,41 @@ def local_node() -> str | None:
     if hit is None and recs:
         mine = _my_addresses()
         hit = next((r["NodeName"] for r in recs if r.get("NodeAddr") in mine), None)
-    _NODES["local"] = hit
+    if rc == 0 and recs:                      # a failed scontrol is asked again next time
+        _NODES["local"] = hit
+        _NODES["scontrol_nodes"] = len(recs)
     return hit
 
 
-def _args_nodelist() -> bool:
+def cluster_nodes() -> int:
+    """How many nodes `scontrol -o show node` lists (sinfo's count when scontrol is not available)."""
+    if "scontrol_nodes" not in _NODES:
+        local_node()
+    return int(_NODES.get("scontrol_nodes") or len(slurm_nodes(all_nodes=True)))
+
+
+def args_nodelist() -> str | None:
+    """A --nodelist / -w in CFDT_SLURM_ARGS (split as a shell does), which wins over CFDT_SLURM_NODE."""
     a = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
-    return any(x in ("-w", "--nodelist") or x.startswith(("--nodelist=", "-w")) for x in a)
+    for i, x in enumerate(a):
+        if x in ("-w", "--nodelist") and i + 1 < len(a):
+            return a[i + 1]
+        if x.startswith("--nodelist="):
+            return x.split("=", 1)[1]
+        if x.startswith("-w") and len(x) > 2:
+            return x[2:]
+    return None
+
+
+def _args_nodelist() -> bool:
+    return args_nodelist() is not None
+
+
+def effective_nodelist() -> str | None:
+    """The nodes a job may run on, as it asks: CFDT_SLURM_ARGS' --nodelist/-w, else node_list(); None: SLURM
+    chooses. tool_status reports it (the router's sbatch --test-only must ask the same) and the rank caps use those
+    nodes' cores."""
+    return args_nodelist() or node_list()
 
 
 def node_setting() -> str:
@@ -161,7 +193,7 @@ def node_list() -> str | None:
         return None
     if v.lower() != "local":
         return v
-    if len(slurm_nodes(all_nodes=True)) <= 1:
+    if cluster_nodes() <= 1:
         return None
     return local_node()
 
@@ -263,23 +295,47 @@ def _strip_mem(args: list[str]) -> tuple[list[str], float | None]:
     return out, mem
 
 
-def sbatch_args(study: dict, cells: float | None = None) -> tuple[list[str], str | None]:
-    """CFDT_SLURM_ARGS with the job's memory: run.mem when given (or 'auto'); otherwise the default --mem,
-    raised to the cell estimate's need when that is larger (a 3-6M-cell mesh does not fit 8G), within
-    CFDT_MAX_MEM. Returns (args, where the memory came from)."""
-    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
-    mem = (study.get("run") or {}).get("mem")
-    rest, default = _strip_mem(args)
+def mem_setting() -> str:
+    """CFDT_SLURM_MEM (llm-translators docs/EXECUTION.md): auto (default: from the study's cell estimate) | a size
+    (e.g. 16G) | none (SLURM's default)."""
+    return os.environ.get("CFDT_SLURM_MEM", "").strip() or "auto"
+
+
+def mem_plan(study: dict, cells: float | None = None) -> tuple[float | None, str]:
+    """(MB the job asks for, or None for SLURM's default; where it came from). In order: the study's run.mem (a size;
+    'auto': the estimate); a --mem in CFDT_SLURM_ARGS (it wins over CFDT_SLURM_MEM); CFDT_SLURM_MEM: auto (2 GB +
+    4 GB per million estimated cells; 8 GB when the cells cannot be told), a size, or none. Within CFDT_MAX_MEM."""
     cap = mem_mb(caps()["mem"]) if caps().get("mem") else None
-    if mem and str(mem).lower() != "auto":
-        return rest + [f"--mem={mem}"], "study"
-    need = mem_estimate_mb(cells)
-    if need and (str(mem).lower() == "auto" or (default is not None and need > default)):
-        mb = min(need, cap) if cap else need
-        if default is not None and str(mem).lower() != "auto":
-            mb = max(mb, default)
-        return rest + [f"--mem={int(math.ceil(mb / 1024))}G"], "estimate"
-    return args, "default" if default is not None else None
+
+    def capped(mb):
+        return float(min(mb, cap) if cap else mb)
+    rm = (study.get("run") or {}).get("mem")
+    if rm and str(rm).lower() != "auto":
+        return float(mem_mb(rm) or 0), "study"
+    _, args_mem = _strip_mem(shlex.split(os.environ.get("CFDT_SLURM_ARGS", "")))
+    if args_mem is not None and str(rm).lower() != "auto":
+        return float(args_mem), "CFDT_SLURM_ARGS"
+    setting = "auto" if str(rm).lower() == "auto" else mem_setting()
+    if setting.lower() == "none":
+        return None, "none"
+    if setting.lower() == "auto":
+        need = mem_estimate_mb(cells)
+        return capped(need if need else 8192.0), "estimate" if need else "auto (no cell estimate: 8G)"
+    mb = mem_mb(setting)
+    return (capped(mb), "CFDT_SLURM_MEM") if mb else (None, "none")
+
+
+def sbatch_args(study: dict, cells: float | None = None) -> tuple[list[str], str | None]:
+    """CFDT_SLURM_ARGS (split as a shell does: several options in one value) with the job's --mem from mem_plan.
+    Returns (args, where the memory came from)."""
+    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
+    rest, _ = _strip_mem(args)
+    mb, src = mem_plan(study, cells)
+    if src == "CFDT_SLURM_ARGS":
+        return args, src
+    if mb is None:
+        return rest, src
+    return rest + [f"--mem={int(math.ceil(mb / 1024))}G" if mb >= 1024 else f"--mem={int(math.ceil(mb))}M"], src
 
 
 def cell_estimate(study: dict) -> float | None:
@@ -452,13 +508,20 @@ def transient_steps(study: dict) -> float | None:
         return None
     from .transient import _velocity
     T = float(tr["end_time"])
+    T0 = 0.0
+    if tr.get("continue"):                   # only the time still to run
+        try:
+            from .transient import source_folder
+            T0 = float(json.loads((source_folder(tr["continue"]) / "transient.json").read_text()).get("time") or 0.0)
+        except (OSError, ValueError):
+            T0 = 0.0
     h = _finest_mm(study)
     U = _velocity(study)
     W = float(tr.get("write_interval", T / 10))
     dt = min(W / 10, T / 500)
     if h and U:
         dt = min(dt, 0.3 * float(tr.get("max_co", 1.0)) * h * 1e-3 / (1.5 * U))
-    return T / dt
+    return max(T - T0, 0.0) / dt
 
 
 def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs: int | None = None) -> float | None:
@@ -479,7 +542,7 @@ def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs
     s = study.get("solve") or {}
     tr = s.get("transient")
     if tr:
-        init = int(tr.get("init", 0 if model == "laminar" else 500))
+        init = 0 if tr.get("continue") else int(tr.get("init", 0 if model == "laminar" else 500))
         solve = (init + (transient_steps(study) or 0)) * it
     else:
         solve = int(s.get("iterations", 3000 if model != "laminar" else 2000)) * it
@@ -490,18 +553,12 @@ def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs
 
 
 def mem_needed_mb(study: dict, cells: float | None = None) -> float:
-    """The memory the job asks for, as sbatch_args sets --mem: run.mem; else the cell estimate's need (2 GB +
-    4 GB per million cells), at least the default --mem of CFDT_SLURM_ARGS, within CFDT_MAX_MEM."""
-    mem = (study.get("run") or {}).get("mem")
-    if mem and str(mem).lower() != "auto":
-        return float(mem_mb(mem) or 0)
-    _, default = _strip_mem(shlex.split(os.environ.get("CFDT_SLURM_ARGS", "")))
-    cap = mem_mb(caps()["mem"]) if caps().get("mem") else None
-    need = mem_estimate_mb(cells)
-    if need is None:
-        return float(default or 2048)
-    mb = need if str(mem).lower() == "auto" or default is None else max(need, default)
-    return float(min(mb, cap) if cap else mb)
+    """The memory the job asks for (mem_plan, as its --mem; rounded up as sbatch_args writes it); SLURM's default
+    ('none'): the estimate's need, for the router."""
+    mb, _ = mem_plan(study, cells)
+    if mb is None:
+        return float(mem_estimate_mb(cells) or 8192.0)
+    return float(math.ceil(mb / 1024) * 1024) if mb >= 1024 else float(math.ceil(mb))
 
 
 def estimate(study: dict, solver: str) -> dict | None:
@@ -542,8 +599,9 @@ def status() -> dict:
                 "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "time_limit_min": time_limit_min(),
                 "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
                 "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
-                "node": {"setting": node_setting(), "nodelist": node_list(),
-                         "cluster_nodes": len(slurm_nodes(all_nodes=True))}}
+                "node": {"setting": node_setting(), "nodelist": effective_nodelist(),
+                         "cluster_nodes": cluster_nodes()},
+                "mem": mem_setting()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
             "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
 

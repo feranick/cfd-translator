@@ -183,3 +183,49 @@ def test_continuation_job_waits_for_the_running_one(tmp_path, monkeypatch):
     assert "--dependency=afterany:555" in seen["cmd"] and info["job_id"] == "556"
     j = json.loads((req / "s" / "job.json").read_text())
     assert j["segment"] == 2 and j["previous_jobs"] == ["444", "555"]
+
+
+def test_continue_a_finished_run(tmp_path, monkeypatch):
+    """solve.transient.continue: the latest time, the monitors and the prepared mesh go to a new study folder; the
+    averages go on, or start again when average_from is later."""
+    from cfd_translator import api, runner
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    old = dict(CH, solve={"transient": {"end_time": 3.0, "average_from": 1.0}})
+    src = tmp_path / "run_a" / "s"
+    mesh, patches, sel, plan, w, state = runner._prepare_transient(old, src)
+    c = src / "case"
+    for d in ("1", "2", "3", "3/uniform", "postProcessing/cfdtF_body/0", "postProcessing/cfdtF_body/2"):
+        (c / d).mkdir(parents=True, exist_ok=True)
+    for f in ("UMean", "pMean", "U"):
+        (c / "3" / f).write_text(f)
+    (c / "3" / "uniform" / "cfdtAverageProperties").write_text("x")
+    (c / "postProcessing" / "cfdtF_body" / "0" / "forces.dat").write_text("0 ((0 0 0) (0 0 0)) ((0 0 0) (0 0 0))\n")
+    (c / "log.foamRun").write_text("log")
+    (src / "transient.json").write_text(json.dumps(dict(state, time=3.0, time_steps=900)))
+    # validation: a later end_time, on this machine
+    new = dict(CH, solve={"transient": {"end_time": 6.0, "continue": "run_a/s"}})
+    assert api.validate({"n": new})["ok"]
+    early = dict(CH, solve={"transient": {"end_time": 2.0, "continue": "run_a/s"}})
+    assert "after the run's latest time" in api.validate({"n": early})["studies"]["n"]["errors"][0]
+    assert "no transient run" in api.validate({"n": dict(CH, solve={"transient": {"end_time": 6.0, "continue": "x/y"}})}
+                                               )["studies"]["n"]["errors"][0]
+    # keep the averages
+    dst = tmp_path / "run_b" / "n"
+    mesh2, p2, s2, plan2, w2, st2 = runner._prepare_transient(new, dst)
+    d = dst / "case"
+    assert not (d / "1").exists() and not (d / "2").exists() and (d / "3" / "UMean").exists()
+    assert (d / "postProcessing" / "cfdtF_body" / "0" / "forces.dat").exists()
+    assert (d / "log.foamRun.previous").exists()
+    assert plan2["transient"]["end_time"] == 6.0 and plan2["transient"]["average_from"] == 1.0 and plan2["transient"]["init"] == 0
+    assert st2["started"] and st2["init_done"] and st2["continued_at"] == 3.0 and st2["time_steps"] == 900
+    assert "endTime         6" in (d / "system" / "controlDict").read_text()
+    # start the averages again at 4 s
+    again = dict(CH, solve={"transient": {"end_time": 6.0, "average_from": 4.0, "continue": "run_a/s"}})
+    dst3 = tmp_path / "run_c" / "n"
+    *_, w3, st3 = runner._prepare_transient(again, dst3)
+    assert not (dst3 / "case" / "3" / "UMean").exists() and (dst3 / "case" / "3" / "U").exists()
+    assert not (dst3 / "case" / "3" / "uniform" / "cfdtAverageProperties").exists()
+    assert any("start again" in x for x in w3)
+    # the estimate counts only the time still to run
+    from cfd_translator import executor
+    assert executor.transient_steps(new) == pytest.approx(executor.transient_steps(dict(CH, solve={"transient": {"end_time": 3.0}})) * 1.0, rel=0.5)

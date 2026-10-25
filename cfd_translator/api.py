@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.22.5
+Version: 2026.10.25.5
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -89,6 +89,12 @@ def validate(studies: dict) -> dict:
     ex, groups, errs = prepare_studies(studies)
     v = _validate(ex) if ex else {"ok": not errs, "studies": {}, "errors": [] if errs else
                                    ["studies: a non-empty dict {name: study}"]}
+    from .transient import continue_problems
+    for n, st in ex.items():                 # a run to continue must be on this machine
+        if isinstance(st, dict) and n not in errs:
+            cp = continue_problems(st)
+            if cp:
+                errs[n] = cp
     for n, e in errs.items():
         rec = v["studies"].setdefault(n, {"ok": False, "errors": [], "warnings": []})
         rec["ok"] = False
@@ -110,7 +116,29 @@ def validate(studies: dict) -> dict:
                 e = None
             if e:
                 rec["estimate"] = e
+                w = _mem_warning(ex[n], e)
+                if w:
+                    rec.setdefault("warnings", []).append(w)
     return v
+
+
+def _mem_warning(study: dict, est: dict) -> str | None:
+    """A --mem in CFDT_SLURM_ARGS wins over the estimate (docs/EXECUTION.md): say so when the mesh needs more."""
+    from . import executor
+    if executor.kind() != "slurm" or not est.get("cells"):
+        return None
+    mb, src = executor.mem_plan(study, est["cells"])
+    need = executor.mem_estimate_mb(est["cells"])
+    if src == "CFDT_SLURM_ARGS" and mb and need and need > mb * 1.05:
+        return (f"memory: the job asks for {mb / 1024:.0f}G (--mem in CFDT_SLURM_ARGS) but ~{est['cells'] / 1e6:.1f}M "
+                f"cells may need {need / 1024:.0f}G: set run.mem (e.g. '{int(need // 1024 + 1)}G'), or have the admin "
+                "move --mem from CFDT_SLURM_ARGS to CFDT_SLURM_MEM=auto")
+    return None
+
+
+def guide(topic: str | None = None) -> dict:
+    from .guides import guide as _g
+    return _g(topic)
 
 
 def add_geometry(name: str, goal=None, step=None, step_base64=None) -> dict:
@@ -151,6 +179,45 @@ class _Pool:
 
 
 _POOL = _Pool()
+
+# ---- other slow work of a tool call (meshing for get_case, rendering) in worker processes: a call returns within
+# its wait_s (at most 50 s) and a repeated call with the same arguments picks the result up (llm-translators'
+# router counts on every tool returning in time; a server stuck in a call blocks every other call on it)
+_AUX: dict = {"pool": None, "pending": {}}
+
+
+def _aux_pool():
+    if _AUX["pool"] is None:
+        _AUX["pool"] = mp.get_context("spawn").Pool(int(os.environ.get("CFDT_AUX_WORKERS", "2") or 2),
+                                                     maxtasksperchild=20)
+    return _AUX["pool"]
+
+
+def _aux_run(fn_name: str, kwargs: dict):
+    return globals()[fn_name](**kwargs)
+
+
+def aux_busy() -> bool:
+    return any(not h.ready() for h, _ in _AUX["pending"].values())
+
+
+def in_worker(what: str, fn_name: str, kwargs: dict, wait: float) -> dict:
+    """fn_name(**kwargs) in a worker; waits at most `wait` s (<= 50). Unfinished: {state: running, ...}; the same
+    call again waits for the same work."""
+    key = f"{fn_name}:{json.dumps(kwargs, sort_keys=True, default=str)}"
+    if key not in _AUX["pending"]:
+        _AUX["pending"][key] = (_aux_pool().apply_async(_aux_run, (fn_name, kwargs)), time.time())
+    h, t0 = _AUX["pending"][key]
+    h.wait(max(0.0, min(float(wait), 50.0)))
+    if not h.ready():
+        return {"state": "running", "what": what, "elapsed_s": round(time.time() - t0, 1),
+                "next": f"still {what}: call {fn_name if fn_name != 'case' else 'get_case'} again with the same arguments "
+                        "(the work goes on meanwhile)"}
+    _AUX["pending"].pop(key, None)
+    try:
+        return h.get()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 def _request_dir(prefix: str) -> Path:
@@ -299,6 +366,10 @@ def start(studies: dict, solver: str | None = None) -> Path:
     (folder / "studies.json").write_text(json.dumps(studies, indent=1))
     s = _solver(solver)
     studies, groups, pre = prepare_studies(studies)
+    from .transient import continue_problems
+    for n, st in studies.items():
+        if isinstance(st, dict) and n not in pre and continue_problems(st):
+            pre[n] = continue_problems(st)
     invalid, jobs = {}, []
     for n, st in studies.items():
         v = validate_study(st) if n not in pre else {"ok": False, "errors": pre[n]}
@@ -572,12 +643,12 @@ def image_path(path: str) -> Path:
 
 
 def bench(names=None, solver: str | None = None, wait_s: float | None = None) -> dict:
-    """wait_s (the MCP tool): with SLURM, submit and return after at most wait_s; bench_status collects."""
+    """wait_s (the MCP tool): submit (SLURM jobs, or the local worker pool) and return after at most wait_s;
+    bench_status collects. Without wait_s (the CLI): run them here."""
     from . import bench as B
-    from . import executor as X
 
     s = _solver(solver)
-    if wait_s is not None and X.kind() == "slurm":
+    if wait_s is not None:          # the MCP tool: submitted (SLURM jobs or the local pool), never run in the call
         folder = _request_dir("bench")
         sub = B.submit(s, names)
         sub.update({"solver": s, "translator": __version__})

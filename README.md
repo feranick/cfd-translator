@@ -70,8 +70,11 @@ With `CFDT_EXECUTOR=slurm`, each study becomes a SLURM job instead of running in
 | variable | default | meaning |
 |---|---|---|
 | `CFDT_EXECUTOR` | `local` | `slurm`: studies become SLURM jobs |
-| `CFDT_SLURM_MIN_MINUTES` | 0 | studies estimated below this run locally; cfdt estimates only reference-solver studies (0.1 min), so OpenFOAM studies always go to SLURM |
-| `CFDT_SLURM_ARGS` | | extra `sbatch` arguments, e.g. `--mem=64G` |
+| `CFDT_SLURM_MIN_MINUTES` | 0 | studies estimated below this run locally (the estimate validation returns) |
+| `CFDT_SLURM_ARGS` | | extra `sbatch` arguments, split as a shell does (several in one value: `--nice=5 --nodelist=spark-5da5`); a `--mem` here wins over `CFDT_SLURM_MEM`, a `--nodelist`/`-w` over `CFDT_SLURM_NODE` |
+| `CFDT_SLURM_MEM` | `auto` | the job's `--mem`: `auto` from the cell estimate (2 GB + 4 GB per million cells; 8G when unknown), a size, or `none` (SLURM's default) |
+| `CFDT_SLURM_NODE` | `local` | in a cluster of several nodes: `local` keeps jobs on this machine's node (home folders not shared), `any`, or a node list |
+| `CFDT_EXIT_WHEN_STALE` | (shared installs) | `1`/`0`: a server whose release is no longer current exits when idle (STALE_SERVER) |
 | `CFDT_PROCS` | 1 | MPI ranks per study (`--ntasks`); a study's `solve.procs` overrides it |
 | `CFDT_TIMEOUT` | 3600 | seconds per study; the job asks for ceil(timeout/60) + 10 minutes, so the translator stops itself first |
 | `CFDT_MPIRUN` | `mpirun` | the MPI launcher; inside a job, OpenMPI's mpirun uses the allocation |
@@ -200,6 +203,7 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
   - The steady start's solution is time 0; then PIMPLE with an adjustable time step; U and p are averaged from `average_from` (UMean, pMean), and results come from the means.
   - `coefficients.cd`/`cl` are time averages of the force history, with `cd_min/max`, `cl_min/max`, `frequency_Hz` and `strouhal` (reference.length / velocity); `averaged` has the time series statistics. Reliable when the averages converged (drift < 2 %, standard error < 1 %).
   - A run longer than its SLURM job (`run.timeout_s`) writes, stops and continues in the next job by itself (at most `max_jobs`).
+  - **`continue: "<request>/<study>"`** carries a finished transient run on to a later `end_time` in a new study: the prepared mesh, the case's latest time and the monitors' history are copied (no meshing, no steady start); the averages go on, or start again when `average_from` is later than the old run's. Validation refuses it when that run is not on this machine or `end_time` is not later.
 - **run**: `{timeout_s, mem, procs, queue}`, this study's overrides of the machine's defaults (see Running on SLURM).
 - **reference**: `velocity`, `area` (mm2), `length`, `cofr`, `drag_dir`, `lift_dir`, `p` (gauge zero).
 - **probes**: `{name, at}` or `{name, line: {from, to, n}}`.
@@ -335,9 +339,23 @@ The **reference solver** (`refsolver.py`) is a 2D steady Navier–Stokes solver:
 6. `foam.py` runs `checkMesh` and `foamRun` (or MPI). `foamio.py` reads the logs and the last time's fields. `refsolver.py` is the alternative solver.
 7. `post.py` computes results and invariants from the fields; `runner.py` ties one study together. `api.py`, `cli.py` and `mcp_server.py` are the interfaces.
 
+## Guides and reuse
+
+- **`guide(topic)`** (MCP tool; `cfdt guide [topic]`): how to set up a kind of study, condensed from the runs that validated it, longer than `study_format` can hold. `vehicle_aero`: domain, snappy sizes, prism layers, geometry pitfalls, steady RANS vs DES, averaging windows, reporting, which Ahmed benchmark to run. `study_format`'s conventions point to it.
+- **Ahmed benchmarks** (slow, by name): `ahmed25_snappy`, `ahmed35_snappy` (steady L1) and `ahmed35_des` (DES L2), the vehicle-aero study's cases (60 m/s, stationary floor), each with a physics check against the wind tunnel and a regression check against what cfdt 2026.10.22.10 produced; `ahmed25_L1..L3`, `ahmed35_L1..L3`, `ahmed*_des_mg` (40 m/s, moving ground). Results recorded so far:
+
+  | Case | L1 (scale 1) | L2 (0.707) | L3 (0.5) | Tunnel |
+  |---|---|---|---|---|
+  | 25 deg, steady, stationary floor, 60 m/s | 0.289 (Cl scatter 5.7 %) | 0.311 | 0.295 | 0.2875 |
+  | 35 deg, steady, stationary floor, 60 m/s | 0.285 (settled) | 0.288 (drift 3.4 %) | 0.404 (attached: wrong state) | 0.26 |
+  | 35 deg, DES L2, stationary floor | | 0.2387 (0.230-0.247, 22.7 Hz) | | 0.26 |
+  | 25 / 35 deg, steady, moving ground, 40 m/s (L4: 1.6M cells) | 0.322 / 0.310 | 0.293 / 0.297 | 0.266 / 0.273 (L4 0.253 / 0.265) | 0.285 / 0.26 |
+
+- **Reusing a workflow across chats.** The benchmarks (`run_benchmarks`) and the conventions in `study_format` are the shared record of what works. If you repeat a multi-tool workflow often (for example photos → build123d-translator CAD → cfdt mesh check → Ahmed benchmark → DES), you can also save it as a personal Claude skill (e.g. "cfdt vehicle aero"). The skill holds the steps and your own defaults, and works in any of your chats. Keep the physics and accuracy numbers in the repo, so there is one source of truth, and have the skill point to them.
+
 ## For LLM tools: the MCP server
 
-Tools: `study_format`, `validate_studies`, `add_geometry` / `list_geometry` (geometry by reference), `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: state, iteration, s/iteration, `eta_min_max`, job id), `study_status`, `jobs` (SLURM runs from any conversation), `cancel`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks` (with SLURM: submits and returns; `bench_status(bench)` collects), `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Tools: `study_format`, `guide`, `validate_studies`, `add_geometry` / `list_geometry` (geometry by reference), `run_studies` (returns within ~45 s; long studies come back `pending` with `progress`: state, iteration, s/iteration, `eta_min_max`, job id), `study_status`, `jobs` (SLURM runs from any conversation), `cancel`, `get_case`, `get_image` (a PNG as an image Claude can see and show), `render_images` (other views of a finished study), `run_benchmarks` (with SLURM: submits and returns; `bench_status(bench)` collects), `get_file` (base64, for callers on another machine). In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 "cfdt": {"command": "/usr/bin/ssh",
@@ -365,8 +383,9 @@ cfd_translator/
   average.py    per-iteration monitors, window averages, 'settled'
   scalars.py    tracers and the mean age            porous.py     porous zones
   variants.py   geometry by reference, mesh_scales / variants, mesh-convergence comparison
+  guides.py     guide(topic): vehicle_aero
   transient.py  URANS / DES / laminar unsteady runs, steady start, stop-and-continue over SLURM jobs
-tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py
+tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py, test_mcp_server.py
 examples/studies.json      planning.md (session context)
 ```
 
@@ -374,6 +393,9 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.25.5 | Checked against llm-translators' EXECUTION.md / SHARED.md rules. **Memory** (`CFDT_SLURM_MEM` = auto | size | none, new): auto sizes `--mem` from the cell estimate (8G when unknown); a `--mem` in CFDT_SLURM_ARGS now wins over it (before, the estimate could raise it), so validation warns when the mesh needs more than that --mem; run.mem wins over both. **Node pinning**: the cluster's size from `scontrol -o show node`; a `--nodelist`/`-w` in CFDT_SLURM_ARGS (also `-w name`, `-wname`) is the node list reported in `executor.node.nodelist` and used for the rank cap, so the router's sbatch --test-only asks the same. **Every tool returns within wait_s**: get_case (meshing) and render_images run in worker processes (state 'running', call again to collect), run_benchmarks submits to the local pool too (it ran the cases in the call without SLURM); stale servers count those workers as busy. Tests: two options in one CFDT_SLURM_ARGS value, the memory settings, the in-worker calls. Already in place: node pinning (2026.10.25.2), stale servers and failed sinfo/scontrol asked again (2026.10.25.4), estimates in validation (2026.10.22.10). |
+| 2026.10.25.4 | Brought in line with omct 2026.10.23.3-2026.10.25.2 (llm-translators docs/SHARED.md, EXECUTION.md). **Stale servers**: after `llmt deploy` a server whose release is no longer `<prefix>/current` (or, in a checkout, whose `__init__.py` carries another version) refuses the next call when idle with `STALE_SERVER` (the router repeats it on a new server) and exits 1 s later; an idle stale server exits within 20 s; a busy one answers with `server_stale` and exits once idle (no calls in flight, no local pool studies; SLURM jobs do not count). Only a server started by `main()` (`serving`) may refuse or exit: tools called in-process (tests under `llmt deploy --test`, scripts) never do. `CFDT_EXIT_WHEN_STALE` 1 / 0 / default shared installs only. **Errors**: every tool runs through one wrapper that re-raises exceptions as `ToolError` with the message (MCP SDK 2.x passed on only 'Error executing tool X'), and runs the tool in a worker thread. **llmt test's JUnit report**: no test ends the process (a test checks for `os._exit`/`sys.exit`); the local worker pool is closed at the end of the session. **CFDT_SLURM_NODE**: already in 2026.10.25.2; a failing `sinfo` or `scontrol` is now asked again next time instead of being remembered as 'no nodes'. tests/test_mcp_server.py. |
+| 2026.10.25.3 | From the vehicle-aero study (examples/cfdt_dev_prompt_vehicle_aero.md): **Ahmed benchmarks** `ahmed25_snappy`, `ahmed35_snappy`, `ahmed35_des` (60 m/s, stationary floor; physics check vs the tunnel at 10 / 15 / 12 %, regression vs cfdt 2026.10.22.10 at 3 / 3 / 4 %, lift against the drag's size, DES frequency 22.7 Hz +- 10 %); this chat's DES cases renamed `ahmed*_des_mg` (moving ground). **`guide('vehicle_aero')`** (MCP tool, `cfdt guide`; guides.py) with the study's lessons and a pointer in study_format's conventions. **`solve.transient.continue`**: extend a finished transient run (copied mesh, latest time, monitors; averages kept or restarted from a later average_from); validation checks the run is on this machine; the estimate counts the remaining time only. `mesh.features: true` = the finest surface size (it was refused). README: guides, recorded Ahmed results, reusing workflows as a personal skill. |
 | 2026.10.25.2 | Node placement follows llm-translators' contract (docs/EXECUTION.md, 'Clusters of several nodes') instead of 2026.10.25.1's own variable: **CFDT_SLURM_NODE** = `local` (the default) | `any` | a node list. `local` adds `--nodelist=<this node>` when the cluster has several nodes (this node: `scontrol -o show node`, host name to NodeName or NodeHostName, else this machine's addresses to NodeAddr); a `--nodelist`/`-w` in CFDT_SLURM_ARGS wins; one-node clusters get none. `tool_status().executor.node = {setting, nodelist, cluster_nodes}`. The sparks need no setting now. |
 | 2026.10.25.1 | SLURM on other machines (the timing test on mochi and the sparks). **Ranks capped at a node's cores**: `sinfo -N` gives each node's CPUs and threads per core; with one rank per core a job gets at most CPUs / threads on one node (mochi: 40 CPUs, 2 threads per core: 20). A 36-rank request had been refused by SLURM ('Requested node configuration is not available'); now validation says 'run.procs: at most 20 on this machine (a node's cores ...)', CFDT_PROCS above it is clamped, `caps.procs` and `executor.nodes` report it, and jobs ask for `--nodes=1`. **CFDT_SLURM_NODES** (`local` or a node list): keeps jobs on nodes that see CFDT_OUT. spark1's SLURM sent jobs to spark-0808, which does not share the home directory: they vanished in seconds without a job.log; with CFDT_SLURM_NODES=local they stay on spark1, and a job lost on another node now says so (sacct's NodeList: 'the job went to node X and left no job.log ...'). |
 | 2026.10.22.10 | **Estimates in validation** (llm-translators docs/EXECUTION.md, for its router): `validate_studies` returns `estimate: {minutes, procs, mem_mb, cells}` for each valid study, from the job sizing (`executor.estimate`): ranks after the cells-per-rank cap, memory as `--mem` (run.mem, else 2 GB + 4 GB per million cells, at least the default, within CFDT_MAX_MEM), minutes an upper bound: meshing + iterations (or the steady start + time steps of a transient run, from the Courant limit on the finest cells) x cells x 4.6e-6 s / rank speed-up (p^0.6 up to 10 ranks, slower beyond: mochi's measurements) + results, plus 30 %. The 2D reference solver's boxes: 0.1 min. No estimate when the cells cannot be told (a STEP file). `use_slurm` uses the same minutes against CFDT_SLURM_MIN_MINUTES. |

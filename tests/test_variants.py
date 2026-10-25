@@ -96,3 +96,20 @@ def test_brief_result_is_short():
     assert b["results"]["forces"] == {"body": {"fx": 1, "fy": 2, "fz": 3}} and "feat_loads" not in b["results"]
     assert b["mesh"]["layers"] == {"n": 3, "coverage_pct": 98} and b["seconds"] == 12 and b["checks"]["mass_balance"] == 1e-9
     assert len(json.dumps(b)) < 700
+
+
+def test_vehicle_aero_guide_and_ahmed_benchmarks():
+    from cfd_translator import bench
+    from cfd_translator.format import validate_study
+    g = api.guide("vehicle_aero")
+    assert g["topic"] == "vehicle_aero" and any("coverage_pct" in x for x in g["layers"])
+    assert "vehicle_aero" in api.guide()["topics"] and "error" in api.guide("boats")
+    assert any("guide('vehicle_aero')" in c for c in api.study_format()["conventions"])
+    C = bench._cases()
+    for n in ("ahmed25_snappy", "ahmed35_snappy", "ahmed35_des"):
+        assert C[n]["slow"] and validate_study(C[n]["study"])["ok"], n
+    r = {"coefficients": {"cd": 0.289, "cl": 0.353}}
+    checks = C["ahmed25_snappy"]["checks"](r)
+    assert [c[0].split(" ")[0] for c in checks] == ["Cd", "Cd", "Cl"] and checks[2][3] == {"abs": 0.03 * 0.289}
+    assert len(C["ahmed35_des"]["checks"]({"coefficients": {"cd": 0.24, "cl": -0.08, "frequency_Hz": 22}})) == 4
+    assert C["ahmed35_des"]["study"]["mesh"]["surface"] == [2.12, 4.24]

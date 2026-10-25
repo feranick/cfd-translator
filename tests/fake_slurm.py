@@ -133,6 +133,9 @@ def sacct(args):
 
 
 def sinfo(args):
+    if os.environ.get("FAKE_SINFO_FAIL"):
+        print("sinfo: error: Unable to contact slurm controller", file=sys.stderr)
+        return 1
     if "-N" in args:                     # node list: name, host, CPUs, threads per core (FAKE_NODES overrides)
         for line in os.environ.get("FAKE_NODES", "node1 localhost 128 1").split(";"):
             print(line)
@@ -143,6 +146,8 @@ def sinfo(args):
 
 def scontrol(args):
     """scontrol -o show node: one line per node of FAKE_NODES (name host cpus threads [addr])."""
+    if os.environ.get("FAKE_SINFO_FAIL"):
+        return 1
     if args[:3] == ["-o", "show", "node"]:
         for line in os.environ.get("FAKE_NODES", "node1 localhost 128 1").split(";"):
             f = line.split()

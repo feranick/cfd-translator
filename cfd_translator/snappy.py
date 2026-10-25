@@ -136,6 +136,8 @@ def settings(study: dict, external: bool, box: list, part_bb: tuple | None = Non
     smin, smax = (float(sf[0]), float(sf[1])) if isinstance(sf, list) else (float(sf), float(sf))
     Ls = (level_for(h0, smax), level_for(h0, smin))            # (min level: coarse, max level: fine)
     feat = m.get("features", smin)
+    if feat is True:                          # on, at the finest surface size
+        feat = smin
     Lf = level_for(h0, float(feat)) if feat else None
     gap = int(m.get("gap", 1))
     regions, dist = [], []

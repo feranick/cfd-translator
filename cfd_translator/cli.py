@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.10.18.2
+Version: 2026.10.25.3
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -8,6 +8,7 @@ Version: 2026.10.18.2
     cfdt status REQUEST                  results of a request folder (finished and pending studies)
     cfdt case studies.json NAME          write the OpenFOAM case of one study (no solve)
     cfdt bench [NAMES...] [--solver S]   the benchmark studies with known answers
+    cfdt guide [TOPIC]                   how-to guides (vehicle_aero)
     cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
     cfdt jobs [--limit N] [--active]     recent requests with SLURM jobs, their states; the queue
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
@@ -34,6 +35,8 @@ def main(argv=None) -> None:
     p = sub.add_parser("status")
     p.add_argument("request", nargs="?")
     sub.add_parser("format")
+    p = sub.add_parser("guide")
+    p.add_argument("topic", nargs="?")
     p = sub.add_parser("validate")
     p.add_argument("studies")
     p = sub.add_parser("run")
@@ -64,6 +67,8 @@ def main(argv=None) -> None:
         out = api.status(a.request) if a.request else api.tool_status()
     elif a.cmd == "format":
         out = api.study_format()
+    elif a.cmd == "guide":
+        out = api.guide(a.topic)
     elif a.cmd == "validate":
         out = api.validate(_load(a.studies))
     elif a.cmd == "run":

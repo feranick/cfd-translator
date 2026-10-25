@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.22.5
+Version: 2026.10.25.3
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -35,7 +35,9 @@ Version: 2026.10.22.5
   pipe_snappy          internal flow on a snappyHexMesh mesh: Hagen-Poiseuille as pipe_poiseuille
   cylinder_2d2         transient (laminar, Re 100): Schaefer & Turek 2D-2 vortex shedding, cD max, cL max, Strouhal
   cylinder_2d2_restart the same in 2-minute SLURM jobs: continues from job to job, same answers
-  ahmed25_des, ahmed35_des   DES (kOmegaSSTDES) on the L3 mesh, 0.4 s averaged from 0.1 s (slow; by name)
+  ahmed25_des_mg, ahmed35_des_mg   DES (kOmegaSSTDES), 40 m/s, moving ground, L3 mesh, 0.4 s (slow; by name)
+  ahmed25_snappy, ahmed35_snappy, ahmed35_des   the vehicle-aero study's cases (60 m/s, stationary floor): steady L1,
+                       DES L2; Cd vs the tunnel (10 / 15 / 12 %) and vs cfdt 2026.10.22.10's values (3 / 3 / 4 %) (slow)
   ahmed25_L1..L3, ahmed35_L1..L3   Ahmed body (half, moving ground, kOmegaSST, layers at y+ ~60), three meshes:
                        Cd vs the wind tunnel (0.285, 0.26) within 10 %, y+ 30-300, layer coverage (slow; by name)
 Slow cases run only when named. The reference solver runs the 2D box cases (couette, channel, cavity).
@@ -460,8 +462,19 @@ def _cases() -> dict:
         st["model"] = "kOmegaSSTDES"
         st["solve"] = {"transient": {"end_time": 0.4, "average_from": 0.1, "init": 1000, "max_co": 1.0,
                                      "write_interval": 0.05}}
-        C[f"ahmed{phi}_des"] = {"study": st, "checks": _ahmed_des_checks(cd_exp), "ref": False,
+        C[f"ahmed{phi}_des_mg"] = {"study": st, "checks": _ahmed_des_checks(cd_exp), "ref": False,
                                 "needs": ["gmsh", "build123d_translator"], "slow": True}
+    # ---- the vehicle-aero study's Ahmed cases (examples/cfdt_dev_prompt_vehicle_aero.md): 60 m/s, stationary
+    # floor as in the experiment, snappy L1 steady and L2 DES. Two checks each: physics against the wind tunnel
+    # (a tolerance for the method's known accuracy) and regression against what cfdt 2026.10.22.10 produced on
+    # mochi (a tight tolerance: a change in the tool's own behaviour)
+    for phi, cd_t, tol, cd_r, cl_r in ((25, 0.2875, 0.10, 0.289, 0.353), (35, 0.26, 0.15, 0.285, 0.026)):
+        C[f"ahmed{phi}_snappy"] = {
+            "study": ahmed_va_study(phi), "ref": False, "needs": ["gmsh", "build123d_translator"], "slow": True,
+            "checks": _va_checks(cd_t, tol, cd_r, cl_r, 0.03)}
+    C["ahmed35_des"] = {
+        "study": ahmed_va_study(35, des=True), "ref": False, "needs": ["gmsh", "build123d_translator"], "slow": True,
+        "checks": _va_checks(0.26, 0.12, 0.2387, -0.078, 0.04, freq=22.7)}
     # Ahmed body (Ahmed, Ramm & Faltin 1984), half model on a symmetry plane, no stilts, 50 mm over a moving
     # ground, 40 m/s (Re_L 2.8e6, as Lienhart & Becker 2003), kOmegaSST with wall functions and prism layers at
     # y+ ~ 60; three meshes, each sqrt(2) finer than the last. Wind tunnel: Cd 0.285 (25 deg), 0.26 (35 deg).
@@ -510,6 +523,65 @@ def ahmed_study(phi: float, f: float, procs: int) -> dict:
             "solve": {"iterations": 4000},
             "run": {"procs": procs},
             "images": True}
+
+
+def ahmed_va_goal(phi: float) -> dict:
+    """The vehicle-aero study's Ahmed half body: 1044 x 389 x 288 mm, front edges R100, a 222 mm slant at phi,
+    50 mm above the floor (z = 0), y >= 0."""
+    xs = {25: 320.8, 35: 340.15}[phi]
+    ze = {25: 176.46, 35: 134.06}[phi]
+    inner = {"features": [
+        {"kind": "base_box", "params": {"w": 1044, "d": 389, "h": 288}},
+        {"kind": "fillet_edges", "params": {"r": 100, "nx": -1, "ny": 0, "nz": 0}},
+        {"kind": "profile_pocket", "params": {"nx": 0, "ny": 1, "nz": 0, "off": 0, "x": 0, "y": 0, "z": 0, "outline": {
+            "start": [xs, 288], "segs": [["L", 560, ze], ["L", 560, 400], ["L", xs, 400], ["L", xs, 288]]}}}]}
+    return {"features": [{"kind": "combine", "params": {"op": "add", "goal": inner, "move": [0, 0, 50]}},
+                         {"kind": "split", "params": {"nx": 0, "ny": 1, "nz": 0, "off": 0}}]}
+
+
+def ahmed_va_study(phi: float, des: bool = False) -> dict:
+    """Steady kOmegaSST on the L1 snappy mesh, or (des) kOmegaSSTDES on L2 (sizes x 0.707), 0.4 s averaged from
+    0.15 s; as run in the vehicle-aero study on mochi (9 procs)."""
+    f = 0.707 if des else 1.0
+
+    def r(v):
+        return round(v * f, 2)
+    st = {"geometry": {"goal": ahmed_va_goal(phi)}, "domain": {"kind": "external", "box": [-3650, 0, 0, 6800, 1500, 1500]},
+          "fluid": "air", "model": "kOmegaSSTDES" if des else "kOmegaSST",
+          "bcs": [{"kind": "inlet", "name": "inlet", "faces": {"box": "xmin"}, "velocity": 60, "intensity": 0.01,
+                   "length_scale": 45},
+                  {"kind": "outlet", "name": "outlet", "faces": {"box": "xmax"}, "pressure": 0},
+                  {"kind": "symmetry", "name": "sym", "faces": {"box": "ymin"}},
+                  {"kind": "slip", "name": "farfield", "faces": {"box": ["ymax", "zmax"]}},
+                  {"kind": "wall", "name": "ground", "faces": {"box": "zmin"}}],
+          "mesh": {"mesher": "snappy", "size": r(100), "surface": [r(3), r(6)], "features": r(3) if des else True, "gap": 1,
+                   "refine": [{"box": [-700, 0, 0, 800, 350, 500], "size": r(12)},
+                              {"box": [522, 0, 0, 1800, 350, 500], "size": r(16)}, {"distance": 20, "size": r(6)}],
+                   "layers": {"y_plus": 60, "n": 3 if des else 5, "growth": 1.2}},
+          "reference": {"velocity": 60, "area": 56016, "length": 1044, "cofr": [0, 0, 0], "drag_dir": [1, 0, 0],
+                        "lift_dir": [0, 0, 1]}}
+    if des:
+        st["solve"] = {"procs": 9, "transient": {"end_time": 0.4, "average_from": 0.15, "max_co": 1, "init": 500,
+                                                 "max_jobs": 10}}
+    else:
+        st["solve"] = {"iterations": 4000, "procs": 9, "relax": {"U": 0.4, "p": 0.2, "other": 0.4},
+                       "consistent": False, "start": "estimate", "average": True}
+    return st
+
+
+def _va_checks(cd_tunnel: float, tol: float, cd_reg: float, cl_reg: float, reg: float, freq: float | None = None):
+    """Physics (the tunnel, tol) and regression (cfdt 2026.10.22.10's own values, reg; lift against the drag's
+    size, since it can be near zero)."""
+    def f(r):
+        out = [("Cd vs the wind tunnel (%.4g)" % cd_tunnel, cd_tunnel, r["coefficients"]["cd"], {"tol": tol}),
+               ("Cd regression (cfdt 2026.10.22.10: %.4g)" % cd_reg, cd_reg, r["coefficients"]["cd"], {"tol": reg}),
+               ("Cl regression (cfdt 2026.10.22.10: %.4g)" % cl_reg, cl_reg, r["coefficients"]["cl"],
+                {"abs": reg * cd_reg})]
+        if freq:
+            out.append(("dominant frequency regression (%.3g Hz)" % freq, freq, r["coefficients"]["frequency_Hz"],
+                        {"tol": 0.10}))
+        return out
+    return f
 
 
 def _ahmed_des_checks(cd_exp: float):

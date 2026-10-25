@@ -312,18 +312,50 @@ def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
     assert executor.mem_mb("8G") == 8192 and executor.mem_mb("500M") == 500 and executor.mem_mb("x") is None
 
 
-def test_job_memory_rises_with_the_cell_estimate(monkeypatch):
-    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nice=5")
+def test_job_memory_settings(monkeypatch):
+    """docs/EXECUTION.md: CFDT_SLURM_MEM auto (from the cell estimate) | a size | none; a --mem in CFDT_SLURM_ARGS
+    wins over it; the study's run.mem wins over both; within CFDT_MAX_MEM."""
     monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
     big = dict(COUETTE, mesh={"cells": [2000, 2000, 1]})                     # 4M cells: 2 + 4 x 4 = 18 GB
-    args, src = executor.sbatch_args(big, executor.cell_estimate(big))
-    assert args == ["--nice=5", "--mem=18G"] and src == "estimate"
+    est = executor.cell_estimate(big)
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--nice=5")
+    assert executor.sbatch_args(big, est) == (["--nice=5", "--mem=18G"], "estimate")          # auto, the default
+    assert executor.sbatch_args(COUETTE, None)[0][-1] == "--mem=8G"                            # no estimate
     monkeypatch.setenv("CFDT_MAX_MEM", "16G")
-    assert executor.sbatch_args(big, 4e6)[0][-1] == "--mem=16G"               # within the machine's cap
-    small, src = executor.sbatch_args(COUETTE, 200)
-    assert small == ["--mem=8G", "--nice=5"] and src == "default"            # the default when it suffices
-    auto = dict(COUETTE, run={"mem": "auto"})
-    assert executor.sbatch_args(auto, 200)[0][-1] == "--mem=3G" and executor.sbatch_args(auto, 200)[1] == "estimate"
+    assert executor.sbatch_args(big, est)[0][-1] == "--mem=16G"                                # the cap
+    monkeypatch.delenv("CFDT_MAX_MEM")
+    monkeypatch.setenv("CFDT_SLURM_MEM", "12G")
+    assert executor.sbatch_args(big, est) == (["--nice=5", "--mem=12G"], "CFDT_SLURM_MEM")
+    monkeypatch.setenv("CFDT_SLURM_MEM", "none")
+    assert executor.sbatch_args(big, est) == (["--nice=5"], "none")
+    # a --mem in CFDT_SLURM_ARGS wins over CFDT_SLURM_MEM; run.mem wins over both; run.mem auto: the estimate
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nice=5")
+    monkeypatch.setenv("CFDT_SLURM_MEM", "auto")
+    assert executor.sbatch_args(big, est) == (["--mem=8G", "--nice=5"], "CFDT_SLURM_ARGS")
+    assert executor.mem_needed_mb(big, est) == 8192
+    assert executor.sbatch_args(dict(big, run={"mem": "20G"}), est) == (["--nice=5", "--mem=20G"], "study")
+    assert executor.sbatch_args(dict(big, run={"mem": "auto"}), est) == (["--nice=5", "--mem=18G"], "estimate")
+
+
+def test_several_options_in_one_slurm_args_value(slurm, tmp_path, monkeypatch):
+    """CFDT_SLURM_ARGS="--mem=8G --nodelist=spark-5da5": split as a shell does (shlex), each option where it
+    belongs: the memory as the job's --mem, the node list over CFDT_SLURM_NODE, in the status and the rank cap."""
+    import socket
+    monkeypatch.setenv("FAKE_NODES", f"spark-5da5 {socket.gethostname().split('.')[0]} 20 1;spark-0808 far 40 1")
+    executor._NODES.clear()
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nodelist=spark-0808")
+    monkeypatch.setenv("CFDT_SLURM_NODE", "local")
+    args, src = executor.sbatch_args(COUETTE, 1e3)
+    assert args == ["--mem=8G", "--nodelist=spark-0808"] and src == "CFDT_SLURM_ARGS"
+    assert executor.args_nodelist() == "spark-0808" and executor.node_list() is None
+    assert executor.effective_nodelist() == "spark-0808" and executor.node_cores() == 40
+    js = executor.job_script(tmp_path, "s", 4, COUETTE)
+    assert js.count("nodelist") == 0                                     # sbatch gets it from the args
+    assert executor.status()["node"] == {"setting": "local", "nodelist": "spark-0808", "cluster_nodes": 2}
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--nice=5 -w 'spark-5da5'")
+    assert executor.args_nodelist() == "spark-5da5" and executor.node_cores() == 20
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--nice=5 -wspark-0808")
+    assert executor.args_nodelist() == "spark-0808"
 
 
 def test_validation_returns_the_job_estimate(monkeypatch):
@@ -398,3 +430,23 @@ def test_a_job_lost_on_another_node_says_so(slurm, tmp_path, monkeypatch):
     _set(slurm, info["job_id"], final="FAILED", node="far", pending=False)
     st = executor.slurm_states(req, ["s"], {"s": COUETTE})
     assert st["s"]["state"] == "failed" and "node far" in st["s"]["why"] and "CFDT_SLURM_NODE=local" in st["s"]["why"]
+
+
+def test_a_failed_sinfo_is_asked_again(slurm, monkeypatch):
+    """omct 2026.10.25.2: a failing sinfo / scontrol must not be remembered as 'no nodes'."""
+    import socket
+    monkeypatch.setenv("FAKE_NODES", f"a {socket.gethostname().split('.')[0]} 16 2;b far 16 2")
+    executor._NODES.clear()
+    monkeypatch.setenv("FAKE_SINFO_FAIL", "1")
+    assert executor.node_cores() is None and executor.local_node() is None and executor.node_list() is None
+    monkeypatch.delenv("FAKE_SINFO_FAIL")
+    assert executor.node_cores() == 8 and executor.local_node() == "a" and executor.node_list() == "a"
+
+
+def test_validation_warns_when_slurm_args_memory_is_too_small(slurm, monkeypatch):
+    monkeypatch.setenv("CFDT_SOLVER", "foam")
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G")
+    big = dict(COUETTE, mesh={"cells": [2000, 2000, 1]})
+    rec = api.validate({"b": big})["studies"]["b"]
+    assert rec["estimate"]["mem_mb"] == 8192 and any("CFDT_SLURM_MEM=auto" in w for w in rec["warnings"])
+    assert not any("memory" in w for w in api.validate({"c": COUETTE})["studies"]["c"]["warnings"])

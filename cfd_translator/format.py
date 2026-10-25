@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.22.6
+Version: 2026.10.25.3
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -29,7 +29,7 @@ FLUIDS = {
 }
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
-TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt"}
+TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -107,6 +107,7 @@ CONVENTIONS = [
     "degrees C; pressures gauge to conditions.p (101325). Walls adiabatic unless T, q (W/m2 into the fluid), power (W) "
     "or h + T_inf; gravity adds buoyancy. Results add heat.<wall bc>.Q_W/q_mean/T_mean_C (h, Nu with reference.T, "
     "length), flow.<bc>.mdot/T_mean_C/mach, max_mach, T_min_C/T_max_C, checks.energy_balance, feat_thermal (external).",
+    "Vehicles, bluff bodies: read guide('vehicle_aero') (MCP tool) first: domain, snappy sizes, layers, DES windows.",
     "Pumps, fans: a rotating zone (MRF) around the impeller, its faces a wall with rotation: the zone's name. "
     "Results: rotating.<zone>.torque_Nm, power_W; with an inlet and an outlet pump.head_m, efficiency.",
     "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
@@ -593,8 +594,8 @@ def validate_study(st: dict) -> dict:
             errs.append("mesh.surface: cell size on the part (mm), or [finest, coarsest]")
         elif _num(m.get("size")) and sf is not None and max(sf if isinstance(sf, list) else [sf]) > m["size"]:
             errs.append("mesh.surface: no larger than mesh.size")
-        if "features" in m and not (m["features"] is False or (_num(m["features"]) and m["features"] > 0)):
-            errs.append("mesh.features: cell size along sharp edges (mm), or false")
+        if "features" in m and not (isinstance(m["features"], bool) or (_num(m["features"]) and m["features"] > 0)):
+            errs.append("mesh.features: cell size along sharp edges (mm), true (the finest surface size) or false")
         if "gap" in m and not (isinstance(m["gap"], int) and 0 <= m["gap"] <= 4):
             errs.append("mesh.gap: extra refinement levels in narrow gaps, 0-4 (default 1)")
         q = m.get("quality", {})
@@ -728,6 +729,9 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
             if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
                 errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
+            if "continue" in tr and (not isinstance(tr["continue"], str) or "/" not in tr["continue"]):
+                errs.append("solve.transient.continue: '<request>/<study>' of a finished transient run on this machine "
+                            "(its mesh and latest time are reused; end_time must be later)")
         if st.get("energy") or st.get("scalars") or st.get("age"):
             errs.append("solve.transient: not with energy, scalars or age yet")
         for k in ("iterations", "residual", "average"):

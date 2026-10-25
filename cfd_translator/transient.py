@@ -1,11 +1,14 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.10.22.5
+Version: 2026.10.25.3
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
     after_init(case)                                     the steady start's solution becomes time 0
     progress(log_text, end_time) -> dict                 simulated time, time step, Courant number
+
+solve.transient.continue = '<request>/<study>': a later end_time for a finished run (its mesh, case and latest time
+are copied; averages go on, or start again when average_from is later than the old one).
 
 A transient study first runs `init` steady iterations (RANS kOmegaSST for both URANS and DES; none for laminar
 flow), whose solution is the initial field (as the OpenFOAM motorBike DES tutorial does). Then PIMPLE with an
@@ -206,6 +209,74 @@ def progress(text: str, end_time: float) -> dict:
     if dt:
         out["dt"] = float(dt[-1])
     return out
+
+
+def source_folder(ref: str) -> Path:
+    """The study folder that solve.transient.continue names ('<request>/<study>', under CFDT_OUT or absolute)."""
+    from .api import out_root
+    p = Path(ref).expanduser()
+    return p if p.is_absolute() else out_root() / p
+
+
+def continue_problems(study: dict) -> list[str]:
+    """Why solve.transient.continue cannot be used here ([] when it can): the folder must hold a prepared transient
+    run of this machine with a time before the new end_time."""
+    tr = (study.get("solve") or {}).get("transient") or {}
+    ref = tr.get("continue")
+    if not ref:
+        return []
+    src = source_folder(ref)
+    if not (src / "prepared.pkl").is_file() or not (src / "transient.json").is_file():
+        return [f"solve.transient.continue: no transient run in {src} on this machine"]
+    t = latest_time(src / "case") if (src / "case").is_dir() else None
+    if t is None:
+        return [f"solve.transient.continue: {src} has no written time to continue from"]
+    if float(tr["end_time"]) <= t * (1 + 1e-9):
+        return [f"solve.transient.continue: end_time must be after the run's latest time ({t:g} s)"]
+    return []
+
+
+def copy_case(src: Path, dst: Path) -> float | None:
+    """The case without its older time directories (root and processor*): what continuing needs. Returns the latest
+    time."""
+    src, dst = Path(src), Path(dst)
+    t = latest_time(src)
+
+    def ignore(d, names):
+        d = Path(d)
+        if not (d == src or (d.parent == src and d.name.startswith("processor"))):
+            return []                         # postProcessing/<fo>/<start time> and the rest are copied whole
+        out = []
+        for n in names:
+            try:
+                v = float(n)
+            except ValueError:
+                continue
+            if t is not None and v < t * (1 - 1e-12):
+                out.append(n)
+        return out
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, symlinks=True, ignore=ignore)
+    for lg in list(dst.glob("log.foamRun*")):
+        if not lg.name.endswith(".previous"):
+            lg.rename(dst / f"{lg.name}.previous")
+    return t
+
+
+def restart_averages(case: Path) -> None:
+    """Drop the time averages in the latest time (root and processors): fieldAverage starts again at its startTime."""
+    case = Path(case)
+    for d in [case] + sorted(case.glob("processor*")):
+        t = _times(d)
+        if not t:
+            continue
+        last = t[-1][1]
+        for f in ("UMean", "pMean", "UPrime2Mean"):
+            (last / f).unlink(missing_ok=True)
+        for f in (last / "uniform").glob("*Properties") if (last / "uniform").is_dir() else []:
+            if f.name.startswith("cfdtAverage"):
+                f.unlink()
 
 
 def request_stop(case: Path) -> bool:
