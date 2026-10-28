@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.10.25.3
+Version: 2026.10.28.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -66,6 +66,9 @@ GUIDES = {
             "than drag).",
             "Run the matching Ahmed benchmark before quoting absolute numbers: ahmed25_snappy / ahmed35_snappy "
             "(steady) or ahmed35_des (DES), run_benchmarks by name.",
+            "Pictures: {surface: part, field: cp, quality: high} (lit, mirrored to the full body) and, for DES or "
+            "separated wakes, {iso: {field: q, value: auto}, color: u} (vortices) or {iso: {field: cp_total, "
+            "value: 0}} (the wake's losses); render_images makes them after the run.",
         ],
     },
 }

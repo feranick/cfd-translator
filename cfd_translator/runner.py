@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.22.4
+Version: 2026.10.28.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -184,7 +184,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         if why:
             out["unreliable_because"] = why
         out["ok"] = True
+        try:                                   # ParaView opens a case through an empty <name>.foam file
+            (case / "case.foam").touch()
+        except OSError:
+            pass
         out["files"] = {"case": str(case), "archive": _archive(case, folder / f"{name}_case.tgz")}
+        if (case / "case.foam").is_file():
+            out["files"]["paraview"] = str(case / "case.foam")
         out["seconds"] = {"mesh_case": round(t1 - t0, 3), "solve": round(t2 - t1, 3),
                           "results": round(time.perf_counter() - t2, 3)}
     except Exception as exc:  # noqa: BLE001

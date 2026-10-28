@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.10.25.5
+Version: 2026.10.28.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -344,8 +344,10 @@ def get_image(path: str) -> Image:
 def render_images(study_folder: str, images: list | bool = True, wait_s: float = 45) -> dict:
     """New pictures of a finished study without solving again: study_folder is <request>/<study name>
     (the folder holding <name>.json). images: true (defaults) or [{name, slice: {axis, at}, field,
-    streamlines, window, clim} | {name, surface, field, view, clim}] as in study_format (field cp: pressure
-    coefficient from reference.velocity). Then get_image each path."""
+    streamlines, window, clim} | {name, surface, field, view, clim, quality: high} | {name, iso: {field: q | u |
+    cp_total, value | auto}, color, window, view}] as in study_format (field cp: pressure coefficient from
+    reference.velocity). quality high and iso draw with VTK (lit 3D, half models mirrored); Q isosurfaces show
+    vortices (DES wakes). Then get_image each path."""
     return api.in_worker("rendering", "render_images", {"study_folder": study_folder, "images": images}, wait_s)
 
 

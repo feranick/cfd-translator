@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.25.5
+Version: 2026.10.28.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -62,6 +62,8 @@ def tool_status() -> dict:
             out[key] = getattr(m, "__version__", "yes")
         except ImportError:
             out[key] = None
+    from .render_vtk import status as render_status
+    out["render"] = render_status()
     return out
 
 

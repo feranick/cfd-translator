@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfd-translator"
-version = "2026.10.25.6"
+version = "2026.10.28.1"
 description = "CFD studies (geometry, fluid, boundary conditions on faces) to OpenFOAM cases and checked results; MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,8 @@ dependencies = ["numpy>=1.22", "scipy>=1.8", "matplotlib>=3.5"]
 # gmsh.py into the venv (README, Install)
 mesh = ["gmsh>=4.11; sys_platform != 'linux' or platform_machine != 'aarch64'"]
 mcp = ["mcp>=1.2"]
+# 3D pictures (images with quality: high, isosurfaces) with VTK; drawing offscreen also needs EGL, OSMesa or xvfb
+render = ["pyvista>=0.43"]
 test = ["pytest"]
 
 [project.scripts]

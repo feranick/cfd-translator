@@ -1,7 +1,8 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.22.3
+Version: 2026.10.28.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
+        isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
     default_images(study, mesh) -> specs (for "images": true)
     save_state(folder, mesh, plan, fields, study) / load_state(folder) -> (mesh, plan, fields, study): re-render without solving
 
@@ -24,6 +25,8 @@ AXES = {"x": 0, "y": 1, "z": 2}
 FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa, gauge)",
           "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)",
           "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)"}
+CMAPS = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "q": "inferno", "mach": "magma", "age": "cividis",
+         "u": "viridis", "wall_shear": "viridis"}
 
 
 def _q_ref(study: dict, plan: dict) -> tuple[float, float]:
@@ -227,16 +230,13 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     return {"cells": int(sel.sum()), "min": float(np.nanmin(val)), "max": float(np.nanmax(val)), "clim": [lo_c, hi_c]}
 
 
-def _surface(study, mesh, plan, fields, spec, title, path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
+def wall_values(study, mesh, plan, fields, spec) -> tuple[np.ndarray, np.ndarray]:
+    """The wall faces a surface image shows (surface: walls | part | <wall bc>) and the field on each:
+    (face indices, values in the field's units). Also used by render_vtk."""
     rho = plan["rho"]
     which = spec.get("surface", "walls")
     ptags = {t for t, i in mesh.tag_info.items() if i.get("on") == "part"}
-    polys, vals = [], []
+    faces, vals = [], []
     g = mesh.geometry()
     for patch in mesh.patches:
         if patch["type"] != "wall":
@@ -273,12 +273,21 @@ def _surface(study, mesh, plan, fields, spec, title, path):
             v = (_pa(plan, pf["p"])[loc] - pr) / qd
         else:
             v = _pa(plan, pf["p"])[loc]
-        for r in mesh.faces[f]:
-            polys.append(mesh.points[r[r >= 0]])
+        faces.append(f)
         vals.append(v)
-    if not polys:
+    if not faces:
         raise ValueError(f"no wall faces for surface {which!r}")
-    vals = np.concatenate(vals)
+    return np.concatenate(faces), np.concatenate(vals)
+
+
+def _surface(study, mesh, plan, fields, spec, title, path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    f, vals = wall_values(study, mesh, plan, fields, spec)
+    polys = [mesh.points[r[r >= 0]] for r in mesh.faces[f]]
     import matplotlib.cm as cm
     import matplotlib.colors as mcolors
     lo_c, hi_c, ext = _limits(vals, spec, "robust")
@@ -307,15 +316,29 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     return {"faces": len(polys), "min": float(vals.min()), "max": float(vals.max()), "clim": [lo_c, hi_c]}
 
 
-def render(study, mesh, plan, fields, folder, specs, name="study") -> tuple[dict, list]:
+def render(study, mesh, plan, fields, folder, specs, name="study", state_dir=None) -> tuple[dict, list]:
+    """PNGs in folder. Isosurfaces and surfaces with quality 'high' go to VTK (render_vtk, from the state saved
+    in state_dir, by default folder's parent); a high-quality surface VTK cannot draw falls back to Matplotlib
+    with a warning."""
     out, warns = {}, []
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    specs = [dict(sp, name=sp.get("name") or f"image{k + 1}") for k, sp in enumerate(specs)]
+    hq = [sp for sp in specs if "iso" in sp or ("surface" in sp and sp.get("quality") == "high")]
+    if hq:
+        from . import render_vtk
+        got, w = render_vtk.render(Path(state_dir) if state_dir else folder.parent, hq, folder, name)
+        out.update(got)
+        warns += w
+        specs = [sp for sp in specs if sp["name"] not in got and "iso" not in sp]
+        for sp in specs:
+            if sp.get("quality") == "high":
+                warns.append(f"image {sp['name']!r}: drawn with Matplotlib instead")
     import importlib.util
     if importlib.util.find_spec("matplotlib") is None:
-        return {}, ["images need matplotlib (pip install matplotlib)"]
+        return out, warns + (["images need matplotlib (pip install matplotlib)"] if specs else [])
     for k, sp in enumerate(specs):
-        nm = sp.get("name") or f"image{k + 1}"
+        nm = sp["name"]
         path = folder / f"{nm}.png"
         field = sp.get("field", "u" if "slice" in sp else "p")
         sp = dict(sp, field=field)

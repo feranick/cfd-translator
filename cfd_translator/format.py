@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.25.3
+Version: 2026.10.28.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -153,7 +153,9 @@ STUDY_KEYS = {
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis}]: MRF zones",
     "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0, a1, b0, b1]} "
-              "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim]}], clim: [lo, hi] | full "
+              "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high (VTK, lit)} | "
+              "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,y0,y1,z0,z1], view} (VTK)]"
+              ", clim: [lo, hi] | full "
               "| robust: PNGs (get_image; render_images makes more)",
     "energy": "true: solve temperature (see conventions); default false",
     "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
@@ -250,16 +252,23 @@ def image_errors(im, two_d: bool = False, scalars: tuple = (), ref_velocity: boo
     if im is True or im is False:
         return []
     if not isinstance(im, list):
-        return ["images: true or a list of {name, slice | surface, field, ...}"]
+        return ["images: true or a list of {name, slice | surface | iso, field, ...}"]
     errs, names = [], []
     for i, sp in enumerate(im):
         w = f"images[{i}]"
-        if not isinstance(sp, dict) or ("slice" in sp) == ("surface" in sp):
-            errs.append(f"{w}: give slice: {{axis, at}} or surface: part | walls | <wall bc>")
+        if not isinstance(sp, dict) or sum(k in sp for k in ("slice", "surface", "iso")) != 1:
+            errs.append(f"{w}: give slice: {{axis, at}}, surface: part | walls | <wall bc>, or iso: {{field, value}}")
             continue
         for k in sp:
-            if k not in ("name", "slice", "surface", "field", "streamlines", "window", "view", "clim"):
+            if k not in ("name", "slice", "surface", "iso", "field", "streamlines", "window", "view", "clim",
+                         "quality", "mirror", "color"):
                 errs.append(f"{w}: unknown key {k!r}")
+        if "quality" in sp and (sp["quality"] not in ("high", "basic") or "slice" in sp):
+            errs.append(f"{w}.quality: high (VTK: lit, smooth) or basic (Matplotlib), for surfaces")
+        if "mirror" in sp and not isinstance(sp["mirror"], bool):
+            errs.append(f"{w}.mirror: true (default: half models mirrored on their symmetry side) or false")
+        if "color" in sp and "iso" not in sp:
+            errs.append(f"{w}.color: for iso images")
         if "name" in sp:
             if not isinstance(sp["name"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", sp["name"]):
                 errs.append(f"{w}.name: a word (letters, digits, _ . -)")
@@ -276,6 +285,27 @@ def image_errors(im, two_d: bool = False, scalars: tuple = (), ref_velocity: boo
             if "window" in sp and (not _vec(sp["window"], 4) or sp["window"][0] >= sp["window"][1]
                                    or sp["window"][2] >= sp["window"][3]):
                 errs.append(f"{w}.window: [a0, a1, b0, b1] in mm along the slice's two in-plane axes")
+        elif "iso" in sp:
+            iso = sp["iso"]
+            if two_d:
+                errs.append(f"{w}.iso: isosurfaces are for 3D studies")
+            if not isinstance(iso, dict) or iso.get("field", "q") not in ("q", "u", "cp_total") \
+                    or not (_num(iso.get("value", 0)) or iso.get("value") == "auto") \
+                    or set(iso) - {"field", "value"}:
+                errs.append(f"{w}.iso: {{field: q (Q-criterion, 1/s2) | u (m/s) | cp_total, value: number | auto}}")
+            elif iso.get("field") == "cp_total" and not ref_velocity:
+                errs.append(f"{w}.iso: cp_total needs reference.velocity")
+            if sp.get("color", "u") not in ("u", "p", "cp", "none"):
+                errs.append(f"{w}.color: u, p, cp or none")
+            elif sp.get("color") == "cp" and not ref_velocity:
+                errs.append(f"{w}.color: cp needs reference.velocity")
+            if "window" in sp and (not _vec(sp["window"], 6) or any(sp["window"][2 * k] >= sp["window"][2 * k + 1]
+                                                                    for k in range(3))):
+                errs.append(f"{w}.window: [x0, x1, y0, y1, z0, z1] in mm")
+            if "view" in sp and not _vec(sp["view"], 2):
+                errs.append(f"{w}.view: [elevation, azimuth] in degrees")
+            if "field" in sp or "streamlines" in sp:
+                errs.append(f"{w}: an iso image takes iso.field (and color), not field or streamlines")
         else:
             if not isinstance(sp["surface"], str):
                 errs.append(f"{w}.surface: part, walls or a wall bc's name")

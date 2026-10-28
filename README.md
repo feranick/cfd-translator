@@ -38,6 +38,14 @@ ln -sf /usr/lib/python3/dist-packages/gmsh.py "$VIRTUAL_ENV/lib/python3.12/site-
 python -c "import gmsh; print(gmsh.__version__)"
 ```
 
+**3D pictures with VTK** (optional: `"quality": "high"` surfaces and isosurfaces; Matplotlib draws everything else): add the `render` extra (PyVista and VTK wheels, also for aarch64) and one way for VTK to draw without a screen. A GPU driver's EGL is used first (the DGX Sparks' NVIDIA driver provides it), then OSMesa, then an X display; without any of them cfdt runs the drawing under `xvfb-run`:
+
+```bash
+pip install -e "$HOME/Software/cfd-translator[mesh,mcp,test,render]"
+sudo apt install -y libosmesa6        # or: libegl1 (with a GPU driver), or: xvfb
+cfdt status                           # render: {vtk: <version>, offscreen: ...} once a picture was asked for
+```
+
 On ARM, check that openfoam.org has an arm64 package before installing (`apt-cache policy openfoam14` after adding the repository). Without OpenFOAM, the package still meshes, writes cases (`cfdt case`) and runs the 2D reference solver.
 
 The translator finds OpenFOAM through `CFDT_FOAM=/opt/openfoam14/etc/bashrc` (or `PATH` when the shell is already sourced). Without that variable, it uses `foamRun` on the PATH, or else the newest `/opt/openfoam*/etc/bashrc`. OpenFOAM .org 11 or later is needed (`foamRun`, `solver incompressibleFluid`), and 14 is the target. Without OpenFOAM, the package's reference solver runs the 2D box studies (`--solver ref`).
@@ -75,6 +83,9 @@ With `CFDT_EXECUTOR=slurm`, each study becomes a SLURM job instead of running in
 | `CFDT_SLURM_MEM` | `auto` | the job's `--mem`: `auto` from the cell estimate (2 GB + 4 GB per million cells; 8G when unknown), a size, or `none` (SLURM's default) |
 | `CFDT_SLURM_NODE` | `local` | in a cluster of several nodes: `local` keeps jobs on this machine's node (home folders not shared), `any`, or a node list |
 | `CFDT_EXIT_WHEN_STALE` | (shared installs) | `1`/`0`: a server whose release is no longer current exits when idle (STALE_SERVER) |
+| `CFDT_RENDER` | `auto` | `matplotlib`: never use VTK (high-quality surfaces fall back to Matplotlib, isosurfaces are skipped) |
+| `CFDT_RENDER_TIMEOUT` | 900 | seconds for the VTK drawing process |
+| `CFDT_ISO_VOXELS` | 6e6 | grid points for an isosurface (finer: sharper vortices, more memory: ~150 bytes each) |
 | `CFDT_PROCS` | 1 | MPI ranks per study (`--ntasks`); a study's `solve.procs` overrides it |
 | `CFDT_TIMEOUT` | 3600 | seconds per study; the job asks for ceil(timeout/60) + 10 minutes, so the translator stops itself first |
 | `CFDT_MPIRUN` | `mpirun` | the MPI launcher; inside a job, OpenMPI's mpirun uses the allocation |
@@ -211,9 +222,12 @@ The parabolic profile is the fully developed laminar one for circular, rectangul
 - **images**: `true` for the default views, or a list of views. The PNGs are written after the solve.
   - Defaults: 2D studies get |U| with streamlines and the pressure on the plane. External 3D studies get top and side slices through the part with streamlines, plus the pressure on the part. Internal 3D studies get a mid slice and the wall pressure.
   - Slice: `{name, slice: {axis: x | y | z, at: mm}, field: u | ux | uy | uz | p | cp (| T | mach | a tracer | age), streamlines, window: [a0, a1, b0, b1]}`. Tracers and the age are added to the default views.
-  - Surface: `{name, surface: part | walls | <wall bc>, field: p | cp | wall_shear, view: [elev, azim]}`.
+  - Surface: `{name, surface: part | walls | <wall bc>, field: p | cp | wall_shear, view: [elev, azim]}`. `"quality": "high"` draws it with VTK: lit, smooth shading, no depth-sorting artifacts; where VTK cannot draw it falls back to Matplotlib with a warning.
+  - Isosurface (3D, VTK): `{name, iso: {field: q | u | cp_total, value: number | auto}, color: u | p | cp | none, window: [x0, x1, y0, y1, z0, z1], view}`. `q` is the Q-criterion (1/s², from Gauss gradients of the cell velocities: vortices, such as a DES wake's), `u` the speed, `cp_total` the total-pressure coefficient (`0` outlines the wake's losses). `auto`: the volume-weighted 90th percentile of the positive Q in the window (0.5 × reference.velocity for `u`, 0 for `cp_total`); the result gives the value used. The default window runs from a quarter of the part's length ahead of it to 1.5 lengths behind (external flow), else the whole mesh. The part's walls are drawn grey with it (translucent for internal flow).
+  - VTK images mirror half models on their symmetry side (`"mirror": false` to show the half). The fields are cell values; the drawing runs in its own process (`render_vtk.py`), from `state.npz`.
   - Any image: `clim: [lo, hi] | full | robust` (colour range; robust = 2nd-98th percentile, the default on surfaces). `cp` = (p - reference.p) / (½ρ·reference.velocity²), on slices too.
   - Every run also saves its mesh and final fields (`state.npz`), so `render_images` / `cfdt images` can make other views later without solving again.
+  - For ParaView: each finished case has an empty `case/case.foam` (`files.paraview`); open it in ParaView (Decomposed Case for a parallel run's processor folders).
 
 ### Results
 
@@ -377,7 +391,7 @@ cfd_translator/
   snappy.py     snappyHexMesh meshing (surface, dictionaries, layers report, face tags)
   select.py     selectors, bc -> patches           post.py       results and invariants
   refsolver.py  2D MAC reference solver            runner.py     one study end to end
-  render.py     images (matplotlib), saved state
+  render.py     images (matplotlib), saved state      render_vtk.py 3D images with VTK: lit surfaces, isosurfaces (Q)
   bench.py      benchmarks                         api.py, cli.py, mcp_server.py
   executor.py   SLURM jobs: submit, run-study, states, jobs, cancel
   average.py    per-iteration monitors, window averages, 'settled'
@@ -385,7 +399,7 @@ cfd_translator/
   variants.py   geometry by reference, mesh_scales / variants, mesh-convergence comparison
   guides.py     guide(topic): vehicle_aero
   transient.py  URANS / DES / laminar unsteady runs, steady start, stop-and-continue over SLURM jobs
-tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py, test_mcp_server.py
+tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py, test_mcp_server.py, test_render_vtk.py
 examples/studies.json      planning.md (session context)
 ```
 
@@ -393,6 +407,7 @@ examples/studies.json      planning.md (session context)
 
 | version | changes |
 |---|---|
+| 2026.10.28.1 | **3D pictures with VTK** (`render_vtk.py`, the optional `render` extra: PyVista), while Matplotlib stays the default. Surfaces with `"quality": "high"` are lit and smooth-shaded, without Matplotlib's depth-sorting artifacts. New **isosurface** images `{iso: {field: q | u | cp_total, value | auto}, color, window, view}`: the Q-criterion from Gauss gradients of the cell velocities (exact for linear fields: rotation Q = ω², strain -a², shear 0), spread on a uniform grid over the window (inverse-distance weights from the 8 nearest cell centres, solids blanked; `CFDT_ISO_VOXELS`), drawn with flying edges and coloured by speed, p or Cp, with the part in grey. Half models are mirrored on their symmetry side. The drawing runs in a child process from `state.npz` (an OpenGL crash cannot take down a server or a job); offscreen OpenGL from EGL, OSMesa or X, else `xvfb-run`, found once per process (`probe()`, reported in status as `render`). Without VTK: high-quality surfaces fall back to Matplotlib and isosurfaces are skipped, each with a warning (`CFDT_RENDER=matplotlib` forces that). Every finished case gets an empty `case.foam` for ParaView (`files.paraview`). Timing here (aarch64, llvmpipe under Xvfb): 864k cells, Q isosurface on a 6M-point grid, ~6 s to compute and ~0.9 GB. tests/test_render_vtk.py. |
 | 2026.10.25.6 | Tests: lib3mf's ctypes `_pack_` DeprecationWarnings (Python 3.14, carbonio; 14 per run from build123d's import) are filtered in tests/conftest.py. No change to the package. |
 | 2026.10.25.5 | Checked against llm-translators' EXECUTION.md / SHARED.md rules. **Memory** (`CFDT_SLURM_MEM` = auto | size | none, new): auto sizes `--mem` from the cell estimate (8G when unknown); a `--mem` in CFDT_SLURM_ARGS now wins over it (before, the estimate could raise it), so validation warns when the mesh needs more than that --mem; run.mem wins over both. **Node pinning**: the cluster's size from `scontrol -o show node`; a `--nodelist`/`-w` in CFDT_SLURM_ARGS (also `-w name`, `-wname`) is the node list reported in `executor.node.nodelist` and used for the rank cap, so the router's sbatch --test-only asks the same. **Every tool returns within wait_s**: get_case (meshing) and render_images run in worker processes (state 'running', call again to collect), run_benchmarks submits to the local pool too (it ran the cases in the call without SLURM); stale servers count those workers as busy. Tests: two options in one CFDT_SLURM_ARGS value, the memory settings, the in-worker calls. Already in place: node pinning (2026.10.25.2), stale servers and failed sinfo/scontrol asked again (2026.10.25.4), estimates in validation (2026.10.22.10). |
 | 2026.10.25.4 | Brought in line with omct 2026.10.23.3-2026.10.25.2 (llm-translators docs/SHARED.md, EXECUTION.md). **Stale servers**: after `llmt deploy` a server whose release is no longer `<prefix>/current` (or, in a checkout, whose `__init__.py` carries another version) refuses the next call when idle with `STALE_SERVER` (the router repeats it on a new server) and exits 1 s later; an idle stale server exits within 20 s; a busy one answers with `server_stale` and exits once idle (no calls in flight, no local pool studies; SLURM jobs do not count). Only a server started by `main()` (`serving`) may refuse or exit: tools called in-process (tests under `llmt deploy --test`, scripts) never do. `CFDT_EXIT_WHEN_STALE` 1 / 0 / default shared installs only. **Errors**: every tool runs through one wrapper that re-raises exceptions as `ToolError` with the message (MCP SDK 2.x passed on only 'Error executing tool X'), and runs the tool in a worker thread. **llmt test's JUnit report**: no test ends the process (a test checks for `os._exit`/`sys.exit`); the local worker pool is closed at the end of the session. **CFDT_SLURM_NODE**: already in 2026.10.25.2; a failing `sinfo` or `scontrol` is now asked again next time instead of being remembered as 'no nodes'. tests/test_mcp_server.py. |
