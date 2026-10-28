@@ -1,8 +1,9 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.28.1
+Version: 2026.10.28.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
+    reprocess_study(folder, name) -> summary   results again from a finished case, without solving
 """
 from __future__ import annotations
 
@@ -201,6 +202,82 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
         out["trace"] = traceback.format_exc()[-2000:]
     return _save(out, folder, name)
+
+
+def reprocess_study(folder: Path, name: str) -> dict:
+    """The results of a finished study again, from its case (the last time directory; transient: the mean fields)
+    or its saved state, with the current post-processing and averaging, without solving. The old result is kept
+    as <name>.json.<its version>.bak; the new one records reprocessed: {by, at, from, changes}."""
+    from datetime import datetime
+
+    from .post import check_expect, results
+    from .render import load_state
+    folder = Path(folder)
+    f = folder / f"{name}.json"
+    if not f.is_file():
+        return {"name": name, "ok": False, "why": "no result yet (still running, or never started)"}
+    old = json.loads(f.read_text())
+    if not old.get("ok") or "results" not in old:
+        return {"name": name, "ok": False, "why": "not a finished study with results"}
+    if not (folder / "state.npz").is_file():
+        return {"name": name, "ok": False, "why": "no saved mesh (state.npz)"}
+    mesh, plan, fields, study = load_state(folder)
+    if not study:
+        return {"name": name, "ok": False, "why": "the saved state does not hold the study"}
+    case = folder / "case"
+    transient = bool((old.get("solve") or {}).get("transient"))
+    source = "the saved state"
+    if old.get("solver") != "ref" and case.is_dir():
+        from .foam import read_fields
+        try:
+            fields = read_fields(case, mesh, plan, mean=transient)
+            source = "the case" + (" (mean fields)" if fields.get("averaged") else "")
+        except Exception as exc:  # noqa: BLE001
+            source = f"the saved state (the case could not be read: {exc})"
+    res, w = results(study, mesh, plan, fields)
+    out = dict(old)
+    solve = dict(old.get("solve") or {})
+    if old.get("solver") != "ref" and plan.get("monitors") and case.is_dir():
+        from .average import average_results
+        try:
+            avg, w2 = average_results(case, plan, res)
+        except Exception as exc:  # noqa: BLE001
+            avg, w2 = None, [f"averaging failed ({type(exc).__name__}: {exc}); final-iteration values kept"]
+        w += w2
+        if avg:
+            res["averaged"] = avg
+            solve["settled"] = bool(avg.get("settled"))
+    if transient:
+        for k in ("momentum_balance", "angular_momentum_balance"):
+            if k in res.get("checks", {}):
+                res["checks"][k]["note"] = ("from the time-averaged fields: the Reynolds stresses and the time "
+                                            "derivative are not in it, so it is not judged")
+    out["solve"] = solve
+    out["results"] = res
+    if study.get("expect"):
+        out["expect"] = check_expect(res, study["expect"])
+        out["passed"] = all(e["passed"] for e in out["expect"])
+    kept = [x for x in old.get("warnings", []) if not x.startswith("averaging")]
+    out["warnings"] = kept + [x for x in w if x not in kept]
+    out.pop("unreliable_because", None)
+    out["reliable"], why = _verdict(out, res)
+    if why:
+        out["unreliable_because"] = why
+    oc, nc = old["results"].get("coefficients") or {}, res.get("coefficients") or {}
+    changes = {k: [oc.get(k), nc.get(k)] for k in ("cd", "cl", "cm") if oc.get(k) != nc.get(k)}
+    for k in ("part", "all_walls"):
+        a_, b_ = (old["results"].get("forces") or {}).get(k), (res.get("forces") or {}).get(k)
+        if a_ and b_ and any(a_.get(c) != b_.get(c) for c in ("fx", "fy", "fz")):
+            changes[f"forces.{k}"] = [[a_.get(c) for c in ("fx", "fy", "fz")], [b_.get(c) for c in ("fx", "fy", "fz")]]
+    out["reprocessed"] = {"by": __version__, "at": datetime.now().isoformat(timespec="seconds"),
+                          "from": old.get("reprocessed", {}).get("by") or old.get("translator"), "fields": source,
+                          "changes": changes}
+    bak = folder / f"{name}.json.{old.get('translator', 'old')}.bak"
+    if not bak.exists():
+        bak.write_text(f.read_text())
+    _save(out, folder, name)
+    return {"name": name, "ok": True, "reliable": out["reliable"], "fields": source, "changes": changes,
+            "backup": str(bak)}
 
 
 def execution_record(procs_requested: int, procs_used: int | None = None, launch: str | None = None,

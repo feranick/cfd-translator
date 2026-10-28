@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.25.3
+Version: 2026.10.28.2
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -24,6 +24,8 @@ Version: 2026.10.25.3
   porous_channel_1d    porous block (Darcy-Forchheimer) in a slip channel: dp = L (mu d U + rho f U^2 / 2) (exact)
   ergun_bed            the same from a packed bed's particle size and porosity: Ergun's equation
   porous_anisotropic   anisotropic block with axes at 45 degrees: momentum balance and transverse force (rotation)
+  porous_slab_external a porous slab across a 2D external domain, the part (a post) slip: the part's drag is the
+                       slab's reaction = dp x A (Gmsh)
   chain_thermal        CFD heat per face -> fea-translator thermal: a copper block comes out at the CFD wall
                        temperature (needs Gmsh, b3dt, feat)
   cavity_re1000    lid-driven cavity, Re 1000 vs Ghia (slow; OpenFOAM)
@@ -382,6 +384,27 @@ def _cases() -> dict:
                              ("transverse force / axial force (sign and size; 1D estimate (d1-d2)/(d1+d2) = 0.82)", 0.82,
                               r["porous"]["bed"]["force_on_fluid_N"][1] / r["porous"]["bed"]["force_on_fluid_N"][0], {"tol": 0.25})],
         "ref": False, "needs": []}
+    # a porous slab across a 2D external domain (slip sides, so the flow through it is uniform); the part, a post
+    # downstream, is slip, so the part's drag is the slab's reaction alone (2026.10.28.2): dp x A
+    dps = 0.05 * (1e-3 * 1e6 * 1.0 + 0.5 * 1.0 * 100 * 1.0 ** 2)          # 52.5 Pa; A = 200 x 10 mm
+    C["porous_slab_external"] = {
+        "study": {"geometry": {"cylinder": [5, 10]}, "domain": {"kind": "external", "box": [-400, -100, 0, 400, 100, 10]},
+                  "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3}, "model": "laminar",
+                  "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 1.0},
+                          {"kind": "outlet", "faces": {"box": "xmax"}},
+                          {"kind": "slip", "name": "sides", "faces": {"box": ["ymin", "ymax"]}},
+                          {"kind": "slip", "name": "post", "faces": {"all": True}}],
+                  "porous": [{"name": "slab", "region": {"box": [-250, -110, -1, -200, 110, 11]}, "darcy": 1e6,
+                              "forchheimer": 100}],
+                  "mesh": {"size": 10, "refine": [{"box": [-270, -100, 0, -180, 100, 10], "size": 2.5}]},
+                  "solve": {"iterations": 3000, "residual": 1e-7},
+                  "reference": {"velocity": 1.0, "area": 2000}},
+        "checks": lambda r: [("part drag = the slab's dp x A (2 %)", r["porous"]["slab"]["pressure_drop_Pa"] * 2e-3,
+                              r["forces"]["part"]["fx"], {"tol": 0.02}),
+                             ("part drag = L (mu d U + rho f U^2 / 2) x A", dps * 2e-3, r["forces"]["part"]["fx"], {"tol": 0.05}),
+                             ("walls only: nothing (the post is slip)", 0.0, r["coefficients"]["cd_walls_only"], {"abs": 1e-6}),
+                             ("momentum balance with the porous force", 0.0, r["checks"]["momentum_balance"]["error"], {"abs": 1e-3})],
+        "ref": False, "needs": ["gmsh"]}
     C["chain_thermal"] = {"study": None, "chain": "thermal", "ref": False,
                           "needs": ["gmsh", "build123d_translator", "fea_translator"]}
     C["chain_plate"] = {"study": None, "chain": True, "ref": False, "needs": ["gmsh", "build123d_translator", "fea_translator"]}

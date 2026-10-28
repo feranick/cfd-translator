@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.28.1
+Version: 2026.10.28.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -454,6 +454,30 @@ def status(request: str, wait: float = 0.0, detail: str = "full") -> dict:
         time.sleep(2.0)
 
 
+def reprocess(request: str, studies: list[str] | None = None) -> dict:
+    """Results again for the finished studies of a request (all, or those named), from their cases, with the
+    current post-processing: no solving. Running or failed studies are skipped."""
+    from .runner import reprocess_study
+    folder = Path(request).expanduser().resolve()
+    root = out_root().resolve()
+    if root not in folder.parents or not (folder / "request.json").is_file():
+        return {"error": f"no request {folder} under {root}"}
+    names = json.loads((folder / "request.json").read_text())["names"]
+    if studies:
+        bad = [n for n in studies if n not in names]
+        if bad:
+            return {"error": f"not in this request: {bad}", "studies": names}
+        names = [n for n in names if n in studies]
+    out = {}
+    for n in names:
+        try:
+            out[n] = reprocess_study(folder / n, n)
+        except Exception as exc:  # noqa: BLE001
+            out[n] = {"name": n, "ok": False, "why": f"{type(exc).__name__}: {exc}"}
+    return {"request": str(folder), "translator": __version__, "studies": out,
+            "next": "study_status(request) gives the new results"}
+
+
 def brief(r: dict) -> dict:
     """A study result in a few lines: verdict, warnings, the main numbers, mesh size and layers, timing."""
     if not isinstance(r, dict) or "results" not in r:
@@ -467,7 +491,8 @@ def brief(r: dict) -> dict:
             keep[k] = res[k]
     if isinstance(keep.get("coefficients"), dict):
         keep["coefficients"] = {k: v for k, v in keep["coefficients"].items()
-                                if k in ("cd", "cl", "cm", "cd_std", "cl_std", "cd_last", "averaged_over")}
+                                if k in ("cd", "cl", "cm", "cd_std", "cl_std", "cd_last", "averaged_over",
+                                         "cd_walls_only")}
     if "flow" in res:
         keep["flow"] = {b: {k: v for k, v in f.items() if k in ("Q", "mdot", "U_mean")} for b, f in res["flow"].items()}
     if "forces" in res:

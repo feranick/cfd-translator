@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfd-translator"
-version = "2026.10.28.1"
+version = "2026.10.28.2"
 description = "CFD studies (geometry, fluid, boundary conditions on faces) to OpenFOAM cases and checked results; MCP server"
 readme = "README.md"
 requires-python = ">=3.10"

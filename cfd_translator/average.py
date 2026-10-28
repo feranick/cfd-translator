@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.22.4
+Version: 2026.10.28.2
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -121,6 +121,12 @@ fields          (p total(p));"""))
     ref = study.get("reference") or {}
     if body and ref.get("velocity") and ref.get("area"):
         c = np.asarray(ref.get("cofr", [0, 0, 0]), float) * 1e-3
+        # porous zones held by the part (external flow): OpenFOAM adds their force on the media per step
+        # (forcesBase.C, porosity yes). It sums every zone, so only when all of them count on the part; otherwise
+        # average_results adds the included ones' reaction from the mean fields as a constant
+        pz = plan.get("porous") or {}
+        external = (study.get("domain") or {}).get("kind") == "external"
+        por = bool(pz) and external and all(z.get("on_part", True) for z in pz.values())
         funcs.append(_fo("cfdtF_body", f"""
 type            forces;
 libs            ("libforces.so");
@@ -130,9 +136,9 @@ log             false;
 patches         ({' '.join(body)});
 rho             rhoInf;
 rhoInf          {rho:.12g};
-pRef            0;
+pRef            0;{chr(10) + "porosity        yes;" if por else ""}
 CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
-        mon["forces"] = {"fo": "cfdtF_body", "patches": list(body)}
+        mon["forces"] = {"fo": "cfdtF_body", "patches": list(body), "porosity": por}
     for zn, zp in (plan.get("zones") or {}).items():
         if not zp.get("rotating_walls"):
             continue
@@ -234,19 +240,22 @@ def _moment_series(case: Path, fo: str):
     return None
 
 
-def _force_series(case: Path, fo: str):
+def _force_series(case: Path, fo: str, porous_scale: float = 1.0):
     """Total force (x, y, z) per iteration from a forces function object (force.dat/forces.dat: total first,
-    or pressure + viscous (+ porous) parts)."""
+    or pressure + viscous (+ porous) parts). porous_scale multiplies the porous part: OpenFOAM writes it with the
+    porosity model's rhoRef, 1 in an incompressible case, so there it is kinematic (scale rho)."""
     got = read_monitor(case, fo, "force")
     if got is None:
         return None
     its, header, vals = got
     if any("total" in h.lower() for h in header) or vals.shape[1] == 3:
         return its, vals[:, :3]
-    if vals.shape[1] in (6, 9):                    # pressure, viscous (, porous)
-        return its, sum(vals[:, 3 * k:3 * k + 3] for k in range(vals.shape[1] // 3))
+    if vals.shape[1] == 6:                         # pressure, viscous
+        return its, vals[:, 0:3] + vals[:, 3:6]
+    if vals.shape[1] == 9:                         # pressure, viscous, porous
+        return its, vals[:, 0:3] + vals[:, 3:6] + porous_scale * vals[:, 6:9]
     if vals.shape[1] >= 18:                        # forces(p v porous) moments(p v porous) in one file
-        return its, vals[:, 0:3] + vals[:, 3:6] + vals[:, 6:9]
+        return its, vals[:, 0:3] + vals[:, 3:6] + porous_scale * vals[:, 6:9]
     if vals.shape[1] >= 12:
         return its, vals[:, 0:3] + vals[:, 3:6]
     return None
@@ -462,12 +471,24 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     # drag and lift coefficients from the forces on the body
     fm = mon.get("forces")
     co = res.get("coefficients") or {}
+    porous_note = None
     if fm and co.get("q_Pa") and co.get("area_m2"):
-        got = _force_series(case, fm["fo"])
+        got = _force_series(case, fm["fo"], 1.0 if plan.get("energy") else rho)
         if got is None:
             warns.append(f"averaging: no force history (postProcessing/{fm['fo']}); final-iteration coefficients kept")
         else:
             its, Fh = got
+            inc = ((res.get("forces") or {}).get("part") or {}).get("porous_included") or []
+            if inc and fm.get("porosity"):
+                porous_note = "per step (OpenFOAM's forces with porosity)"
+            elif inc:
+                # the monitor holds the walls only (a zone left off the part, or a run from before 2026.10.28.2):
+                # add the reaction of the zones on the part from the (mean) fields, as a constant
+                pz = res["forces"]["porous"]
+                Fh = Fh + sum(np.array([pz[zn]["fx"], pz[zn]["fy"], pz[zn]["fz"]], float) for zn in inc)
+                porous_note = ("added as a constant: the reaction from the " + ("mean " if tr else "") +
+                               "fields (the force monitor held the walls only), so its own fluctuation is not in "
+                               "min, max, std or the standard error")
             d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
             qa = float(co["q_Pa"]) * float(co["area_m2"])
             cd_ref = co.get("cd")
@@ -551,6 +572,8 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
         block = {"basis": "mean over the window (the last iterations); *_last in the results are the final iteration",
                  "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
                  "quantities": stats, "iterations_recorded": total}
+    if porous_note:
+        block["porous_zones"] = porous_note
     if "cd" in series:                               # coefficient history, at most 200 points, for plots
         its, cd = series["cd"]
         k = max(1, len(its) // 200)

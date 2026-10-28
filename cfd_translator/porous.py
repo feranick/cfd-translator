@@ -1,5 +1,5 @@
 """porous.py — porous zones: packed beds, catalyst monoliths, filters and screens (Darcy-Forchheimer).
-Version: 2026.10.21.2
+Version: 2026.10.28.2
 
 A porous zone is the set of cells whose centres lie in a region (box, cylinder, sphere). The fluid there feels
 a resistance per unit volume  -(mu d + 1/2 rho |U| f) U  with d (1/m2) and f (1/m) given along the zone's axes
@@ -18,7 +18,14 @@ the kinematic (incompressible) momentum equation rhoRef must stay 1; for the flu
     build_zones(study, mesh, plan)              cells per zone into mesh.zones and plan["porous"]
     fv_model_entries(plan, energy)              constant/fvModels entries
     momentum_source(plan, mesh, U) -> (n, 3)    force of the zones on the fluid per cell (N), for the balance
+    reactions(plan, mesh, U, cofr) -> {zone: {F, M, on_part, at}}   the reaction on what holds each zone
     results(study, mesh, plan, fields, out, warns)
+
+A zone's reaction (= -force on the fluid) acts on whatever holds the medium: in external flow it counts as a force
+on the part (forces.part, coefficients, feat_loads) unless the zone says "on_part": false (a separate screen, a fan
+not attached to the part). OpenFOAM's forces function object adds it per time step with `porosity yes` (OpenFOAM
+14, forcesBase.C: porosityModel::force = V rhoRef (alpha + beta |U|) U, the force on the medium; rhoRef is 1 in the
+incompressible equation, so those columns are kinematic there).
 """
 from __future__ import annotations
 
@@ -48,9 +55,11 @@ def validate(st: dict, errs: list) -> None:
         if not isinstance(z, dict):
             errs.append(f"{w}: {{name, region, darcy/forchheimer | ergun | monolith}}")
             continue
-        bad = set(z) - {"name", "region", "darcy", "forchheimer", "ergun", "monolith", "axes"}
+        bad = set(z) - {"name", "region", "darcy", "forchheimer", "ergun", "monolith", "axes", "on_part"}
         if bad:
             errs.append(f"{w}: unknown keys {sorted(bad)}")
+        if "on_part" in z and not isinstance(z["on_part"], bool):
+            errs.append(f"{w}.on_part: true (default: its reaction counts as a force on the part) or false")
         n = z.get("name")
         if not isinstance(n, str) or not n.replace("_", "").isalnum() or not n[:1].isalpha():
             errs.append(f"{w}.name: letters, digits, _ (starting with a letter)")
@@ -172,7 +181,7 @@ def build_zones(study: dict, mesh, plan: dict) -> None:
         d, f, how = coefficients(z)
         plan["porous"][z["name"]] = {"cells": int(len(cells)), "volume_mm3": float(g["V"][cells].sum()),
                                      "darcy_1_m2": d.tolist(), "forchheimer_1_m": f.tolist(), "from": how,
-                                     "axes": _axes(z).tolist()}
+                                     "axes": _axes(z).tolist(), "on_part": bool(z.get("on_part", True))}
 
 
 def _alpha_beta(zp: dict, nu: float) -> tuple[np.ndarray, np.ndarray]:
@@ -218,6 +227,31 @@ def momentum_source(plan: dict, mesh, U: np.ndarray) -> np.ndarray | None:
         fl = -(al + be * mag) * ul
         F[cells] = rho * (fl @ E) * V[cells][:, None]
     return F
+
+
+def on_part(plan: dict, study: dict | None = None) -> dict:
+    """{zone: counts on the part} (the plan's flag; older plans: the study's, else true)."""
+    zs = {z["name"]: z for z in (study or {}).get("porous") or [] if isinstance(z, dict) and "name" in z}
+    return {n: bool(zp.get("on_part", zs.get(n, {}).get("on_part", True))) for n, zp in (plan.get("porous") or {}).items()}
+
+
+def reactions(plan: dict, mesh, U: np.ndarray, cofr: np.ndarray, study: dict | None = None) -> dict:
+    """Per zone: the reaction on what holds it, F (N) = -(force on the fluid), its moment M (N m) about cofr (m),
+    on_part, and the zone's centroid 'at' (mm)."""
+    F = momentum_source(plan, mesh, U)
+    if F is None:
+        return {}
+    g = mesh.geometry()
+    flags = on_part(plan, study)
+    out = {}
+    for name in plan["porous"]:
+        cells = mesh.zones[name]
+        R = -F[cells]
+        r = g["C"][cells] * SCALE - np.asarray(cofr, float)
+        V = g["V"][cells]
+        out[name] = {"F": R.sum(axis=0), "M": np.cross(r, R).sum(axis=0), "on_part": flags[name],
+                     "at": (g["C"][cells] * V[:, None]).sum(axis=0) / V.sum()}
+    return out
 
 
 def results(study: dict, mesh, plan: dict, fields: dict, out: dict, warns: list) -> None:

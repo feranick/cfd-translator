@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.28.1
+Version: 2026.10.28.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -100,7 +100,8 @@ CONVENTIONS = [
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
     "Results: flow.<bc>.Q (m3/s, + into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total (flow-weighted); "
     "pressure_drop (inlet - outlet static), total_pressure_drop, head_loss_m (use it for losses); "
-    "forces.<wall bc>.fx/fy/fz (N, on the wall) and mx/my/mz about reference.cofr; forces.part (external); "
+    "forces.<wall bc>.fx/fy/fz (N, on the wall) and mx/my/mz about reference.cofr; forces.part (external; porous zones' "
+    "reactions count on the part unless on_part: false: forces.porous, cd_walls_only); "
     "coefficients.cd/cl (reference.velocity, area); probes; max_velocity; wall_shear; y_plus; feat_loads "
     "(external: fea-translator bcs per part face); checks.",
     "energy: true solves temperature (OpenFOAM fluid, to transonic): air a perfect gas, water constant density; "
@@ -171,7 +172,7 @@ STUDY_KEYS = {
     "age": "true | {Sc, Sct}: mean age of fluid (s); results.age: mean_residence_time_s, V_over_Q_s, dead zones",
     "porous": "[{name, region: {box: [x0,y0,z0,x1,y1,z1]} | {cylinder: {center, axis, radius, span}} | {sphere: "
               "{center, radius}} (mm), darcy 1/m2, forchheimer 1/m (number | [e1,e2,e3]) | ergun: {particle_diameter mm, "
-              "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]]}]; results.porous",
+              "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]], on_part}]; results.porous",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers", "mesher", "surface", "features",
              "gap", "quality", "max_cells", "optimize"}

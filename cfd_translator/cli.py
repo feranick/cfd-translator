@@ -12,6 +12,7 @@ Version: 2026.10.25.3
     cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
     cfdt jobs [--limit N] [--active]     recent requests with SLURM jobs, their states; the queue
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
+    cfdt reprocess REQUEST [NAMES...]    results again from finished cases (current post-processing, no solve)
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
 
 '-' reads the studies from stdin.
@@ -54,6 +55,9 @@ def main(argv=None) -> None:
     p = sub.add_parser("cancel")
     p.add_argument("request")
     p.add_argument("names", nargs="*")
+    p = sub.add_parser("reprocess", help="results again from finished cases, without solving")
+    p.add_argument("request")
+    p.add_argument("names", nargs="*")
     p = sub.add_parser("run-study")
     p.add_argument("request")
     p.add_argument("name")
@@ -80,6 +84,8 @@ def main(argv=None) -> None:
         out = api.jobs(a.limit, a.active)
     elif a.cmd == "cancel":
         out = api.cancel(a.request, a.names or None)
+    elif a.cmd == "reprocess":
+        out = api.reprocess(a.request, a.names or None)
     elif a.cmd == "images":
         out = api.render_images(a.folder, _load(a.images) if a.images else True)
     else:

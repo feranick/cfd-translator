@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.21.1
+Version: 2026.10.28.2
 
     results(study, mesh, plan, fields) -> dict
 
@@ -218,12 +218,22 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             yplus[nm] = rec_y
         probes_X.append(g["Cf"][f])
         probes_V.append(np.column_stack([Ub, pb] + ([Tb - 273.15] if en else [])))
-    # totals over walls
-    if wall_faces:
+    # porous zones: the reaction on what holds each medium (porous.py); external flow counts it on the part
+    from .porous import reactions
+    por = reactions(plan, mesh, Uc, cofr, study)
+    if por:
+        out["forces"]["porous"] = {zn: {**_vec3(z["F"]), **_vec3(z["M"], "m"),
+                                        "on_part": bool(z["on_part"] and external)} for zn, z in por.items()}
+    inc = [zn for zn, z in por.items() if z["on_part"]] if external else []
+    # totals over walls (and, external flow, the porous reactions on the part)
+    if wall_faces or inc:
         tags = mesh.btag
-        allF = np.concatenate([F for _, F, _ in wall_faces])
-        allf = np.concatenate([f for f, _, _ in wall_faces])
-        allr = np.concatenate([r for _, _, r in wall_faces])
+        if wall_faces:
+            allF = np.concatenate([F for _, F, _ in wall_faces])
+            allf = np.concatenate([f for f, _, _ in wall_faces])
+            allr = np.concatenate([r for _, _, r in wall_faces])
+        else:
+            allF, allf, allr = np.zeros((0, 3)), np.zeros(0, int), np.zeros((0, 3))
         if external:
             ptags = {t for t, i in mesh.tag_info.items() if i.get("on") == "part"}
             sel = np.isin(tags[allf - ni], list(ptags))
@@ -231,8 +241,14 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         else:
             sel = np.ones(len(allf), bool)
             key = "all_walls"
-        Fsum = allF[sel].sum(axis=0)
-        out["forces"][key] = {**_vec3(Fsum), **_vec3(np.cross(allr[sel], allF[sel]).sum(axis=0), "m")}
+        Fw = allF[sel].sum(axis=0)
+        Mw = np.cross(allr[sel], allF[sel]).sum(axis=0)
+        Fpz = sum((por[zn]["F"] for zn in inc), np.zeros(3))
+        Mpz = sum((por[zn]["M"] for zn in inc), np.zeros(3))
+        Fsum, Mt = Fw + Fpz, Mw + Mpz
+        out["forces"][key] = {**_vec3(Fsum), **_vec3(Mt, "m")}
+        if inc:
+            out["forces"][key].update(walls={**_vec3(Fw), **_vec3(Mw, "m")}, porous_included=inc)
         # coefficients
         if ref.get("velocity") and ref.get("area"):
             q = 0.5 * rho * float(ref["velocity"]) ** 2
@@ -252,12 +268,16 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                 z = np.array([0, 0, 1.0])
                 l = z - (z @ d) * d
                 l = _unit(l) if np.linalg.norm(l) > 1e-6 else np.array([0, 1.0, 0])
-            out["coefficients"] = {"cd": _r(Fsum @ d / (q * Aref)), "cl": _r(Fsum @ l / (q * Aref)),
-                                   "drag_dir": _r(d), "lift_dir": _r(l), "q_Pa": _r(q), "area_m2": _r(Aref)}
+            co = {"cd": _r(Fsum @ d / (q * Aref)), "cl": _r(Fsum @ l / (q * Aref))}
+            if inc:                     # the walls alone, as cfdt reported before 2026.10.28.2
+                co.update(cd_walls_only=_r(Fw @ d / (q * Aref)), cl_walls_only=_r(Fw @ l / (q * Aref)))
+            co.update(drag_dir=_r(d), lift_dir=_r(l), q_Pa=_r(q), area_m2=_r(Aref))
             if ref.get("length"):
                 Lr = float(ref["length"]) * SCALE
-                Mt = np.cross(allr[sel], allF[sel]).sum(axis=0)
-                out["coefficients"]["cm"] = _r(Mt @ np.cross(d, l) / (q * Aref * Lr))
+                co["cm"] = _r(Mt @ np.cross(d, l) / (q * Aref * Lr))
+                if inc:
+                    co["cm_walls_only"] = _r(Mw @ np.cross(d, l) / (q * Aref * Lr))
+            out["coefficients"] = co
         # loads for fea-translator (external flow: one force per part face)
         if external:
             from .select import mesh_groups
@@ -269,9 +289,21 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                 total += Ft
                 loads.append({"kind": "force", "name": f"cfd_{t}", "faces": {"pts": [groups.groups[t].point_on()]},
                               **_vec3(Ft)})
-            out["feat_loads"] = {"bcs": loads, "total": _r(total),
-                                 "note": "fea-translator force bcs (N) on the same part: add supports; "
-                                         "each face's total fluid force (pressure + shear), spread uniformly"}
+            note = ("fea-translator force bcs (N) on the same part: add supports; each face's total fluid force "
+                    "(pressure + shear), spread uniformly")
+            if inc:
+                # a porous zone's reaction goes where the medium is held: here the part face nearest to its centroid
+                pf = [t for t in groups.groups if t in ptags]
+                for zn in inc:
+                    at = por[zn]["at"]
+                    if pf:
+                        t = min(pf, key=lambda t_: float(np.min(np.linalg.norm(groups.groups[t_].Cf - at, axis=1))))
+                        loads.append({"kind": "force", "name": f"cfd_porous_{zn}",
+                                      "faces": {"pts": [groups.groups[t].point_on()]}, **_vec3(por[zn]["F"])})
+                    total += por[zn]["F"]
+                note += ("; cfd_porous_<zone>: the porous zone's reaction, put on the part face nearest to the zone "
+                         "(move it to the faces that hold the medium)")
+            out["feat_loads"] = {"bcs": loads, "total": _r(total), "note": note}
     # pressure drop
     kinds = {n: v["kind"] for n, v in plan["patches"].items()}
     ins = [n for n, k in kinds.items() if k == "inlet"]
@@ -458,6 +490,16 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
               **({"energy_balance": energy_check} if en else {}),
               "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(ang_scale), "error": _r(ang_err),
                                            "about": _r(cofr / SCALE)}}
+    if por:
+        # the balance above already holds the porous source: inflow - outflow of momentum = wall and boundary forces +
+        # the media's reactions. Say which reactions the part's forces hold, and flag those left out
+        checks["momentum_balance"]["porous_reaction_N"] = _r(sum((z["F"] for z in por.values()), np.zeros(3)))
+        if external:
+            out_ = [zn for zn, z in por.items() if not z["on_part"]]
+            checks["porous_on_part"] = {"included": inc, "excluded": out_}
+            for zn in out_:
+                warns.append(f"porous zone {zn!r} (on_part: false): its reaction {_r(por[zn]['F'], 4)} N is not in the "
+                             "part's forces or coefficients")
     if visc_cmp[0] > 0:
         checks["wall_shear_vs_ours"] = _r(visc_cmp[1] / visc_cmp[0])
         # our estimate leaves out OpenFOAM's dev2(T(grad U)) term, which is not small on tetrahedra (~20 %
