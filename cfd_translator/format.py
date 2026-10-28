@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.28.2
+Version: 2026.10.28.3
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -78,9 +78,8 @@ SELECTOR_DOC = {
 CONVENTIONS = [
     "Units: geometry, coordinates, mesh sizes, areas in mm (mm2); velocity m/s; pressure Pa; density kg/m3; "
     "viscosity Pa s; flow rate m3/s (or L/min with flow_rate_lpm); forces N; moments N m.",
-    "One study is one steady incompressible flow (OpenFOAM incompressibleFluid, SIMPLE). The geometry is a "
-    "build123d-translator goal, a STEP file (mm), a box [lx, ly, lz], a cylinder [r, h] or an annulus [r_in, r_out, h] (axis Z), all with "
-    "the base on z = 0 and centred in X/Y.",
+    "The geometry is a build123d-translator goal, a STEP file (mm), a box [lx, ly, lz], a cylinder [r, h] or an "
+    "annulus [r_in, r_out, h] (axis Z), base on z = 0, centred in X/Y.",
     "domain internal (default): the geometry is the fluid (a channel, a manifold). external: the fluid is the "
     "domain box [x0, y0, z0, x1, y1, z1] minus the geometry (flow around a part).",
     "Faces are chosen with the part's own selectors (as in build123d-translator and fea-translator; for external "
@@ -95,7 +94,7 @@ CONVENTIONS = [
     "tetrahedra, or extrude n prisms along Z (2d: 1) with quads and layers. mesher snappy (3D, aero): hexes of size, "
     "surface mm on the part ([finest, coarsest], size/8), features (sharp edges), gap (extra levels in narrow gaps, 1), "
     "layers on the part's walls (or layers.on, e.g. a ground) with coverage and y+ estimate in mesh.layers; zones "
-    "snapped; part faces on a domain side (half model) are cut there; failing checkMesh: remade stricter. refine: "
+    "snapped; part faces on a domain side (half model) are cut there. refine: "
     "[{size, and at + r | box | cylinder {center, axis, radius, span} | distance (mm from the part)}].",
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
     "Results: flow.<bc>.Q (m3/s, + into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total (flow-weighted); "
@@ -112,10 +111,9 @@ CONVENTIONS = [
     "Pumps, fans: a rotating zone (MRF) around the impeller, its faces a wall with rotation: the zone's name. "
     "Results: rotating.<zone>.torque_Nm, power_W; with an inlet and an outlet pump.head_m, efficiency.",
     "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
-    "torque, total pressures, part forces per iteration; results.averaged: mean, std, drift, scatter over the last "
-    "25 % (>= 500 its); the means replace torque, power, head, total_pressure_drop, cd, cl (*_last: the final "
-    "iteration). settled (drift < 1 %, scatter < 2 %) counts as converged; transient: drift < 2 %, standard error "
-    "< 1 %.",
+    "results.averaged: mean, std, drift, scatter of torque, total pressures, cd, cl over the last 25 % (>= 500 "
+    "its); the means replace the results (*_last: the final iteration). settled (drift < 1 %, scatter < 2 %; "
+    "transient: drift < 2 %, standard error < 1 %) counts as converged.",
     "reliable: false (with reasons) when the solver neither converged nor settled, or a balance is off: do not "
     "report the numbers; rerun with more iterations, lower relax or a better mesh.",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
@@ -146,27 +144,24 @@ STUDY_KEYS = {
             "max_cells, optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
-             "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs}: "
-             "time-averaged results (cd mean/min/max, frequency_Hz, strouhal), continues over SLURM jobs; needed by "
-             "kOmegaSSTDES}",
+             "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs, "
+             "continue}: time averages; needed by kOmegaSSTDES}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis}]: MRF zones",
-    "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0, a1, b0, b1]} "
-              "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high (VTK, lit)} | "
-              "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,y0,y1,z0,z1], view} (VTK)]"
-              ", clim: [lo, hi] | full "
-              "| robust: PNGs (get_image; render_images makes more)",
+    "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0,a1,b0,b1]} "
+              "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high} | "
+              "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,..,z1], view}], "
+              "clim: [lo, hi]|full|robust: PNGs (get_image; render_images)",
     "energy": "true: solve temperature (see conventions); default false",
-    "conditions": "{p (Pa absolute, 101325), T (degrees C, 20)}: operating pressure (gauge pressures are relative to "
-                  "it) and initial/ambient temperature (energy)",
+    "conditions": "{p (Pa absolute, 101325), T (C, 20)}: operating pressure, initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
     "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
     "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
                    "'variants'); or variants: {suffix: {changes}}",
-    "analysis": "steady (the only one for now)",
+    "analysis": "steady",
     "scalars": "[{name, inlets: {<inlet bc>: value} (others 0), Sc (1) | diffusivity m2/s, Sct (0.7)}]: passive "
                "tracers (mixing); results.scalars.<name>.outlets.<bc>.mean/mixing_index, volume_mean",
     "age": "true | {Sc, Sct}: mean age of fluid (s); results.age: mean_residence_time_s, V_over_Q_s, dead zones",
