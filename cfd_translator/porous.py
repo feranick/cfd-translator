@@ -1,5 +1,5 @@
 """porous.py — porous zones: packed beds, catalyst monoliths, filters and screens (Darcy-Forchheimer).
-Version: 2026.10.28.2
+Version: 2026.10.28.4
 
 A porous zone is the set of cells whose centres lie in a region (box, cylinder, sphere). The fluid there feels
 a resistance per unit volume  -(mu d + 1/2 rho |U| f) U  with d (1/m2) and f (1/m) given along the zone's axes
@@ -298,6 +298,54 @@ def results(study: dict, mesh, plan: dict, fields: dict, out: dict, warns: list)
                 gamma = 1 - float((np.abs(un[m] - ubar) * A[m]).sum()) / (2 * ubar * float(A[m].sum())) if ubar > 0 else None
                 rec.update({"pressure_drop_Pa": _r(p_in - p_out), "flow_in_m3s": _r(qin.sum()),
                             "uniformity_index_out": _r(gamma)})
+                # the same reaction two other ways (2026.10.28.4): per unit frontal area (the inflow faces projected
+                # on the reaction's direction), and from the zone's faces: the pressure on them and the momentum
+                # carried through them (and through any boundary faces of zone cells). A 1D zone gives
+                # pressure_drop_Pa = pressure_drop_from_force_Pa and face balance = reaction
+                R = -F[cells].sum(axis=0)
+                nR = float(np.linalg.norm(R))
+                if nR > 0:
+                    e = R / nR
+                    A_front = float(np.abs(Sz[qin > 0] @ e).sum())
+                    rec["frontal_area_m2"] = _r(A_front)
+                    if A_front > 0:
+                        rec["pressure_drop_from_force_Pa"] = _r(nR / A_front)
+                Cc, Cf = g["C"], g["Cf"][:ni][edge]
+                do = np.linalg.norm(Cf - Cc[fo], axis=1)
+                dn = np.linalg.norm(Cf - Cc[fn], axis=1)
+                wf = (dn / np.maximum(do + dn, 1e-300))[:, None]
+                p_f = wf[:, 0] * p_pa[fo] + (1 - wf[:, 0]) * p_pa[fn]
+                U_f = wf * U[fo] + (1 - wf) * U[fn]
+                rho_c = np.asarray(fields["rho"], float) if en and fields.get("rho") is not None else \
+                    np.full(mesh.ncells, float(en["rho"]) if en else float(plan["rho"]))
+                rho_f = wf[:, 0] * rho_c[fo] + (1 - wf[:, 0]) * rho_c[fn]
+                Pz = -(p_f[:, None] * Sz).sum(axis=0)                       # pressure of the surroundings on it
+                Mz = (rho_f[:, None] * U_f * np.einsum("ij,ij->i", U_f, Sz)[:, None]).sum(axis=0)   # momentum out
+                for P in mesh.patches:
+                    pf_ = fields["patches"].get(P["name"]) or {}
+                    if P["type"] == "empty" or pf_.get("p") is None:
+                        continue
+                    fb = np.arange(P["start"], P["start"] + P["n"])
+                    m = inz[mesh.owner[fb]]
+                    if not m.any():
+                        continue
+                    Sb = g["Sf"][fb[m]] * SCALE ** 2
+                    pb = np.asarray(pf_["p"], float)[m]
+                    pb = pb - en["p_op"] if en else pb * plan["rho"]
+                    Ub = np.asarray(pf_["U"], float).reshape(-1, 3)[m]
+                    Pz -= (pb[:, None] * Sb).sum(axis=0)
+                    Mz += (rho_c[mesh.owner[fb[m]]][:, None] * Ub * np.einsum("ij,ij->i", Ub, Sb)[:, None]).sum(axis=0)
+                Rcv = Pz - Mz
+                rec["face_balance"] = {"pressure_N": _r(Pz), "momentum_out_N": _r(Mz), "reaction_N": _r(Rcv),
+                                       "vs_force": _r(float(np.linalg.norm(Rcv - R)) / nR) if nR > 0 else None}
+                dpf = rec.get("pressure_drop_from_force_Pa")
+                if dpf and abs((p_in - p_out) - dpf) > 0.15 * dpf:
+                    warns.append(
+                        f"porous zone {name!r}: the pressure drop measured beside it ({p_in - p_out:.4g} Pa) and the "
+                        f"one its force implies over its frontal area ({dpf:.4g} Pa) differ; its faces' balance gives "
+                        f"{float(Rcv @ (R / nR)):.4g} N against the force's {nR:.4g} N. The force is what the solver "
+                        "applied (it is in forces.part); trust pressure_drop_Pa only when they agree (refine across "
+                        "the zone; transient: mean fields lack the Reynolds stresses)")
         # cells on the zone's faces: OpenFOAM's collocated grid makes their velocity dip, so the resistance and the
         # pressure drop come out low (porous_channel_1d on mochi: -2.6 % with 2 of every 20 cells along the flow)
         if edge.any():

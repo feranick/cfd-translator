@@ -58,6 +58,23 @@ def test_the_reaction_is_the_part_drag_and_equals_dp_times_area(tmp_path):
     assert mb["error"] < 1e-6 and mb["porous_reaction_N"][0] == pytest.approx(DP * A)
     assert res["checks"]["porous_on_part"] == {"included": ["bed"], "excluded": []}
     assert res["feat_loads"]["total"][0] == pytest.approx(DP * A)       # no part face to carry it here
+    # the reaction two other ways: per frontal area, and from the pressure and momentum through the zone's faces
+    pz = res["porous"]["bed"]
+    assert pz["frontal_area_m2"] == pytest.approx(A) and pz["pressure_drop_from_force_Pa"] == pytest.approx(DP)
+    assert pz["face_balance"]["vs_force"] < 0.01 and pz["face_balance"]["reaction_N"][0] == pytest.approx(DP * A, rel=0.01)
+    assert not any("differ" in w for w in warns)
+
+
+def test_a_pressure_drop_that_does_not_match_the_force_is_flagged(tmp_path):
+    st, mesh, plan, fields = _setup(tmp_path)
+    flat = dict(fields, p=np.zeros(mesh.ncells),
+                patches={n: dict(v, p=np.zeros(len(v["p"]))) for n, v in fields["patches"].items()})
+    res, warns = results(st, mesh, plan, flat)
+    pz = res["porous"]["bed"]
+    assert pz["pressure_drop_Pa"] == 0 and pz["pressure_drop_from_force_Pa"] == pytest.approx(DP)
+    assert pz["face_balance"]["vs_force"] == pytest.approx(1, abs=1e-6)
+    assert any("'bed'" in w and "differ" in w for w in warns)
+    assert res["forces"]["part"]["fx"] == pytest.approx(DP * A)        # the drag keeps the applied force
 
 
 def test_on_part_false_leaves_it_out_with_a_warning(tmp_path):

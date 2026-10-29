@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.28.2
+Version: 2026.10.28.4
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
 
@@ -403,6 +403,8 @@ def _cases() -> dict:
                               r["forces"]["part"]["fx"], {"tol": 0.02}),
                              ("part drag = L (mu d U + rho f U^2 / 2) x A", dps * 2e-3, r["forces"]["part"]["fx"], {"tol": 0.05}),
                              ("walls only: nothing (the post is slip)", 0.0, r["coefficients"]["cd_walls_only"], {"abs": 1e-6}),
+                             ("the slab's faces (pressure, momentum) give its force", 0.0,
+                              r["porous"]["slab"]["face_balance"]["vs_force"], {"abs": 0.03}),
                              ("momentum balance with the porous force", 0.0, r["checks"]["momentum_balance"]["error"], {"abs": 1e-3})],
         "ref": False, "needs": ["gmsh"]}
     C["chain_thermal"] = {"study": None, "chain": "thermal", "ref": False,
