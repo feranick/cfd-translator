@@ -165,7 +165,19 @@ class PolyMesh:
             np.all(np.diff(self.owner[:ni] * (nc + 1) + self.neighbour) > 0)) if ni else True
         bvec = g["Cf"][ni:] - g["C"][self.owner[ni:]]
         outward = bool(np.all(np.einsum("ij,ij->i", bvec, Sf[ni:]) > 0))
+        bad = np.nonzero(nonorth > 70.0)[0] if ni else np.zeros(0, int)
+        worst = []
+        if len(bad):                               # a few places, worst first and apart from each other
+            top = bad[np.argsort(-nonorth[bad])][:5000]
+            Cf = g["Cf"][top]
+            sep = 0.03 * float(np.linalg.norm(self.points.max(axis=0) - self.points.min(axis=0)))
+            for k in range(len(top)):
+                if all(np.linalg.norm(Cf[k] - np.asarray(w["at"])) > sep for w in worst):
+                    worst.append({"at": [round(float(v), 1) for v in Cf[k]], "deg": round(float(nonorth[top[k]]), 1)})
+                    if len(worst) >= 5:
+                        break
         return {"cells": int(nc), "faces": int(self.nfaces), "internal_faces": int(ni), "points": int(len(self.points)),
+                "non_ortho_over_70": int(len(bad)), **({"worst_non_ortho": worst} if worst else {}),
                 "volume_mm3": float(V.sum()), "min_volume_mm3": float(V.min()) if nc else 0.0,
                 "max_open_cell": open_rel, "max_non_orthogonality": float(nonorth.max()) if ni else 0.0,
                 "mean_non_orthogonality": float(nonorth.mean()) if ni else 0.0,

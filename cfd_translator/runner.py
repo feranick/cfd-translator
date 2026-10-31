@@ -78,6 +78,14 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out["mesh"] = {k: v for k, v in plan["quality"].items()}
         out["mesh"].update({k: mesh.info[k] for k in ("kind", "size", "layers", "cells_2d", "quads_2d",
                                                        "boundary_layers_on", "cells_xyz", "snappy") if k in mesh.info})
+        q = plan["quality"]
+        if q.get("max_non_orthogonality", 0) > 80 and q.get("worst_non_ortho"):
+            gaps = ((mesh.info.get("snappy") or {}).get("narrow_gaps") or [])
+            warns.append(f"{q['non_ortho_over_70']} faces are more than 70 degrees non-orthogonal (worst "
+                         f"{q['max_non_orthogonality']:.1f}): " + "; ".join(f"{w['deg']} at {w['at']}" for w in q["worst_non_ortho"][:3])
+                         + " mm. The pressure solver crawls on such cells (three correctors, lower relaxation)"
+                         + (f"; the narrow gaps found are at {', '.join(str(g['at']) for g in gaps[:3])}" if gaps else "")
+                         + ". Refine or widen the gap there, or leave layers out of it (mesh.layers.on)")
         out["case"] = {"inlets": plan["inlets"], "schemes": plan["schemes"], "iterations": plan["iterations"],
                        "residual": plan["residual"], "relax": plan["relax"]}
         if solver == "ref":

@@ -422,8 +422,8 @@ def test_multiple_outside_loops_is_meshed_again_without_merging_faces(tmp_path, 
     mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
     assert len(calls) == 2 and "mergeFaces" not in calls[0] and "mergeFaces false;" in calls[1]
     assert any("mergeFaces false" in w for w in warns + mesh.info.get("notes", []) + [str(mesh.info)])
-    # internal flow: a point of the background box outside the part, so a leak stops snappyHexMesh
-    assert "outsidePoint (" in calls[0] and "insidePoint (" in calls[0]
+    # no outsidePoint: OpenFOAM 14 would then keep closed pockets (inside blades) and stop in zonify
+    assert "outsidePoint" not in calls[0] and "insidePoint (" in calls[0]
 
 
 def test_a_leak_to_the_background_box_is_explained(tmp_path, monkeypatch):
@@ -432,3 +432,25 @@ def test_a_leak_to_the_background_box_is_explained(tmp_path, monkeypatch):
     _stand_in(monkeypatch, tmp_path, lambda k, txt, case, logname: _good_mesh(case, logname, "background"))
     with pytest.raises(MeshError, match="the fluid leaks out of the part"):
         prepare(ST_BOX, tmp_path)
+
+
+def test_zone_edges_in_narrow_gaps_are_found():
+    cyl = {"name": "impeller", "shape": "cylinder", "p1": [36.5, 0, 0], "p2": [78.5, 0, 0], "radius": 176}
+    near = snappy._near_zone_edge
+    assert near(cyl, np.array([36.8, 100.0, 0.0]), 2.0)          # on the end plane x = 36.5, inside the radius
+    assert near(cyl, np.array([60.0, 0.0, 175.2]), 2.0)          # on the cylinder's side
+    assert not near(cyl, np.array([60.0, 0.0, 100.0]), 2.0)      # inside, away from the boundary
+    assert not near(cyl, np.array([36.8, 0.0, 200.0]), 2.0)      # beyond the radius, off the end plane
+    box = {"shape": "box", "box": [0, 0, 0, 10, 10, 10]}
+    assert near(box, np.array([5.0, 5.0, 9.5]), 1.0) and not near(box, np.array([5.0, 5.0, 5.0]), 1.0)
+
+
+def test_quality_says_where_the_worst_cells_are():
+    m = box_mesh(10, 10, 10, 4, 4, 4)
+    q = m.quality()
+    assert q["non_ortho_over_70"] == 0 and "worst_non_ortho" not in q
+    m.points = m.points.copy()
+    m.points[:, 0] += 4 * m.points[:, 1]                     # sheared: faces across y meet their cells at atan 4 = 76 deg
+    m._geo = None
+    q = m.quality()
+    assert q["non_ortho_over_70"] > 0 and q["worst_non_ortho"][0]["deg"] == pytest.approx(76.0, abs=0.1)

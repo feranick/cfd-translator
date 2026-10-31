@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.31.1
+Version: 2026.10.31.2
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -473,10 +473,10 @@ def _level_pair(a: int, b: int) -> str:
 
 def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zones: list, quality: dict,
                 layers_on: bool = True, outside_point=None, merge_faces: bool = True) -> str:
-    """regions: [(OBJ group, patch name, patch type)]; zones: [{name, shape, ..., level}]. outside_point (internal
-    flow): a point of the background box outside the part, so a leak stops snappyHexMesh instead of keeping the
-    box (OpenFOAM 14: outsidePoint, refinementParameters.C). merge_faces false: addLayersControls mergeFaces
-    false, after 'Multiple outside loops' (combineFaces, merging faces at narrow gaps)."""
+    """regions: [(OBJ group, patch name, patch type)]; zones: [{name, shape, ..., level}]. outside_point: not used
+    (with one, OpenFOAM 14 keeps every region but the outside one: see mesh_snappy). merge_faces false:
+    addLayersControls mergeFaces false, after 'Multiple outside loops' (combineFaces, merging faces at narrow
+    gaps)."""
     Lmin, Lmax = st["surface"]
     geo = [f"    {PART}\n    {{\n        type triSurface;\n        file \"{PART}.obj\";\n        regions\n        {{\n"]
     geo += [f"            {g} {{ name {n}; }}\n" for g, n, _ in regions]
@@ -645,6 +645,28 @@ def _read(path: Path) -> str:
 
 
 # ---- the whole path -----------------------------------------------------------------------------------
+def _near_zone_edge(z: dict, x: np.ndarray, tol: float) -> bool:
+    """Is point x (mm) within tol of zone z's boundary (box, sphere or cylinder from snappy's zone entries)?"""
+    if z.get("shape") == "cylinder":
+        p1, p2 = np.asarray(z["p1"], float), np.asarray(z["p2"], float)
+        a = p2 - p1
+        L = float(np.linalg.norm(a))
+        a = a / L
+        s_ = float((x - p1) @ a)
+        r = float(np.linalg.norm((x - p1) - s_ * a))
+        R = float(z["radius"])
+        side = abs(r - R) <= tol and -tol <= s_ <= L + tol
+        ends = r <= R + tol and (abs(s_) <= tol or abs(s_ - L) <= tol)
+        return side or ends
+    if z.get("shape") == "sphere":
+        return abs(float(np.linalg.norm(x - np.asarray(z["center"], float))) - float(z["radius"])) <= tol
+    if z.get("shape") == "box":
+        b = np.asarray(z["box"], float)
+        inside = np.all(x >= b[:3] - tol) and np.all(x <= b[3:] + tol)
+        return bool(inside and min(np.min(np.abs(x - b[:3])), np.min(np.abs(x - b[3:]))) <= tol)
+    return False
+
+
 def _gap_text(gaps: list) -> str:
     if not gaps:
         return "No narrow gaps were found between facing walls."
@@ -689,7 +711,10 @@ def mesh_snappy(study: dict, folder: Path):
     if health["nonmanifold_edges"]:
         notes.append(f"{health['nonmanifold_edges']} edges of the part's surface are shared by more than two faces "
                      "(bodies touching along a line): snappyHexMesh may pinch or leak there; fuse them or move them apart")
-    opt = None if external else (np.asarray(st["lo"], float) + st["h0"] * np.array([0.437, 0.519, 0.611])).tolist()
+    # no outsidePoint: with one, OpenFOAM 14 keeps every region but the outside point's (meshRefinement.C,
+    # findRegions), so closed pockets (inside blades, a hub) stay and zonify stops ('For region 1 haven't set cell
+    # zone', the pump on carbonio, 2026.10.31); a leak is still kept, since the inside point's region wins
+    opt = None
     dropped = {}
     if external:
         pts, surf, dropped, nn = cut_at_box(pts, surf, box, st["surface_mm"][0])
@@ -764,6 +789,16 @@ def mesh_snappy(study: dict, folder: Path):
     # gaps narrower than three of the finest cells snappyHexMesh may make there
     h_gap = st["h0"] / 2 ** (st["surface"][1] + st["gap"])
     gaps = narrow_gaps(pts, surf, external, 3 * h_gap)
+    zone_gap_text = ""
+    for z in zones:
+        near = [gp for gp in gaps if _near_zone_edge(z, np.asarray(gp["at"], float), 2 * max(h_gap, gp["width_mm"]))]
+        if near:
+            where = ", ".join(f"{gp['width_mm']} mm at {gp['at']}" for gp in near[:3])
+            msg = (f"the boundary of zone {z['name']!r} runs through narrow gaps ({where}): "
+                   "snappyHexMesh cannot close a zone inside a gap a few cells wide; move the zone's edge into open fluid "
+                   "or into the solid")
+            notes.append(msg)
+            zone_gap_text += msg[0].upper() + msg[1:] + ". "
     # files
     sd = folder / "snappy"
     if sd.exists():
@@ -831,9 +866,13 @@ def mesh_snappy(study: dict, folder: Path):
             if "Multiple outside loops" in text:
                 text += ("\n(cfdt: this happens where two walls are much closer than the surface cells: " +
                          _gap_text(gaps) + " Open such gaps to at least three surface cells, or close them.)")
-            elif opt is not None and re.search(r"outside|same region|leak", text, re.I):
-                text += ("\n(cfdt: the fluid region reaches the outside point, so the part's surface lets it leak out."
-                         + leak_hint + " " + _gap_text(gaps) + ")")
+            elif "haven't set cell zone" in text:
+                text += ("\n(cfdt: snappyHexMesh could not tell which side of a zone's boundary some cells are on: a "
+                         "rotating or porous zone whose edge runs through a gap narrower than the surface cells, or "
+                         "cells cut off between walls. " + zone_gap_text + " Put the zone's edges in open fluid or in "
+                         "the solid casing, or refine the gap.)")
+            elif leak_hint:
+                text += "\n(cfdt:" + leak_hint + ")"
             raise MeshError("snappyHexMesh stopped:\n" + text)
         foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
         from .foamio import parse_checkmesh
