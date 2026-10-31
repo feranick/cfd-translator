@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.25.5
+Version: 2026.10.31.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -142,6 +142,34 @@ def local_node() -> str | None:
         _NODES["local"] = hit
         _NODES["scontrol_nodes"] = len(recs)
     return hit
+
+
+def core_accounting() -> dict | None:
+    """Whether SLURM keeps a job's cores to itself: `scontrol show config` (SelectType, SelectTypeParameters)
+    and the partitions' OverSubscribe. {shared: bool, why, select, params, oversubscribe}; None when SLURM does
+    not say (asked again next time). Cores are shared when the select plugin is linear without CR_Core/CR_CPU
+    counting, when the parameters count only memory (CR_Memory), or when a partition oversubscribes."""
+    if "accounting" in _NODES:
+        return _NODES["accounting"]
+    rc, out, _ = _run(["scontrol", "show", "config"])
+    if rc != 0 or "SelectType" not in out:
+        return None
+    kv = dict(re.findall(r"^(\w+)\s*=\s*(.*?)\s*$", out, re.M))
+    sel, par = kv.get("SelectType", ""), kv.get("SelectTypeParameters", "")
+    rc2, out2, _ = _run(["scontrol", "-o", "show", "partition"])
+    over = sorted({m for m in re.findall(r"OverSubscribe=(\S+)", out2)}) if rc2 == 0 else []
+    why = []
+    counts = any(c in par.upper() for c in ("CR_CORE", "CR_CPU", "CR_SOCKET"))
+    if "linear" in sel and not counts:
+        why.append(f"SelectType {sel} gives whole nodes, but jobs here ask for cores")
+    elif not counts:
+        why.append(f"SelectTypeParameters {par or '(none)'} do not count cores or CPUs (CR_Core or CR_CPU)")
+    for o in over:
+        if o.upper().startswith(("YES", "FORCE")):
+            why.append(f"a partition has OverSubscribe={o}")
+    rec = {"shared": bool(why), "select": sel, "params": par, "oversubscribe": over, **({"why": why} if why else {})}
+    _NODES["accounting"] = rec
+    return rec
 
 
 def cluster_nodes() -> int:
@@ -379,11 +407,48 @@ def cell_estimate(study: dict) -> float | None:
         return None
     layers = 1 if study.get("2d") else (int(m["extrude"]) if m.get("extrude") else None)
     refine = m.get("refine") or []
+    ext = _refine_extents(study, refine, vol, thick)
     if layers:                                        # a 2D section, swept into layers
         per = 1.3 if m.get("quads", True) else 2.5
-        n = vol / thick / h ** 2 * per + sum(math.pi * float(r["r"]) ** 2 / float(r["size"]) ** 2 * per for r in refine)
+        n = vol / thick / h ** 2 * per + sum(a / float(r["size"]) ** 2 * per for r, (_, a) in zip(refine, ext))
         return n * layers
-    return vol / h ** 3 * 10 + sum(4 / 3 * math.pi * float(r["r"]) ** 3 / float(r["size"]) ** 3 * 10 for r in refine)
+    return vol / h ** 3 * 10 + sum(v / float(r["size"]) ** 3 * 10 for r, (v, _) in zip(refine, ext))
+
+
+def _refine_extents(study: dict, refine: list, vol: float, thick: float) -> list[tuple[float, float]]:
+    """(volume mm3, area of its section across Z mm2) of each mesh.refine region, for the cell estimate: a
+    sphere {at, r}, a box, a cylinder {center, axis, radius, span} or a band {distance} around the part. Boxes and
+    cylinders are clipped to the domain (an external domain's box, else the fluid's own size)."""
+    import math
+    dom = study.get("domain") or {}
+    db = [float(v) for v in dom["box"]] if dom.get("kind") == "external" and dom.get("box") else None
+    L = max(db[3] - db[0], db[4] - db[1], db[5] - db[2]) if db else max(vol ** (1 / 3), thick)
+    out = []
+    for r in refine:
+        if "box" in r:
+            b = [float(v) for v in r["box"]]
+            if db:
+                b = [max(b[i], db[i]) for i in range(3)] + [min(b[i + 3], db[i + 3]) for i in range(3)]
+            d = [max(b[i + 3] - b[i], 0.0) for i in range(3)]
+            out.append((d[0] * d[1] * d[2], d[0] * d[1]))
+        elif "cylinder" in r:
+            c = r["cylinder"]
+            R = float(c["radius"])
+            s0, s1 = (float(v) for v in c.get("span", [-L, L]))
+            ln = min(s1 - s0, 2 * L)
+            a = [float(v) for v in c["axis"]]
+            na = math.sqrt(sum(v * v for v in a)) or 1.0
+            along_z = abs(a[2]) / na > 0.9
+            out.append((math.pi * R * R * ln, math.pi * R * R if along_z else 2 * R * ln))
+        elif "distance" in r:
+            ps = _part_size(study)
+            d = float(r["distance"]) + float(r["size"])
+            area = ps[1] if ps else 6 * vol ** (2 / 3)
+            out.append((area * d, area / max(thick, 1e-9) * d))      # a shell; its section a band round the outline
+        else:
+            R = float(r["r"])
+            out.append((4 / 3 * math.pi * R ** 3, math.pi * R * R))
+    return out
 
 
 def _part_size(study: dict) -> tuple[float, float] | None:
@@ -601,6 +666,7 @@ def status() -> dict:
                 "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
                 "node": {"setting": node_setting(), "nodelist": effective_nodelist(),
                          "cluster_nodes": cluster_nodes()},
+                **({"cores_shared": ca["why"]} if (ca := core_accounting()) and ca.get("shared") else {}),
                 "mem": mem_setting()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
             "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}

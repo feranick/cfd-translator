@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.28.2
+Version: 2026.10.31.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -302,6 +302,20 @@ def _collect(folder: Path) -> dict:
 
 
 def _progress(d: Path, study: dict) -> dict:
+    """_progress_of, plus what else is running on the job's CPUs right now (cpushare.py), if anything."""
+    out = _progress_of(d, study)
+    f = d / "cpu_share.json"
+    try:
+        sh = json.loads(f.read_text()) if f.is_file() else None
+    except (OSError, ValueError):
+        sh = None
+    if sh and time.time() - float(sh.get("at", 0)) < 180 and isinstance(out, dict):
+        out["shared_cpus"] = {k: sh[k] for k in ("cores_taken", "of", "by") if k in sh}
+        out["shared_cpus"]["note"] = "other processes are using this job's CPUs: it runs slower (see warnings)"
+    return out
+
+
+def _progress_of(d: Path, study: dict) -> dict:
     """Where a running study is: meshing, or iteration i of at most n with an upper-bound ETA."""
     import re as _re
     log = d / "case" / "log.foamRun"

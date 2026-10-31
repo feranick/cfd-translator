@@ -355,3 +355,80 @@ def test_parallel_snappy_has_a_distributor():
     assert snappy.split3(19, [100, 100, 100]) in ((19, 1, 1), (1, 19, 1), (1, 1, 19))
     t = snappy.decompose_dict(12, [400, 200, 100])
     assert "distributor     hierarchical;" in t and "n               (4 3 1);" in t and "decomposer      scotch;" in t
+
+
+def test_surface_health_finds_holes():
+    pts, surf = _cube([-50, -10, 0], [50, 10, 10])
+    h = snappy.surface_health(pts, surf)
+    assert h == {"open_edges": 0, "nonmanifold_edges": 0, "at": [], "faces": []}
+    holed = [(t, tri[1:]) if k == 0 else (t, tri) for k, (t, tri) in enumerate(surf)]    # one triangle missing
+    h = snappy.surface_health(pts, holed)
+    assert h["open_edges"] == 3 and h["faces"] and len(h["at"]) >= 1
+
+
+def _stand_in(monkeypatch, tmp_path, snappy_runs):
+    """The end-to-end stand-ins (no Gmsh, no OpenFOAM); snappy_runs(k, dict_text, case) writes the k-th run's
+    polyMesh and log, and returns its exit code."""
+    from cfd_translator import foam
+    pts, surf = _cube([-50, -10, 0], [50, 10, 10])
+    monkeypatch.setattr(snappy, "surface_premesh", lambda *a, **k: (pts, surf, np.array([1.0, 1.0, 5.0]),
+                                                                       (np.array([-50, -10, 0.0]), np.array([50, 10, 10.0]))))
+    monkeypatch.setattr(foam, "find_foam", lambda: {"bashrc": None})
+    monkeypatch.setenv("CFDT_PROCS", "1")
+    for k in ("SLURM_NTASKS", "SLURM_JOB_ID"):
+        monkeypatch.delenv(k, raising=False)
+    calls = []
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):
+        case = Path(case)
+        if cmd.startswith("snappyHexMesh"):
+            calls.append((case / "system" / "snappyHexMeshDict").read_text())
+            return snappy_runs(len(calls) - 1, calls[-1], case, logname)
+        if cmd.startswith("checkMesh"):
+            (case / logname).write_text("    Mesh non-orthogonality Max: 0 average: 0\n\nMesh OK.\n")
+        return 0
+    monkeypatch.setattr(foam, "_step", step)
+    return calls
+
+
+ST_BOX = {"geometry": {"box": [100, 20, 10]}, "fluid": "water",
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.01}, {"kind": "outlet", "faces": {"nx": 1}}],
+          "mesh": {"mesher": "snappy", "size": 5, "surface": 2.5, "layers": {"first": 0.5, "n": 2}}}
+
+
+def _good_mesh(case, logname, extra_patch=None):
+    m = box_mesh(100, 20, 10, 10, 2, 2)
+    pats = [{"name": "inlet", "type": "patch", "tags": [0]}, {"name": "outlet", "type": "patch", "tags": [1]},
+            {"name": "walls", "type": "wall", "tags": [2, 3, 4, 5]}]
+    if extra_patch:                                   # the zmax side left in snappy's background patch
+        pats = pats[:2] + [{"name": "walls", "type": "wall", "tags": [2, 3, 4]}, {"name": extra_patch, "type": "patch", "tags": [5]}]
+    m.set_patches(pats)
+    _write_binary(case / "constant" / "polyMesh", m)
+    (case / logname).write_text("Layer mesh : cells:400  faces:1300  points:500\n\nFinished meshing without any errors\n"
+                                "Finished meshing in = 1.5 s.\n")
+    return 0
+
+
+def test_multiple_outside_loops_is_meshed_again_without_merging_faces(tmp_path, monkeypatch):
+    from cfd_translator.runner import prepare
+
+    def runs(k, txt, case, logname):
+        if k == 0:
+            (case / logname).write_text("--> FOAM FATAL ERROR: \nMultiple outside loops:0()\n\n    From function "
+                                        "static Foam::face Foam::combineFaces::getOutsideFace\n")
+            return 1
+        return _good_mesh(case, logname)
+    calls = _stand_in(monkeypatch, tmp_path, runs)
+    mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
+    assert len(calls) == 2 and "mergeFaces" not in calls[0] and "mergeFaces false;" in calls[1]
+    assert any("mergeFaces false" in w for w in warns + mesh.info.get("notes", []) + [str(mesh.info)])
+    # internal flow: a point of the background box outside the part, so a leak stops snappyHexMesh
+    assert "outsidePoint (" in calls[0] and "insidePoint (" in calls[0]
+
+
+def test_a_leak_to_the_background_box_is_explained(tmp_path, monkeypatch):
+    from cfd_translator.polymesh import MeshError
+    from cfd_translator.runner import prepare
+    _stand_in(monkeypatch, tmp_path, lambda k, txt, case, logname: _good_mesh(case, logname, "background"))
+    with pytest.raises(MeshError, match="the fluid leaks out of the part"):
+        prepare(ST_BOX, tmp_path)

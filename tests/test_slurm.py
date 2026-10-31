@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -284,6 +285,28 @@ def test_jobs_ask_only_for_the_ranks_their_mesh_can_use(monkeypatch):
     assert executor.cell_estimate({"geometry": {"step": "x.step"}, "mesh": {"size": 1}}) is None
 
 
+def test_cell_estimate_for_every_refine_shape():
+    """2026.10.28.4 raised KeyError 'r' for box and cylinder refinement (the estimate took every region for a
+    sphere): validate_studies and run_studies failed on such studies."""
+    from cfd_translator import api, bench
+    st = bench._cases()["porous_slab_external"]["study"]                 # 2D, external, a refine box
+    base = executor.cell_estimate(dict(st, mesh={"size": 10}))
+    box = executor.cell_estimate(st)
+    assert base and box == pytest.approx(base + 90 * 200 / 2.5 ** 2 * 1.3)     # the box's section at its size
+    cyl = dict(st, mesh={"size": 10, "refine": [{"cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 20},
+                                                  "size": 2}]})
+    assert executor.cell_estimate(cyl) == pytest.approx(base + math.pi * 400 / 4 * 1.3)
+    band = dict(st, mesh={"size": 10, "refine": [{"distance": 3, "size": 1}]})
+    assert executor.cell_estimate(band) > base
+    v = api.validate({"slab": st, "cyl": cyl, "band": band})
+    assert v["ok"], v
+    assert all(v["studies"][n]["estimate"]["cells"] > 0 for n in ("slab", "cyl", "band"))
+    # 3D: a box larger than the domain counts only its part inside
+    ext = {"geometry": {"box": [10, 10, 10]}, "domain": {"kind": "external", "box": [-50, -50, 0, 100, 50, 50]},
+           "mesh": {"size": 10, "refine": [{"box": [-1000, -1000, -1000, 1000, 1000, 1000], "size": 5}]}}
+    assert executor.cell_estimate(ext) == pytest.approx(150 * 100 * 50 / 1000 * 10 + 150 * 100 * 50 / 125 * 10)
+
+
 def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
     from cfd_translator.format import validate_study
     monkeypatch.setenv("FAKE_PENDING", "1")
@@ -450,3 +473,58 @@ def test_validation_warns_when_slurm_args_memory_is_too_small(slurm, monkeypatch
     rec = api.validate({"b": big})["studies"]["b"]
     assert rec["estimate"]["mem_mb"] == 8192 and any("CFDT_SLURM_MEM=auto" in w for w in rec["warnings"])
     assert not any("memory" in w for w in api.validate({"c": COUETTE})["studies"]["c"]["warnings"])
+
+
+def test_core_accounting_says_when_slurm_shares_cores(slurm, monkeypatch):
+    """spark1, 2026.10.30: an 18-rank job ran at 36 s per iteration next to another run. status says when SLURM's
+    configuration lets two jobs have the same cores."""
+    assert executor.core_accounting()["shared"] is False and "cores_shared" not in executor.status()
+    for sel, over, frag in (("select/cons_tres CR_Memory", "NO", "do not count cores"),
+                            ("select/linear CR_Memory", "NO", "whole nodes"),
+                            ("select/cons_tres CR_Core_Memory", "FORCE:4", "OverSubscribe=FORCE")):
+        executor._NODES.clear()
+        monkeypatch.setenv("FAKE_SELECT", sel)
+        monkeypatch.setenv("FAKE_OVERSUBSCRIBE", over)
+        ca = executor.core_accounting()
+        assert ca["shared"] and any(frag in w for w in ca["why"]), (sel, over, ca)
+        assert executor.status()["cores_shared"] == ca["why"]
+    executor._NODES.clear()
+    monkeypatch.setenv("FAKE_SINFO_FAIL", "1")
+    assert executor.core_accounting() is None and "accounting" not in executor._NODES     # asked again next time
+
+
+def test_cpu_share_counts_other_processes_on_the_jobs_cpus(tmp_path):
+    from cfd_translator import cpushare
+    # synthetic /proc snapshots: pid -> (ppid, last cpu, cpu seconds, command)
+    before = {100: (1, 0, 0.0, "python"), 101: (100, 1, 0.0, "foamRun"), 200: (1, 3, 0.0, "lmp_mpi"),
+              300: (1, 9, 0.0, "other")}
+    after = {100: (1, 0, 1.0, "python"), 101: (100, 1, 60.0, "foamRun"), 200: (1, 3, 45.0, "lmp_mpi"),
+             300: (1, 9, 60.0, "other")}
+    taken, who = cpushare.competitors({0, 1, 2, 3}, 100, before, after, 60.0)
+    assert taken == pytest.approx(0.75) and [w["cmd"] for w in who] == ["lmp_mpi"]      # its own ranks and cpu 9 not
+    w = cpushare.Watcher(tmp_path, root=100)
+    w.cpus = {0, 1, 2, 3}
+    w.sample(before, after, 60.0)
+    w.sample(after, after, 60.0)
+    s = w.stop()
+    assert s["max_cores_taken"] == 0.75 and s["samples"] == 2 and s["samples_shared"] == 1
+    assert json.loads((tmp_path / "cpu_share.json").read_text())["by"][0]["cmd"] == "lmp_mpi"
+    assert "lmp_mpi" in cpushare.warning(s) and "CR_Core" in cpushare.warning(s)
+    assert cpushare.Watcher(tmp_path).stop() is None                                       # nothing seen, nothing said
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="Linux /proc")
+def test_cpu_share_on_the_real_proc(tmp_path):
+    """This test process, busy for a second, seen from a 'job' rooted at a sleeping process (so it is not one of
+    the job's own): about a core taken."""
+    from cfd_translator import cpushare
+    sl = subprocess.Popen(["sleep", "30"])
+    try:
+        before, t0 = cpushare.snapshot(), time.time()
+        while time.time() - t0 < 1.0:
+            pass
+        after = cpushare.snapshot()
+        taken, who = cpushare.competitors(set(os.sched_getaffinity(0)), sl.pid, before, after, time.time() - t0)
+        assert taken > 0.5 and any(w["pid"] == os.getpid() for w in who)
+    finally:
+        sl.kill()

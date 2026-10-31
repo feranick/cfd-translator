@@ -154,6 +154,14 @@ def scontrol(args):
             addr = f[4] if len(f) > 4 else f[1]
             print(f"NodeName={f[0]} Arch=x86_64 CPUTot={f[2]} NodeAddr={addr} NodeHostName={f[1]} State=IDLE")
         return 0
+    if args[:2] == ["show", "config"]:                # FAKE_SELECT: "select/cons_tres CR_Core_Memory" (default)
+        sel, par = (os.environ.get("FAKE_SELECT") or "select/cons_tres CR_Core_Memory").split()
+        print(f"Configuration data as of 2026-10-31T00:00:00\nSelectType              = {sel}\n"
+              f"SelectTypeParameters    = {par}\nSlurmctldPort           = 6817")
+        return 0
+    if args[:3] == ["-o", "show", "partition"]:
+        print(f"PartitionName=main Nodes=node1 OverSubscribe={os.environ.get('FAKE_OVERSUBSCRIBE', 'NO')} State=UP")
+        return 0
     return 1
 
 

@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.22.8
+Version: 2026.10.31.1
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -207,6 +207,12 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 48)
         gmsh.model.mesh.generate(2)
         pts, _, surf = _surface_mesh(gmsh)
+        meshed = {int(t) for t, tri in surf if len(tri)}
+        unmeshed = []
+        for _, s_ in gmsh.model.getBoundary([(3, vol)], oriented=False):
+            if abs(int(s_)) not in meshed:
+                bb_ = gmsh.model.getBoundingBox(2, abs(int(s_)))
+                unmeshed.append({"face": abs(int(s_)), "at": [round(0.5 * (bb_[k] + bb_[k + 3]), 3) for k in range(3)]})
 
         def inside(x) -> bool:
             return bool(gmsh.model.isInside(3, vol, [float(v) for v in x]))
@@ -252,9 +258,39 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
                     break
             if ipt is None:
                 raise MeshError("found no point of the domain box outside the part")
+        surface_premesh.unmeshed = unmeshed               # read by mesh_snappy (keeps the return value as it was)
         return pts, out, ipt, (bb[:3], bb[3:])
     finally:
         gmsh.finalize()
+
+
+def surface_health(pts: np.ndarray, surf: list, limit: int = 5) -> dict:
+    """Is the part's triangulated surface closed? Edges used by one triangle are holes (a CAD face Gmsh could not
+    mesh, or a gap in the geometry): snappyHexMesh's fluid region leaks through them. Edges used by more than two
+    are where bodies touch along a line. Returns {open_edges, nonmanifold_edges, at: [mm], faces: [tags]}."""
+    tris = [(tg, t) for tg, t in surf if len(t)]
+    if not tris:
+        return {"open_edges": 0, "nonmanifold_edges": 0, "at": [], "faces": []}
+    T = np.concatenate([t for _, t in tris])
+    tag = np.concatenate([np.full(len(t), tg) for tg, t in tris])
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    et = np.concatenate([tag, tag, tag])
+    e.sort(axis=1)
+    key = e[:, 0].astype(np.int64) * (int(e.max()) + 1) + e[:, 1]
+    uk, inv, cnt = np.unique(key, return_inverse=True, return_counts=True)
+    c = cnt[inv]
+    op, nm = c == 1, c > 2
+    out = {"open_edges": int((cnt == 1).sum()), "nonmanifold_edges": int((cnt > 2).sum()), "at": [], "faces": []}
+    if op.any():
+        mid = 0.5 * (pts[e[op, 0]] + pts[e[op, 1]])
+        # a few places, far apart
+        pick = [0]
+        for _ in range(min(limit, len(mid)) - 1):
+            d = np.min(np.linalg.norm(mid[:, None, :] - mid[pick][None, :, :], axis=2), axis=1)
+            pick.append(int(np.argmax(d)))
+        out["at"] = [[round(float(v), 3) for v in mid[k]] for k in dict.fromkeys(pick)]
+        out["faces"] = sorted({int(t) for t in et[op]})[:20]
+    return out
 
 
 def cut_at_box(pts: np.ndarray, surf: list, box: list, h: float):
@@ -436,8 +472,11 @@ def _level_pair(a: int, b: int) -> str:
 
 
 def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zones: list, quality: dict,
-                layers_on: bool = True) -> str:
-    """regions: [(OBJ group, patch name, patch type)]; zones: [{name, shape, ..., level}]."""
+                layers_on: bool = True, outside_point=None, merge_faces: bool = True) -> str:
+    """regions: [(OBJ group, patch name, patch type)]; zones: [{name, shape, ..., level}]. outside_point (internal
+    flow): a point of the background box outside the part, so a leak stops snappyHexMesh instead of keeping the
+    box (OpenFOAM 14: outsidePoint, refinementParameters.C). merge_faces false: addLayersControls mergeFaces
+    false, after 'Multiple outside loops' (combineFaces, merging faces at narrow gaps)."""
     Lmin, Lmax = st["surface"]
     geo = [f"    {PART}\n    {{\n        type triSurface;\n        file \"{PART}.obj\";\n        regions\n        {{\n"]
     geo += [f"            {g} {{ name {n}; }}\n" for g, n, _ in regions]
@@ -479,7 +518,9 @@ def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zone
            f"    maxGlobalCells {st['max_cells']};\n    minRefinementCells 10;\n    maxLoadUnbalance 0.10;\n"
            f"    nCellsBetweenLevels 3;\n    features {feats};\n    refinementSurfaces\n    {{\n", *rs, "    }\n",
            "    resolveFeatureAngle 30;\n    refinementRegions\n    {\n", *rr, "    }\n",
-           f"    insidePoint {_v(inside_point)};\n    allowFreeStandingZoneFaces false;\n}}\n\n",
+           f"    insidePoint {_v(inside_point)};\n" +
+           (f"    outsidePoint {_v(outside_point)};\n" if outside_point is not None else "") +
+           "    allowFreeStandingZoneFaces false;\n}\n\n",
            "snapControls\n{\n    nSmoothPatch 3;\n    tolerance 2.0;\n    nSolveIter 50;\n    nRelaxIter 5;\n"
            "    nFeatureSnapIter 10;\n    explicitFeatureSnap true;\n    implicitFeatureSnap false;\n"
            "    multiRegionFeatureSnap true;\n}\n\n"]
@@ -491,7 +532,8 @@ def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zone
                    f"    minThickness {lay['first_mm'] * SCALE:.6g};\n    nGrow 0;\n    featureAngle {st['feature_angle']:g};\n"
                    "    slipFeatureAngle 30;\n    nRelaxIter 5;\n    nSmoothSurfaceNormals 1;\n    nSmoothNormals 3;\n"
                    "    nSmoothThickness 10;\n    maxFaceThicknessRatio 0.5;\n    maxThicknessToMedialRatio 0.3;\n"
-                   "    minMedialAxisAngle 90;\n    nBufferCellsNoExtrude 0;\n    nLayerIter 50;\n    nRelaxedIter 20;\n}\n\n")
+                   "    minMedialAxisAngle 90;\n    nBufferCellsNoExtrude 0;\n    nLayerIter 50;\n    nRelaxedIter 20;\n" +
+                   ("" if merge_faces else "    mergeFaces false;\n") + "}\n\n")
     out.append("meshQualityControls\n{\n" + "".join(f"    {k} {v:g};\n" for k, v in q.items()) +
                f"    minFaceFlatness 0.5;\n    relaxed\n    {{\n        maxNonOrtho {max(q['maxNonOrtho'], 75):g};\n    }}\n}}\n\n"
                "mergeTolerance 1e-6;\n")
@@ -603,6 +645,14 @@ def _read(path: Path) -> str:
 
 
 # ---- the whole path -----------------------------------------------------------------------------------
+def _gap_text(gaps: list) -> str:
+    if not gaps:
+        return "No narrow gaps were found between facing walls."
+    g = gaps[0]
+    return (f"Narrowest gaps: {len(gaps)} place(s), e.g. {g.get('width_mm')} mm at {g.get('at')}." if isinstance(g, dict)
+            else f"Narrow gaps: {gaps[:3]}.")
+
+
 def mesh_snappy(study: dict, folder: Path):
     from . import foam
     from .executor import procs_of, timeout_s
@@ -617,11 +667,29 @@ def mesh_snappy(study: dict, folder: Path):
     smin = float(min(sf) if isinstance(sf, list) else sf)
     smax = float(max(sf) if isinstance(sf, list) else sf)
     notes = []
+    surface_premesh.unmeshed = []
     pts, surf, ipt, pbb = surface_premesh(study, folder, 2 * smax, smin / 4, box)
     if external:
         st = settings(study, True, box, pbb)
     else:
         st = settings(study, False, list(pbb[0]) + list(pbb[1]), pbb)
+    # a closed surface, or the fluid region leaks (internal flow: out to the background box)
+    health = surface_health(pts, surf)
+    unmeshed = list(getattr(surface_premesh, "unmeshed", []) or [])
+    leak_hint = ""
+    if unmeshed:
+        leak_hint += (f" Gmsh could not triangulate {len(unmeshed)} CAD face(s) of the part (e.g. face {unmeshed[0]['face']} "
+                      f"near {unmeshed[0]['at']} mm): the surface has holes there.")
+    if health["open_edges"]:
+        leak_hint += (f" The part's surface is not closed: {health['open_edges']} open edges (near "
+                      f"{', '.join(map(str, health['at'][:3]))} mm; CAD faces {health['faces'][:8]}).")
+    if leak_hint:
+        notes.append(leak_hint.strip() + " snappyHexMesh's fluid region can leak through such holes: fix the geometry "
+                     "(fuse the bodies, close the faces) or coarsen mesh.surface there")
+    if health["nonmanifold_edges"]:
+        notes.append(f"{health['nonmanifold_edges']} edges of the part's surface are shared by more than two faces "
+                     "(bodies touching along a line): snappyHexMesh may pinch or leak there; fuse them or move them apart")
+    opt = None if external else (np.asarray(st["lo"], float) + st["h0"] * np.array([0.437, 0.519, 0.611])).tolist()
     dropped = {}
     if external:
         pts, surf, dropped, nn = cut_at_box(pts, surf, box, st["surface_mm"][0])
@@ -722,15 +790,17 @@ def mesh_snappy(study: dict, folder: Path):
     reg3 = [(g, n, t) for g, n, t, _ in regions]
     attempts = []
     qual = st["quality"]
-    for attempt in range(2 if st["retry"] else 1):
+    merge_faces, attempt, quality_retried = True, 0, False
+    while True:
         for p in sd.glob("processor*"):
             shutil.rmtree(p, ignore_errors=True)
         shutil.rmtree(sd / "constant" / "polyMesh", ignore_errors=True)
-        (sd / "system" / "snappyHexMeshDict").write_text(snappy_dict(st, reg3, ipt, layer_patches, zones, qual))
+        (sd / "system" / "snappyHexMeshDict").write_text(snappy_dict(st, reg3, ipt, layer_patches, zones, qual,
+                                                                            outside_point=opt, merge_faces=merge_faces))
         (sd / "system" / "meshQualityDict").write_text(_hdr("meshQualityDict") +
                                                        "".join(f"{k} {v:g};\n" for k, v in qual.items()))
         foam._step(fm, "blockMesh", "log.blockMesh", sd, tmo)
-        if attempt == 0 and st["features"] is not None:
+        if not (sd / "constant" / "extendedFeatureEdgeMesh").is_dir() and st["features"] is not None:
             foam._step(fm, "surfaceFeatures", "log.surfaceFeatures", sd, tmo)
         if procs > 1:
             foam._step(fm, "decomposePar -force", "log.decomposePar", sd, tmo)
@@ -750,7 +820,21 @@ def mesh_snappy(study: dict, folder: Path):
             raise MeshError("snappyHexMesh left no finished log (log.snappyHexMesh): " + (_read(sd / "log.snappyHexMesh")[-1500:]
                                                                                           or "the file is missing"))
         if rc != 0 or "fatal" in log:
-            raise MeshError("snappyHexMesh stopped:\n" + (log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")))
+            text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
+            if "Multiple outside loops" in text and merge_faces:
+                # combineFaces could not merge the boundary faces at a narrow gap (layer addition): again without
+                merge_faces = False
+                attempt += 1
+                notes.append("snappyHexMesh stopped merging faces at a narrow gap ('Multiple outside loops'): made "
+                             "again with addLayersControls mergeFaces false")
+                continue
+            if "Multiple outside loops" in text:
+                text += ("\n(cfdt: this happens where two walls are much closer than the surface cells: " +
+                         _gap_text(gaps) + " Open such gaps to at least three surface cells, or close them.)")
+            elif opt is not None and re.search(r"outside|same region|leak", text, re.I):
+                text += ("\n(cfdt: the fluid region reaches the outside point, so the part's surface lets it leak out."
+                         + leak_hint + " " + _gap_text(gaps) + ")")
+            raise MeshError("snappyHexMesh stopped:\n" + text)
         foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
         from .foamio import parse_checkmesh
         cm = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))
@@ -762,9 +846,12 @@ def mesh_snappy(study: dict, folder: Path):
         attempts.append(rec)
         if cm.get("ok") and not log["illegal_faces"]:
             break
-        if attempt == 0 and st["retry"]:
-            qual = stricter(qual)
-            notes.append("the first mesh failed checkMesh or had illegal faces: made again with stricter quality settings")
+        if quality_retried or not st["retry"]:
+            break
+        quality_retried = True
+        attempt += 1
+        qual = stricter(qual)
+        notes.append("the first mesh failed checkMesh or had illegal faces: made again with stricter quality settings")
     # read it back; tags per face from the surface it lies on
     d = sd / "constant" / "polyMesh"
     mesh = from_foam(d)
@@ -779,8 +866,16 @@ def mesh_snappy(study: dict, folder: Path):
             continue
         hit = of_names.get(P["name"])
         if hit is None:
+            if P["name"] == "background" and not external:
+                raise MeshError(
+                    f"the fluid leaks out of the part: snappyHexMesh kept {P['n']} faces of the background box around "
+                    "it, so its fluid region reached the outside through a hole or a gap narrower than the surface "
+                    "cells." + leak_hint + " " + _gap_text(gaps) +
+                    " Close the opening in the geometry (or fuse touching bodies), or open narrow gaps to at least "
+                    "three surface cells.")
             raise MeshError(f"snappyHexMesh left {P['n']} faces in an unexpected patch {P['name']!r} "
-                            "(the part may not separate the domain as expected, or the inside point is wrong)")
+                            "(the part may not separate the domain as expected, or the inside point is wrong)" +
+                            leak_hint)
         k, tg = hit
         f = np.arange(P["start"], P["start"] + P["n"])
         btag[f - ni] = _nearest_tags(g["Cf"][f], tg, tri_of, pts, info, box)

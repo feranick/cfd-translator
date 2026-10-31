@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.28.2
+Version: 2026.10.31.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -62,6 +62,10 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         return _save(out, folder, name)
     transient = solver != "ref" and bool((study.get("solve") or {}).get("transient"))
     t_job = time.time()
+    watcher = None
+    if os.environ.get("SLURM_JOB_ID") and solver != "ref":       # anything else on this job's CPUs? (cpushare.py)
+        from .cpushare import Watcher
+        watcher = Watcher(folder, float(os.environ.get("CFDT_CPU_WATCH_S", "60"))).start()
     try:
         if transient:
             mesh, patches, selection, plan, w, tstate = _prepare_transient(study, folder)
@@ -95,6 +99,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             if transient:
                 info = _solve_transient(case, study, plan, timeout, use, folder, tstate, t_job, warns)
                 if info.get("continued"):
+                    if watcher is not None:
+                        _cpu_note(watcher.stop(), info)
                     return {"name": name, "continued": True, **info}      # the next SLURM job carries on
             else:
                 info = foam.run(case, timeout, use)
@@ -201,7 +207,18 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             return _save(out, folder, name)
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
         out["trace"] = traceback.format_exc()[-2000:]
+    if watcher is not None:
+        _cpu_note(watcher.stop(), out)
     return _save(out, folder, name)
+
+
+def _cpu_note(summary: dict | None, out: dict) -> None:
+    """Other processes on this job's CPUs: execution.cpu_sharing and a warning."""
+    if not summary:
+        return
+    from .cpushare import warning
+    out.setdefault("execution", {})["cpu_sharing"] = summary
+    out.setdefault("warnings", []).append(warning(summary))
 
 
 def reprocess_study(folder: Path, name: str) -> dict:
