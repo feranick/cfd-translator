@@ -639,7 +639,7 @@ def case(study: dict, name: str = "study") -> dict:
     try:
         mesh, patches, selection, plan, warns = prepare(study, folder)
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": f"{type(exc).__name__}: {exc}", **({"warnings": exc.notes} if getattr(exc, "notes", None) else {})}
     c = folder / "case"
     texts = {}
     for rel in ("system/controlDict", "system/fvSchemes", "system/fvSolution", "constant/physicalProperties",

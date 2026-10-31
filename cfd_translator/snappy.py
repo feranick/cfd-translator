@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.31.2
+Version: 2026.10.31.3
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -472,7 +472,7 @@ def _level_pair(a: int, b: int) -> str:
 
 
 def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zones: list, quality: dict,
-                layers_on: bool = True, outside_point=None, merge_faces: bool = True) -> str:
+                layers_on: bool = True, outside_point=None, merge_faces: bool = True, flatness: float = 0.5) -> str:
     """regions: [(OBJ group, patch name, patch type)]; zones: [{name, shape, ..., level}]. outside_point: not used
     (with one, OpenFOAM 14 keeps every region but the outside one: see mesh_snappy). merge_faces false:
     addLayersControls mergeFaces false, after 'Multiple outside loops' (combineFaces, merging faces at narrow
@@ -535,7 +535,7 @@ def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zone
                    "    minMedialAxisAngle 90;\n    nBufferCellsNoExtrude 0;\n    nLayerIter 50;\n    nRelaxedIter 20;\n" +
                    ("" if merge_faces else "    mergeFaces false;\n") + "}\n\n")
     out.append("meshQualityControls\n{\n" + "".join(f"    {k} {v:g};\n" for k, v in q.items()) +
-               f"    minFaceFlatness 0.5;\n    relaxed\n    {{\n        maxNonOrtho {max(q['maxNonOrtho'], 75):g};\n    }}\n}}\n\n"
+               f"    minFaceFlatness {flatness:g};\n    relaxed\n    {{\n        maxNonOrtho {max(q['maxNonOrtho'], 75):g};\n    }}\n}}\n\n"
                "mergeTolerance 1e-6;\n")
     return "".join(out)
 
@@ -676,6 +676,17 @@ def _gap_text(gaps: list) -> str:
 
 
 def mesh_snappy(study: dict, folder: Path):
+    """The snappyHexMesh mesh; a MeshError carries what was found on the way (.notes: narrow gaps, holes, zones in
+    gaps), so a failed run still reports it in its warnings."""
+    notes: list = []
+    try:
+        return _mesh_snappy(study, folder, notes)
+    except MeshError as exc:
+        exc.notes = list(notes)
+        raise
+
+
+def _mesh_snappy(study: dict, folder: Path, notes: list):
     from . import foam
     from .executor import procs_of, timeout_s
     from .select import Groups, assign_bcs
@@ -688,7 +699,6 @@ def mesh_snappy(study: dict, folder: Path):
     sf = m.get("surface", h / 8)
     smin = float(min(sf) if isinstance(sf, list) else sf)
     smax = float(max(sf) if isinstance(sf, list) else sf)
-    notes = []
     surface_premesh.unmeshed = []
     pts, surf, ipt, pbb = surface_premesh(study, folder, 2 * smax, smin / 4, box)
     if external:
@@ -825,13 +835,14 @@ def mesh_snappy(study: dict, folder: Path):
     reg3 = [(g, n, t) for g, n, t, _ in regions]
     attempts = []
     qual = st["quality"]
-    merge_faces, attempt, quality_retried = True, 0, False
+    merge_faces, flatness, attempt, quality_retried = True, 0.5, 0, False
     while True:
         for p in sd.glob("processor*"):
             shutil.rmtree(p, ignore_errors=True)
         shutil.rmtree(sd / "constant" / "polyMesh", ignore_errors=True)
         (sd / "system" / "snappyHexMeshDict").write_text(snappy_dict(st, reg3, ipt, layer_patches, zones, qual,
-                                                                            outside_point=opt, merge_faces=merge_faces))
+                                                                            outside_point=opt, merge_faces=merge_faces,
+                                                                            flatness=flatness))
         (sd / "system" / "meshQualityDict").write_text(_hdr("meshQualityDict") +
                                                        "".join(f"{k} {v:g};\n" for k, v in qual.items()))
         foam._step(fm, "blockMesh", "log.blockMesh", sd, tmo)
@@ -856,6 +867,14 @@ def mesh_snappy(study: dict, folder: Path):
                                                                                           or "the file is missing"))
         if rc != 0 or "fatal" in log:
             text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
+            if "checkFaceFlatness" in text and flatness > -1:
+                # a degenerate face (zero area, in a narrow gap) made the flatness check divide by zero: the
+                # floating point trap stops snappyHexMesh (s180 gap05 on mochi, 2026.10.31). Again without it
+                flatness = -1.0
+                attempt += 1
+                notes.append("snappyHexMesh stopped on a floating point exception in its face-flatness check "
+                             "(degenerate faces in a narrow gap): made again with minFaceFlatness -1 (that check off)")
+                continue
             if "Multiple outside loops" in text and merge_faces:
                 # combineFaces could not merge the boundary faces at a narrow gap (layer addition): again without
                 merge_faces = False
@@ -863,17 +882,21 @@ def mesh_snappy(study: dict, folder: Path):
                 notes.append("snappyHexMesh stopped merging faces at a narrow gap ('Multiple outside loops'): made "
                              "again with addLayersControls mergeFaces false")
                 continue
+            hint = ""                   # first, so the result's 3000-character error keeps it
             if "Multiple outside loops" in text:
-                text += ("\n(cfdt: this happens where two walls are much closer than the surface cells: " +
-                         _gap_text(gaps) + " Open such gaps to at least three surface cells, or close them.)")
+                hint = ("This happens where two walls are much closer than the surface cells: " + _gap_text(gaps) +
+                        " Open such gaps to at least three surface cells, or close them.")
             elif "haven't set cell zone" in text:
-                text += ("\n(cfdt: snappyHexMesh could not tell which side of a zone's boundary some cells are on: a "
-                         "rotating or porous zone whose edge runs through a gap narrower than the surface cells, or "
-                         "cells cut off between walls. " + zone_gap_text + " Put the zone's edges in open fluid or in "
-                         "the solid casing, or refine the gap.)")
-            elif leak_hint:
-                text += "\n(cfdt:" + leak_hint + ")"
-            raise MeshError("snappyHexMesh stopped:\n" + text)
+                hint = ("snappyHexMesh could not tell which side of a zone's boundary some cells are on: a rotating or "
+                        "porous zone whose edge runs through a gap narrower than the surface cells, or cells cut off "
+                        "between walls. " + zone_gap_text + "Put the zone's edges in open fluid or in the solid "
+                        "casing, or refine the gap.")
+            elif "checkFaceFlatness" in text:
+                hint = ("snappyHexMesh hit a degenerate face even with the flatness check off: " + _gap_text(gaps) +
+                        " Open or close the gap.")
+            hint += leak_hint
+            raise MeshError(("cfdt: " + hint.strip() + "\n" if hint.strip() else "") + "snappyHexMesh stopped:\n" +
+                            text[-2400:])
         foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
         from .foamio import parse_checkmesh
         cm = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))

@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.22.4
+Version: 2026.10.31.3
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -161,6 +161,38 @@ def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
 
 
 # ---- the case ----------------------------------------------------------------------------------
+def _check_rotating_wall(nm: str, zn: str, f, mesh, g, zones: dict, plan: dict) -> None:
+    """A wall that rotates with an MRF zone should lie in it. OpenFOAM's MRFnoSlip gives every face of the patch
+    Omega x r whichever cell it touches (MRFnoSlipFvPatchVectorField.C: makeAbsolute on the whole patch), so faces
+    whose cells fall just outside the zone are fine: a semi-open impeller's vane tips face the zone's flat ends
+    across a narrow side gap (s180, 2026.10.31: 2 % of the impeller's faces, 0.5 mm from the ends with 1 mm cells).
+    Faces farther out than two of their cells mean the zone is misplaced."""
+    out = ~np.isin(mesh.owner[f], mesh.zones[zn])
+    if not out.any():
+        return
+    z = zones[zn]
+    a = np.asarray(z["axis"], float)
+    a /= np.linalg.norm(a)
+    d = g["Cf"][f[out]] - np.asarray(z.get("center", [0, 0, 0]), float)
+    ax = d @ a
+    rad = np.linalg.norm(d - np.outer(ax, a), axis=1)
+    s0, s1 = z.get("span", [-np.inf, np.inf])
+    beyond = np.maximum.reduce([rad - float(z["radius"]), s0 - ax, ax - s1, np.zeros(len(ax))])
+    h = np.cbrt(np.abs(g["V"][mesh.owner[f[out]]]))
+    far = beyond > 2 * h
+    frac = float(out.mean())
+    if far.any() or frac > 0.2:
+        k = int(np.argmax(beyond - 2 * h))
+        raise MeshError(
+            f"wall {nm!r} rotates with zone {zn!r} but {frac:.0%} of its faces are outside the zone, some "
+            f"{float(beyond[k]):.3g} mm beyond it (e.g. at {np.round(g['Cf'][f[out]][k], 1).tolist()} mm): the zone "
+            "(center, radius, span) must cover the rotating walls; its ends and rim belong in fluid (mid-gap) or in "
+            "the solid, clear of stationary walls")
+    plan.setdefault("notes", []).append(
+        f"{frac:.1%} of wall {nm!r}'s faces touch cells just outside zone {zn!r} (within two cells of its boundary: "
+        "vane tips facing its ends across a narrow gap); they still move at Omega x r (MRFnoSlip)")
+
+
 def nonortho_schemes(q: dict) -> tuple[str, str, int, float]:
     """(laplacian, snGrad, non-orthogonal correctors, relaxation factor) for the mesh's worst
     non-orthogonality. 70-80 degrees: limited 0.33 and two correctors; above 80 (Gmsh tetrahedra reached 88 and
@@ -340,10 +372,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                     spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
                     Ut = swirl_velocity(g["Cf"][f], spec)
                     if isinstance(b["rotation"], str):
-                        inside = np.isin(mesh.owner[f], mesh.zones[b["rotation"]]).mean()
-                        if inside < 0.99:
-                            raise MeshError(f"wall {nm!r} rotates with zone {b['rotation']!r} but {1 - inside:.0%} of its "
-                                            "faces are outside the zone: enlarge the zone (radius, span)")
+                        _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
                 else:
                     Ut = _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
                 same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * max(float(np.abs(Ut).max()), 1e-300))

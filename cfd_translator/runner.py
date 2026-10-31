@@ -33,7 +33,7 @@ def prepare(study: dict, folder: Path):
         groups = mesh_groups(mesh, external)
         patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
     plan = write_case(study, mesh, patches, Path(folder) / "case")
-    return mesh, patches, selection, plan, warns
+    return mesh, patches, selection, plan, list(warns) + plan.pop("notes", [])
 
 
 def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeout: float = 3600) -> dict:
@@ -213,7 +213,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         if isinstance(exc, Cancelled):
             out.update(ok=False, state="cancelled", why="cancelled while running", warnings=warns)
             return _save(out, folder, name)
-        out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000], warnings=warns)
+        out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000],
+                   warnings=warns + [n for n in getattr(exc, "notes", []) if n not in warns])
         out["trace"] = traceback.format_exc()[-2000:]
     if watcher is not None:
         _cpu_note(watcher.stop(), out)

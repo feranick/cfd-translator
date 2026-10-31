@@ -454,3 +454,52 @@ def test_quality_says_where_the_worst_cells_are():
     m._geo = None
     q = m.quality()
     assert q["non_ortho_over_70"] > 0 and q["worst_non_ortho"][0]["deg"] == pytest.approx(76.0, abs=0.1)
+
+
+def test_rotating_wall_faces_just_outside_the_zone_are_allowed():
+    """s180 (2026.10.31): a semi-open impeller's vane tips sit 0.5 mm inside the zone's ends, across a 1 mm side
+    gap, so 2 % of its faces touch cells just outside the zone. MRFnoSlip moves every face of the patch at
+    Omega x r, so that is fine; faces far outside mean the zone is misplaced."""
+    from cfd_translator.case import _check_rotating_wall
+    from cfd_translator.polymesh import MeshError
+    m = box_mesh(200, 200, 20, 20, 20, 2)                       # cells of 10 mm; x, y centred on 0, z from 0
+    g = m.geometry()
+    C = g["C"]
+    z = {"name": "imp", "axis": [0, 0, 1], "center": [0, 0, 0], "radius": 40, "span": [0, 20], "rpm": 1000}
+    m.zones = {"imp": np.nonzero(np.hypot(C[:, 0], C[:, 1]) <= 40)[0]}
+    bf = np.arange(m.ninternal, m.nfaces)
+    top = bf[np.abs(g["Cf"][bf, 2] - 20) < 1e-9]
+    r = np.hypot(g["Cf"][top, 0], g["Cf"][top, 1])
+    plan = {}
+    _check_rotating_wall("impeller", "imp", top[r < 44], m, g, {"imp": z}, plan)       # 3 mm over the rim
+    assert len(plan["notes"]) == 1 and "MRFnoSlip" in plan["notes"][0]
+    with pytest.raises(MeshError, match="must cover the rotating walls"):
+        _check_rotating_wall("impeller", "imp", top[r < 80], m, g, {"imp": z}, {})
+
+
+def test_flatness_exception_is_meshed_again_without_the_check(tmp_path, monkeypatch):
+    from cfd_translator.runner import prepare
+
+    def runs(k, txt, case, logname):
+        if k == 0:
+            (case / logname).write_text("#0  Foam::error::printStack(Foam::Ostream&)\n#1  Foam::sigFpe::sigHandler(int)\n"
+                                        "#3  Foam::meshCheck::checkFaceFlatness(bool, double, ...)\n"
+                                        "#4  Foam::motionSmootherAlgo::scaleMesh(...)\nFloating point exception\n")
+            return 136
+        return _good_mesh(case, logname)
+    calls = _stand_in(monkeypatch, tmp_path, runs)
+    mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
+    assert len(calls) == 2 and "minFaceFlatness 0.5;" in calls[0] and "minFaceFlatness -1;" in calls[1]
+
+
+def test_a_failed_snappy_mesh_keeps_its_findings(tmp_path, monkeypatch):
+    from cfd_translator.polymesh import MeshError
+    from cfd_translator.runner import prepare
+    pts, surf = _cube([-50, -10, 0], [50, 10, 10])
+    holed = [(t, tri[1:]) if k == 0 else (t, tri) for k, (t, tri) in enumerate(surf)]
+    _stand_in(monkeypatch, tmp_path, lambda k, txt, case, logname: _good_mesh(case, logname, "background"))
+    monkeypatch.setattr(snappy, "surface_premesh", lambda *a, **k: (pts, holed, np.array([1.0, 1.0, 5.0]),
+                                                                       (np.array([-50, -10, 0.0]), np.array([50, 10, 10.0]))))
+    with pytest.raises(MeshError) as ei:
+        prepare(ST_BOX, tmp_path)
+    assert "open edges" in str(ei.value) and any("open edges" in n for n in ei.value.notes)
