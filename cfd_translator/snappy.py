@@ -194,7 +194,7 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
         import gmsh
     except ImportError as exc:
         raise MeshError("snappy meshes need Gmsh for the part's surface (pip install gmsh)") from exc
-    from .mesher import _gmsh_init, _part, _surface_mesh
+    from .mesher import _gmsh_init, _part, _surface_mesh, generate
     _gmsh_init(gmsh)
     try:
         gmsh.model.add("surface")
@@ -205,7 +205,8 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
         gmsh.option.setNumber("Mesh.MeshSizeMax", h_max)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h_min)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 48)
-        gmsh.model.mesh.generate(2)
+        surface_premesh.notes = []
+        generate(gmsh, 2, surface_premesh.notes)
         pts, _, surf = _surface_mesh(gmsh)
         meshed = {int(t) for t, tri in surf if len(tri)}
         unmeshed = []
@@ -733,6 +734,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     else:
         st = settings(study, False, list(pbb[0]) + list(pbb[1]), pbb)
     # a closed surface, or the fluid region leaks (internal flow: out to the background box)
+    notes += list(getattr(surface_premesh, "notes", []) or [])
     health = surface_health(pts, surf)
     unmeshed = list(getattr(surface_premesh, "unmeshed", []) or [])
     leak_hint = ""

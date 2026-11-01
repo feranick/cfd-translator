@@ -1,6 +1,6 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, Gmsh (tetrahedra, or a swept 2D mesh), or
 snappyHexMesh (mesh.mesher "snappy": snappy.py).
-Version: 2026.10.21.2
+Version: 2026.11.01.2
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -12,6 +12,7 @@ Every boundary face keeps the tag of the Gmsh surface it lies on; domain-box sid
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -224,6 +225,39 @@ def mesh_study(study: dict, workdir: Path, size_factor: float = 1.0):
     return mesh
 
 
+_FAILED_SURFACE = re.compile(r"(?:mesh periodic surface|surface)\s+(\d+)", re.I)
+SURFACE_ALGORITHMS = (1, 5, 6)               # MeshAdapt, Delaunay, Frontal-Delaunay: tried in turn on a failing surface
+
+
+def generate(gmsh, dim: int, notes: list | None = None) -> None:
+    """gmsh.model.mesh.generate(dim), again with another 2D algorithm on a surface Gmsh could not mesh ('Impossible
+    to mesh periodic surface 126': S50 at 0.7 x size on mochi, 2026.11.01; full cylinders and tori meshed through
+    their seam). Each failing surface gets MeshAdapt, then Delaunay, then Frontal-Delaunay."""
+    tried: dict[int, int] = {}
+    while True:
+        try:
+            gmsh.model.mesh.generate(dim)
+            return
+        except Exception as exc:  # noqa: BLE001 (Gmsh raises plain Exception)
+            m = _FAILED_SURFACE.search(str(exc))
+            if not m:
+                raise
+            sf = int(m.group(1))
+            k = tried.get(sf, 0)
+            if k >= len(SURFACE_ALGORITHMS):
+                raise MeshError(f"Gmsh could not mesh surface {sf} with any 2D algorithm ({exc}); it is often a full "
+                                "cylinder, cone or torus face whose seam meets a tiny edge: change mesh.size a little, "
+                                "refine there (mesh.refine), or split or simplify that face in the CAD") from exc
+            tried[sf] = k + 1
+            gmsh.model.mesh.clear()
+            gmsh.model.mesh.setAlgorithm(2, sf, SURFACE_ALGORITHMS[k])
+            if notes is not None:
+                bb = gmsh.model.getBoundingBox(2, sf)
+                at = [round(0.5 * (bb[i] + bb[i + 3]), 1) for i in range(3)]
+                notes.append(f"Gmsh could not mesh surface {sf} (near {at} mm) with its default algorithm: meshed "
+                             f"it again with {('MeshAdapt', 'Delaunay', 'Frontal-Delaunay')[k]}")
+
+
 def _tets(gmsh, study, vol, info, h):
     fields = _sizes(gmsh, study, h, info=info)
     if fields:
@@ -232,7 +266,8 @@ def _tets(gmsh, study, vol, info, h):
         gmsh.model.mesh.field.setAsBackgroundMesh(fmin)
     gmsh.option.setNumber("Mesh.ElementOrder", 1)
     gmsh.option.setNumber("Mesh.Optimize", 1)
-    gmsh.model.mesh.generate(3)
+    notes: list = []
+    generate(gmsh, 3, notes)
     if study.get("mesh", {}).get("optimize", True):
         # Netgen's optimiser removes slivers (88-degree non-orthogonality on the Rogue's tetrahedra diverged)
         try:
@@ -246,6 +281,8 @@ def _tets(gmsh, study, vol, info, h):
         raise MeshError("Gmsh produced no tetrahedra")
     mesh = from_cells(pts, {"tet": np.concatenate(tets)}, tags_from_lists(surf), info)
     mesh.info.update({"kind": "tetrahedra", "structured": False, "empty_tags": []})
+    if notes:
+        mesh.info["mesh_notes"] = notes
     return mesh
 
 
@@ -350,7 +387,8 @@ def _swept(gmsh, study, vol, info, bb, h, size_factor):
 
 def _sweep_bottom(gmsh, bottom, top, now, remap, curves, info, zmin, zmax, layers, tol):
     """Mesh the bottom face in 2D and sweep it along Z."""
-    gmsh.model.mesh.generate(2)
+    notes: list = []
+    generate(gmsh, 2, notes)
     tags, coords, _ = gmsh.model.mesh.getNodes(2, bottom, includeBoundary=True)
     tags = np.asarray(tags, np.int64)
     pts = np.asarray(coords, float).reshape(-1, 3)
@@ -378,4 +416,6 @@ def _sweep_bottom(gmsh, bottom, top, now, remap, curves, info, zmin, zmax, layer
     qd = np.concatenate(quads_) if quads_ else np.zeros((0, 4), np.int64)
     mesh = extrude(pts[:, :2], tri, qd, zmin, zmax, layers, bottom, top, edge_tags, info)
     mesh.info.update({"cells_2d": int(len(tri) + len(qd)), "quads_2d": int(len(qd))})
+    if notes:
+        mesh.info["mesh_notes"] = notes
     return mesh

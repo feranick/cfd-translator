@@ -33,7 +33,7 @@ def prepare(study: dict, folder: Path):
         groups = mesh_groups(mesh, external)
         patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
     plan = write_case(study, mesh, patches, Path(folder) / "case")
-    return mesh, patches, selection, plan, list(warns) + plan.pop("notes", [])
+    return mesh, patches, selection, plan, list(warns) + mesh.info.pop("mesh_notes", []) + plan.pop("notes", [])
 
 
 def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeout: float = 3600) -> dict:

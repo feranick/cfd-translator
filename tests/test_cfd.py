@@ -839,3 +839,41 @@ def test_a_folded_mesh_says_where_and_what_to_do():
     assert not q["ok"]
     msg = _quality_message(q, m, m.geometry())
     assert "folded past 89 degrees" in msg and "Worst places" in msg and '"size"' in msg and "screw heads" in msg
+
+
+def test_a_surface_gmsh_cannot_mesh_is_tried_with_other_algorithms():
+    """S50 at 0.7 x size (mochi, 2026.11.01): 'Impossible to mesh periodic surface 126'."""
+    from cfd_translator.mesher import SURFACE_ALGORITHMS, generate
+    from cfd_translator.polymesh import MeshError
+
+    class FakeGmsh:
+        def __init__(self, fails):
+            self.fails, self.algs, self.calls = fails, [], 0
+            self.model = self
+            self.mesh = self
+
+        def generate(self, dim):
+            self.calls += 1
+            if self.fails:
+                self.fails -= 1
+                raise Exception("Impossible to mesh periodic surface 126")
+
+        def clear(self):
+            pass
+
+        def setAlgorithm(self, dim, tag, val):
+            self.algs.append((dim, tag, val))
+
+        def getBoundingBox(self, dim, tag):
+            return [0, 0, 0, 2, 4, 6]
+    g, notes = FakeGmsh(2), []
+    generate(g, 3, notes)
+    assert g.calls == 3 and g.algs == [(2, 126, 1), (2, 126, 5)] and "surface 126 (near [1.0, 2.0, 3.0] mm)" in notes[0]
+    with pytest.raises(MeshError, match="could not mesh surface 126 with any 2D algorithm"):
+        generate(FakeGmsh(len(SURFACE_ALGORITHMS) + 1), 3, [])
+
+    class Other(FakeGmsh):
+        def generate(self, dim):
+            raise Exception("some other failure")
+    with pytest.raises(Exception, match="some other failure"):
+        generate(Other(0), 3, [])
