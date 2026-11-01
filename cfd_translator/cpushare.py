@@ -1,5 +1,5 @@
 """cpushare.py — is anything else running on this job's CPUs? (Linux /proc; a SLURM job's view)
-Version: 2026.10.31.1
+Version: 2026.10.31.5
 
 On spark1 an 18-rank job ran at 36 s per iteration next to another run on a 20-core node (2026.10.30); the same
 case took 0.5 s per step alone. SLURM should never give two jobs the same cores, but it does when its core
@@ -10,6 +10,7 @@ programs started outside it (an MCP server running studies locally, a user's own
         samples /proc every interval seconds while the solver runs: the CPU time that processes outside this
         job (not its descendants) spent on the job's CPUs; writes <folder>/cpu_share.json while it happens
     competitors(cpus, root, before, dt) -> (cores taken, [{pid, cmd, user, cores}])
+    reap(job_active) -> [{pid, cmd, job}]   kill this user's OpenFOAM/MPI processes left by SLURM jobs that ended
 """
 from __future__ import annotations
 
@@ -145,3 +146,74 @@ def warning(summary: dict) -> str:
             "should. SLURM gives a job's cores to no one else only when it counts cores (SelectTypeParameters CR_Core "
             "or CR_CPU, OverSubscribe=NO): ask the admin, and check for runs started outside SLURM (MCP servers with "
             "a local executor, your own programs).")
+
+
+_FOAM_CMDS = ("foamRun", "snappyHexMesh", "mpirun", "orted", "prted", "prterun", "decomposePar", "reconstructPar",
+              "checkMesh", "surfaceFeatures", "blockMesh", "subsetMesh")
+
+
+def _environ(pid: int) -> dict:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    out = {}
+    for item in raw.split(b"\0"):
+        k, _, v = item.partition(b"=")
+        if k in (b"SLURM_JOB_ID", b"CFDT_STUDY"):
+            out[k.decode()] = v.decode(errors="replace")
+    return out
+
+
+def reap(job_active, me: int | None = None) -> list[dict]:
+    """This user's OpenFOAM and MPI processes (or any marked CFDT_STUDY) whose SLURM job has ended: leftovers of a
+    cancelled job, which keep the node's cores busy (spark1, spark2: load 14-16 with no job, 2026.10.31). They are
+    killed (their process group, TERM then KILL). job_active(job_id) -> bool (squeue); a job it cannot tell
+    about counts as active, so nothing of a running job is touched. Returns what was killed."""
+    import signal
+    uid = os.getuid()
+    me = me or os.getpid()
+    mine = _descendants(snapshot(), me)
+    cache: dict = {}
+    found = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) in mine:
+            continue
+        pid = int(pid)
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != uid:
+                continue
+        except OSError:
+            continue
+        env = _environ(pid)
+        job = env.get("SLURM_JOB_ID")
+        if not job or job == os.environ.get("SLURM_JOB_ID"):
+            continue
+        st = _stat(str(pid))
+        if st is None:
+            continue
+        cmd = st[3]
+        if not (env.get("CFDT_STUDY") or any(c in cmd for c in _FOAM_CMDS)):
+            continue
+        if job not in cache:
+            try:
+                cache[job] = bool(job_active(job))
+            except Exception:  # noqa: BLE001
+                cache[job] = True
+        if cache[job]:
+            continue
+        found.append({"pid": pid, "cmd": cmd, "job": job})
+    for f in found:
+        for sig in (signal.SIGTERM,):
+            try:
+                os.kill(f["pid"], sig)
+            except OSError:
+                pass
+    if found:
+        time.sleep(3)
+        for f in found:
+            try:
+                os.kill(f["pid"], signal.SIGKILL)
+            except OSError:
+                pass
+    return found

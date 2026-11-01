@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.31.4
+Version: 2026.10.31.5
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -95,6 +95,29 @@ def find_foam() -> dict | None:
     return res
 
 
+_ACTIVE: set = set()                         # running OpenFOAM process groups (Popen) of this process
+
+
+def kill_all() -> None:
+    """Stop every OpenFOAM process group this process started (mpirun and its ranks)."""
+    for p in list(_ACTIVE):
+        _kill_group(p)
+
+
+def _on_signal(signum, frame):
+    kill_all()
+    raise SystemExit(128 + signum)
+
+
+def install_signal_handlers() -> None:
+    """A SLURM job's python: on scancel (SIGTERM) or a hang-up, take the OpenFOAM processes down too. They run in
+    their own process group (so a timeout can kill mpirun and every rank), which SLURM's process tracking by
+    group does not reach: cancelled jobs left foamRun ranks running on spark1 and spark2 (2026.10.31)."""
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, _on_signal)
+
+
 def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None,
           deadline: float | None = None, on_deadline=None, watch_log: Path | None = None):
     """Runs cmd in a bash that sources OpenFOAM. Long commands (not capture) run in their own process group,
@@ -103,7 +126,16 @@ def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False
     src = f"source '{foam['bashrc']}' >/dev/null 2>&1; " if foam.get("bashrc") else ""
     if capture:
         return subprocess.run(["bash", "-c", src + cmd], cwd=str(cwd), timeout=timeout, capture_output=True, text=True)
-    p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True)
+    env = dict(os.environ, CFDT_STUDY=str(Path(cwd).resolve()))     # marks cfdt's OpenFOAM processes (cpushare.reap)
+    p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True, env=env)
+    _ACTIVE.add(p)
+    try:
+        return _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log)
+    finally:
+        _ACTIVE.discard(p)
+
+
+def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log):
     t0 = time.time()
     fired = False
     next_look = t0 + WATCH_S

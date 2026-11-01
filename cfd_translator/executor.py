@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.31.1
+Version: 2026.10.31.5
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -750,8 +750,22 @@ def run_study_job(request: str, name: str) -> int:
         study["solve"] = dict(study.get("solve") or {}, procs=procs)
     if not os.environ.get("SLURM_JOB_ID"):
         os.environ["CFDT_EXECUTION"] = "by hand"            # the run record's executor
+    reaped = []
+    if os.environ.get("SLURM_JOB_ID"):
+        from . import foam
+        foam.install_signal_handlers()        # scancel takes this job's OpenFOAM processes down with it
+        try:                                  # and leftovers of ended jobs go before this one starts
+            from .cpushare import reap
+            reaped = reap(job_active)
+        except Exception:  # noqa: BLE001
+            reaped = []
     t0 = time.perf_counter()
     r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s(study))
+    if reaped:
+        jobs_ = sorted({x["job"] for x in reaped})
+        r.setdefault("warnings", []).append(
+            f"stopped {len(reaped)} leftover OpenFOAM/MPI processes of ended SLURM job(s) {', '.join(jobs_)} on this "
+            f"node before starting ({', '.join(sorted({x['cmd'] for x in reaped}))})")
     if r.get("continued"):              # a transient study goes on in the next job (job.json has its id)
         return 0
     r.setdefault("seconds", {})
@@ -763,6 +777,16 @@ def run_study_job(request: str, name: str) -> int:
                      "job_id": ex.get("slurm_job", os.environ.get("SLURM_JOB_ID")), "procs": procs}
     write_atomic(req / name / f"{name}.json", json.dumps(r, indent=1, default=float))
     return 0
+
+
+def job_active(job_id: str) -> bool:
+    """Is a SLURM job still pending or running (squeue)? Raises when squeue cannot tell."""
+    rc, out, err = _run(["squeue", "-h", "-j", str(job_id), "-o", "%T"])
+    if rc != 0:
+        if "Invalid job id" in (err or ""):
+            return False
+        raise RuntimeError(err or f"squeue exit {rc}")
+    return bool(out.strip())
 
 
 # ---- the queue ---------------------------------------------------------------------------------

@@ -528,3 +528,43 @@ def test_cpu_share_on_the_real_proc(tmp_path):
         assert taken > 0.5 and any(w["pid"] == os.getpid() for w in who)
     finally:
         sl.kill()
+
+
+@pytest.mark.skipif(not Path("/proc/self/environ").exists(), reason="Linux /proc")
+def test_leftovers_of_ended_jobs_are_reaped(tmp_path):
+    """spark1/spark2 (2026.10.31): cancelled jobs left foamRun ranks running (load 14-16, no job). A new job first
+    stops this user's OpenFOAM processes whose SLURM job has ended; a running job's are left alone."""
+    from cfd_translator import cpushare
+    env = {k: v for k, v in os.environ.items() if k != "SLURM_JOB_ID"}
+    old = subprocess.Popen(["sleep", "60"], env=dict(env, SLURM_JOB_ID="991", CFDT_STUDY=str(tmp_path)))
+    live = subprocess.Popen(["sleep", "60"], env=dict(env, SLURM_JOB_ID="992", CFDT_STUDY=str(tmp_path)))
+    plain = subprocess.Popen(["sleep", "60"], env=dict(env, SLURM_JOB_ID="991"))   # not OpenFOAM, not marked
+    other = subprocess.Popen(["sleep", "60"])                                       # stands for 'this job's python'
+    try:
+        got = cpushare.reap(lambda j: j == "992", me=other.pid)
+        assert [g["pid"] for g in got] == [old.pid] and got[0]["job"] == "991"
+        assert old.wait(timeout=10) is not None and live.poll() is None and plain.poll() is None
+        # squeue that cannot answer: nothing is touched
+        def broken(j):
+            raise RuntimeError("no controller")
+        assert cpushare.reap(broken, me=other.pid) == []
+    finally:
+        for p in (old, live, plain, other):
+            p.kill()
+
+
+def test_job_active_from_squeue(slurm):
+    assert executor.job_active("123456") is False            # unknown to squeue: ended
+
+
+def test_scancel_takes_the_openfoam_group_down():
+    from cfd_translator import foam
+    p = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    foam._ACTIVE.add(p)
+    try:
+        with pytest.raises(SystemExit):
+            foam._on_signal(15, None)
+        assert p.wait(timeout=20) is not None
+    finally:
+        foam._ACTIVE.discard(p)
+        p.kill()
