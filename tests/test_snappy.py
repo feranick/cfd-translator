@@ -503,3 +503,41 @@ def test_a_failed_snappy_mesh_keeps_its_findings(tmp_path, monkeypatch):
     with pytest.raises(MeshError) as ei:
         prepare(ST_BOX, tmp_path)
     assert "open edges" in str(ei.value) and any("open edges" in n for n in ei.value.notes)
+
+
+def test_pockets_cut_off_from_the_flow_are_found():
+    """s180 (2026.10.31): snappyHexMesh left 75 regions; the 74 closed pockets made the first pressure solve NaN."""
+    class M:                                   # 6 cells in a row; cells 4 and 5 joined to each other only
+        ncells, ninternal = 6, 4
+        owner = np.array([0, 1, 2, 4, 0, 3, 4], np.int64)
+        neighbour = np.array([1, 2, 3, 5], np.int64)
+        info = {"foam_patches": [{"name": "inlet", "start": 4, "n": 1}, {"name": "outlet", "start": 5, "n": 1},
+                                 {"name": "walls", "start": 6, "n": 1}]}
+
+        def geometry(self):
+            return {"C": np.column_stack([np.arange(6.0), np.zeros(6), np.zeros(6)]), "V": np.ones(6)}
+    r = snappy.cut_off_regions(M(), {"inlet", "outlet"})
+    assert r["keep"].tolist() == [0, 1, 2, 3] and r["n_pockets"] == 1 and r["cells"] == 2 and r["at"] == [4.5, 0.0, 0.0]
+    M.ninternal = 5                                                  # all joined: nothing to remove
+    M.neighbour = np.array([1, 2, 3, 4, 5], np.int64)
+    M.owner = np.array([0, 1, 2, 3, 4, 0, 5], np.int64)
+    M.info = {"foam_patches": [{"name": "inlet", "start": 5, "n": 1}, {"name": "outlet", "start": 6, "n": 1}]}
+    assert snappy.cut_off_regions(M(), {"inlet", "outlet"}) is None
+
+
+def test_a_nan_run_is_stopped_and_reported(tmp_path, monkeypatch):
+    from cfd_translator import api, foam
+    log = tmp_path / "log.foamRun"
+    log.write_text("Time = 1s\n\nGAMG:  Solving for p, Initial residual = 1, Final residual = 0.01, No Iterations 12\n"
+                   "Time = 2s\n\nGAMG:  Solving for p, Initial residual = 1, Final residual = nan, No Iterations 1000\n")
+    assert foam.diverged(log) == "2" and "diverged at iteration 2" in foam.divergence_message("2")
+    log.write_text("Time = 7s\n\nGAMG:  Solving for p, Initial residual = 0.3, Final residual = 0.2, No Iterations 1000\n"
+                   "GAMG:  Solving for p, Initial residual = 0.2, Final residual = 0.1, No Iterations 1000\n")
+    assert foam.diverged(log) is None and "1000-iteration limit" in api._solver_limit(log)
+    # a running solver that writes NaN is killed at the next look
+    monkeypatch.setattr(foam, "WATCH_S", 0.3)
+    t0 = __import__("time").time()
+    with pytest.raises(foam.Diverged, match="diverged at iteration 3"):
+        foam._step({}, "sh -c \"printf 'Time = 3s\\nGAMG:  Solving for p, Initial residual = nan, Final residual = nan, "
+                       "No Iterations 1000\\n'; sleep 30\" foamRun", "log.foamRun", tmp_path, 60)
+    assert __import__("time").time() - t0 < 10

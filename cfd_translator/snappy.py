@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.31.3
+Version: 2026.10.31.4
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -667,6 +667,33 @@ def _near_zone_edge(z: dict, x: np.ndarray, tol: float) -> bool:
     return False
 
 
+def cut_off_regions(mesh, open_patches: set) -> dict | None:
+    """Cells not connected (through internal faces) to any face of an open patch (inlet, outlet, opening).
+    None when every region reaches one; else {keep: cell indices, n_pockets, cells, volume_mm3, at: largest
+    pocket's centre (mm)}."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    nc, ni = mesh.ncells, mesh.ninternal
+    A = coo_matrix((np.ones(ni, np.int8), (mesh.owner[:ni], mesh.neighbour)), shape=(nc, nc))
+    n, lab = connected_components(A, directed=False)
+    if n <= 1:
+        return None
+    reach = np.zeros(n, bool)
+    for p in mesh.info.get("foam_patches") or []:
+        if p["name"] in open_patches and p["n"]:
+            reach[lab[mesh.owner[p["start"]:p["start"] + p["n"]]]] = True
+    if not reach.any() or reach.all():
+        return None
+    keepm = reach[lab]
+    g = mesh.geometry()
+    drop = ~keepm
+    sizes = np.bincount(lab[drop], minlength=n)
+    big = int(np.argmax(sizes))
+    return {"keep": np.nonzero(keepm)[0], "n_pockets": int((~reach).sum()), "cells": int(drop.sum()),
+            "volume_mm3": float(g["V"][drop].sum()),
+            "at": [round(float(v), 1) for v in g["C"][lab == big].mean(axis=0)]}
+
+
 def _gap_text(gaps: list) -> str:
     if not gaps:
         return "No narrow gaps were found between facing walls."
@@ -917,6 +944,22 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     # read it back; tags per face from the surface it lies on
     d = sd / "constant" / "polyMesh"
     mesh = from_foam(d)
+    open_names = {nm for nm, (k, _) in of_names.items() if patches[k]["kind"] in ("inlet", "outlet", "opening")}
+    pockets = cut_off_regions(mesh, open_names)
+    if pockets:
+        # cells cut off from every inlet and outlet (closed pockets in narrow gaps): their pressure has no
+        # reference, the solver's first pressure solve gives NaN (s180, 2026.10.31: 75 regions). Remove them
+        keep = pockets["keep"]
+        sets = d / "sets"
+        sets.mkdir(exist_ok=True)
+        (sets / "cfdtKeep").write_text(_hdr("cfdtKeep", "cellSet", "constant/polyMesh/sets") +
+                                       f"{len(keep)}\n(\n" + "\n".join(map(str, keep.tolist())) + "\n)\n")
+        foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields", "log.subsetMesh", sd, tmo)
+        notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
+                     f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
+                     "snappyHexMesh closed them off in narrow gaps; left in, they make the pressure solver fail (NaN)")
+        mesh = from_foam(d)
+        mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
     fp = mesh.info["foam_patches"]
     ni = mesh.ninternal
     g = mesh.geometry()

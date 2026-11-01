@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.31.1
+Version: 2026.10.31.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -304,6 +304,27 @@ def _collect(folder: Path) -> dict:
 def _progress(d: Path, study: dict) -> dict:
     """_progress_of, plus what else is running on the job's CPUs right now (cpushare.py), if anything."""
     out = _progress_of(d, study)
+    if isinstance(out, dict):
+        try:                                   # the mesh it is solving on (runner writes mesh.json after meshing)
+            m = json.loads((d / "mesh.json").read_text()) if (d / "mesh.json").is_file() else None
+        except (OSError, ValueError):
+            m = None
+        if m:
+            out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality", "non_ortho_over_70",
+                                             "worst_non_ortho", "regions_removed") if k in m}
+            lay = m.get("layers") or {}
+            if "coverage_pct" in lay:
+                out["mesh"]["layers_coverage_pct"] = lay["coverage_pct"]
+            if m.get("warnings"):
+                out["mesh_warnings"] = m["warnings"][:6]
+        from .foam import diverged, divergence_message
+        at = diverged(d / "case" / "log.foamRun") if (d / "case" / "log.foamRun").is_file() else None
+        if at is not None:
+            out["diverged"] = divergence_message(at) + " (the job stops it at its next check)"
+        else:
+            slow = _solver_limit(d / "case" / "log.foamRun")
+            if slow:
+                out["solver_note"] = slow
     f = d / "cpu_share.json"
     try:
         sh = json.loads(f.read_text()) if f.is_file() else None
@@ -313,6 +334,23 @@ def _progress(d: Path, study: dict) -> dict:
         out["shared_cpus"] = {k: sh[k] for k in ("cores_taken", "of", "by") if k in sh}
         out["shared_cpus"]["note"] = "other processes are using this job's CPUs: it runs slower (see warnings)"
     return out
+
+
+def _solver_limit(log: Path) -> str | None:
+    """'p hits its 1000-iteration limit' when the last iteration's pressure solves all ran to the limit."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, log.stat().st_size - 20000))
+            tail = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    import re as _re
+    last = tail.rsplit("\nTime = ", 1)[0].rsplit("\nTime = ", 1)[-1]
+    its = [int(x) for x in _re.findall(r"Solving for p\w*, .*No Iterations (\d+)", last)]
+    if its and min(its) >= 1000:
+        return ("the pressure solver runs to its 1000-iteration limit every time: it is not converging on this mesh "
+                "(bad cells or cut-off pockets: see mesh), so each iteration is very slow")
+    return None
 
 
 def _progress_of(d: Path, study: dict) -> dict:

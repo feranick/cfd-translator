@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.31.1
+Version: 2026.10.31.4
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -77,7 +77,12 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out["selection"] = selection
         out["mesh"] = {k: v for k, v in plan["quality"].items()}
         out["mesh"].update({k: mesh.info[k] for k in ("kind", "size", "layers", "cells_2d", "quads_2d",
-                                                       "boundary_layers_on", "cells_xyz", "snappy") if k in mesh.info})
+                                                       "boundary_layers_on", "cells_xyz", "snappy", "regions_removed") if k in mesh.info})
+        try:                                   # for the progress of a running study (api._progress)
+            from .executor import write_atomic
+            write_atomic(folder / "mesh.json", json.dumps({**out["mesh"], "warnings": list(warns)}, default=float))
+        except (OSError, TypeError, ValueError):
+            pass
         q = plan["quality"]
         if q.get("max_non_orthogonality", 0) > 80 and q.get("worst_non_ortho"):
             gaps = ((mesh.info.get("snappy") or {}).get("narrow_gaps") or [])

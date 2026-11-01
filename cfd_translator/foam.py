@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.22.4
+Version: 2026.10.31.4
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -27,6 +27,37 @@ class FoamError(Exception):
 
 class Cancelled(FoamError):
     """The study's cancel flag (<request>/<name>/cancel) appeared while OpenFOAM ran."""
+
+
+class Diverged(FoamError):
+    """The solver's residuals became NaN or infinite: it is stopped instead of running on (on aarch64 OpenFOAM
+    cannot trap floating point exceptions, so a NaN run goes on at 1000 iterations per solve: s180, 2026.10.31,
+    330 s per iteration)."""
+
+
+WATCH_S = 20.0                               # how often a running solver's log is looked at for NaN
+_NAN = re.compile(r"(?:Initial|Final) residual = [-+]?(?:nan|inf)|sum local = [-+]?(?:nan|inf)", re.I)
+_TIME_LINE = re.compile(r"^Time = ([-+0-9.eE]+)", re.M)
+
+
+def diverged(log: Path) -> str | None:
+    """The time / iteration at which the log first shows NaN or infinite residuals, or None."""
+    try:
+        with open(log, "rb") as f:
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    m = _NAN.search(text)
+    if not m:
+        return None
+    t = _TIME_LINE.findall(text[:m.start()])
+    return t[-1] if t else "the start"
+
+
+def divergence_message(at: str) -> str:
+    return (f"the solution diverged at iteration {at}: the residuals are NaN. Usual causes: parts of the mesh cut off "
+            "from every inlet and outlet (closed pockets: checkMesh 'Number of regions' above 1), very bad cells "
+            "(mesh.worst_non_ortho, skewness), or relaxation too high for the mesh (solve.relax)")
 
 
 _FOUND = {}
@@ -65,7 +96,7 @@ def find_foam() -> dict | None:
 
 
 def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None,
-          deadline: float | None = None, on_deadline=None):
+          deadline: float | None = None, on_deadline=None, watch_log: Path | None = None):
     """Runs cmd in a bash that sources OpenFOAM. Long commands (not capture) run in their own process group,
     which a timeout or the cancel flag kills as a whole (mpirun and every rank, not only bash). At the epoch
     time deadline, on_deadline() is called once (a transient run asked to write and stop)."""
@@ -75,7 +106,14 @@ def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False
     p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True)
     t0 = time.time()
     fired = False
+    next_look = t0 + WATCH_S
     while True:
+        if watch_log is not None and time.time() >= next_look:
+            next_look = time.time() + WATCH_S
+            at = diverged(watch_log)
+            if at is not None:
+                _kill_group(p)
+                raise Diverged(divergence_message(at))
         if deadline is not None and on_deadline is not None and not fired and time.time() >= deadline:
             fired = True
             on_deadline()
@@ -115,7 +153,8 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
           deadline: float | None = None, on_deadline=None) -> int:
     try:
         rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
-                   cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline).returncode
+                   cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline,
+                   watch_log=Path(case) / logname if "foamRun" in cmd else None).returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
     if rc != 0 and raise_on_error:
@@ -174,6 +213,9 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
         stop = (lambda: request_stop(case))
     rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
     log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
+    at = diverged(case / "log.foamRun")
+    if at is not None:                         # it ended on its own (short run), but on NaN
+        raise Diverged(divergence_message(at))
     out["log"] = foamio.parse_log(log)
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
