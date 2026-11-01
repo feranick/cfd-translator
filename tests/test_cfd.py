@@ -795,3 +795,47 @@ def test_image_clim_and_cp(tmp_path, monkeypatch):
     assert out["images"]["cpc"]["clim"] == [-1, 1] and out["images"]["cp"]["clim"][0] == out["images"]["cp"]["min"]
     lo, hi = out["images"]["rob"]["clim"]
     assert out["images"]["rob"]["min"] <= lo < hi <= out["images"]["rob"]["max"]
+
+
+def test_walls_the_mrf_frame_pushes_fluid_through(tmp_path):
+    """s180 (2026.11.01): 0.30 m3/s left the outlet for 0.069 m3/s in. OpenFOAM's MRF makes the flux relative on
+    every face whose cell is in the zone, walls included: a flat stationary wall inside the zone lets fluid through."""
+    from cfd_translator.polymesh import MeshError
+    st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
+          "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 300, "radius": 60}],
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.01}, {"kind": "outlet", "faces": {"nx": 1}}],
+          "mesh": {"cells": [20, 20, 1]}}
+    with pytest.raises(MeshError, match="moves fluid through walls") as ei:
+        prepare(st, tmp_path / "a")
+    assert "stationary wall 'walls'" in str(ei.value) and "inside the zone" in str(ei.value)
+    # the zone clear of the walls: fine
+    ok = dict(st, rotating=[dict(st["rotating"][0], radius=40)])
+    prepare(ok, tmp_path / "b")
+    # after a run: flow through walls is a warning and makes the result unreliable
+    from cfd_translator.post import results
+    mesh, patches, sel, plan, w = prepare(ok, tmp_path / "c")
+    g = mesh.geometry()
+    U = np.zeros((mesh.ncells, 3))
+    pat = {}
+    for P in mesh.patches:
+        f = np.arange(P["start"], P["start"] + P["n"])
+        phi = {"inlet": -1e-5 / P["n"], "outlet": 3e-5 / P["n"]}.get(plan["patches"][P["name"]]["kind"], -2e-5 / max(P["n"], 1))
+        pat[P["name"]] = {"U": np.zeros((P["n"], 3)), "p": np.zeros(P["n"]), "phi": np.full(P["n"], phi),
+                          "wss": None, "nut": None}
+    res, warns = results(ok, mesh, plan, {"U": U, "p": np.zeros(mesh.ncells), "patches": pat})
+    assert res["checks"]["wall_flux"]["fraction_of_inflow"] == pytest.approx(2.0) and any("through walls" in x for x in warns)
+    from cfd_translator.runner import _verdict
+    rel, why = _verdict({"solve": {"converged": True}}, res)
+    assert not rel and any("through walls" in x for x in why)
+
+
+def test_a_folded_mesh_says_where_and_what_to_do():
+    from cfd_translator.case import _quality_message
+    m = box_mesh(10, 10, 10, 4, 4, 4)
+    m.points = m.points.copy()
+    m.points[:, 0] += 60 * m.points[:, 1]                     # sheared past 89 degrees
+    m._geo = None
+    q = m.quality()
+    assert not q["ok"]
+    msg = _quality_message(q, m, m.geometry())
+    assert "folded past 89 degrees" in msg and "Worst places" in msg and '"size"' in msg and "screw heads" in msg

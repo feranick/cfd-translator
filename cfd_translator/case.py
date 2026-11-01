@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.10.31.3
+Version: 2026.11.01.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -11,6 +11,7 @@ polyMesh/*}, 0/{U, p[, k, omega, nut]}, case.foam. Target: OpenFOAM (openfoam.or
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -161,6 +162,83 @@ def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
 
 
 # ---- the case ----------------------------------------------------------------------------------
+def _quality_message(q: dict, mesh, g) -> str:
+    """Why the mesh cannot be solved on, where, and what to do (a refine sphere at each bad place)."""
+    why = []
+    if q.get("min_volume_mm3", 1) <= 0:
+        why.append(f"cells with zero or negative volume (smallest {q['min_volume_mm3']:.3g} mm3)")
+    if q.get("max_non_orthogonality", 0) >= 89:
+        why.append(f"faces folded past 89 degrees (worst {q['max_non_orthogonality']:.1f}; {q.get('non_ortho_over_70', 0)} "
+                   "above 70): inverted or nearly flat cells")
+    if q.get("max_open_cell", 0) >= 1e-6:
+        why.append(f"cells that are not closed (openness {q['max_open_cell']:.3g})")
+    if not q.get("boundary_outward", True) or not q.get("upper_triangular", True):
+        why.append("faces ordered or oriented wrongly")
+    msg = "the mesh cannot be solved on: " + "; ".join(why or ["failed checks"])
+    worst = q.get("worst_non_ortho") or []
+    if worst:
+        h = float(np.cbrt(np.median(np.abs(g["V"]))))
+        sph = [{"at": w["at"], "r": round(3 * h, 3), "size": round(h / 3, 3)} for w in worst[:3]]
+        msg += (". Worst places: " + "; ".join(f"{w['deg']} deg at {w['at']} mm" for w in worst[:5]) +
+                ". Usually small features (screw heads, thin lips, tiny gaps) smaller than the cells around them: "
+                "remove them from the geometry, or refine there, e.g. mesh.refine " + json.dumps(sph))
+    return msg
+
+
+def _mrf_wall_leaks(mesh, g, zones: dict, plan: dict, patches: list) -> None:
+    """Walls the MRF frame pushes fluid through. OpenFOAM 14's MRF makes the flux relative on every face whose
+    cell is in the zone (MRFZoneTemplates.C, makeRelativeRhoFlux), walls included, and rotating walls get
+    Omega x r everywhere (MRFnoSlip). So a stationary wall inside the zone, or a rotating wall outside it, carries
+    a flux (Omega x r) . S unless it is a surface of revolution about the axis. In the s180 pump (2026.11.01)
+    0.30 m3/s left the outlet for 0.069 m3/s in, with -180 m of head. Leaks above 5 % of the inflow stop the
+    run, smaller ones are noted."""
+    if not zones:
+        return
+    q_in = sum(abs(float(v.get("Q", 0.0))) for v in plan.get("inlets", {}).values()) or None
+    Sf, Cf = g["Sf"] * SCALE ** 2, g["Cf"] * SCALE
+    for zn, z in zones.items():
+        zp = plan["zones"][zn]
+        Om = zp["omega_rad_s"] * np.asarray(zp["axis"], float)
+        o = np.asarray(zp["center_mm"], float) * SCALE
+        inz = np.zeros(mesh.ncells, bool)
+        inz[mesh.zones[zn]] = True
+        bad = []
+        for p in patches:
+            if p["kind"] != "wall":
+                continue
+            f = mesh.patch_faces(p["name"])
+            rot = p["bc"].get("rotation") == zn
+            sel = f[~inz[mesh.owner[f]]] if rot else f[inz[mesh.owner[f]]]
+            if not len(sel):
+                continue
+            v = np.cross(Om, Cf[sel] - o)
+            leak = np.einsum("ij,ij->i", v, Sf[sel])                               # m3/s per face
+            # facets of a surface of revolution move almost along themselves: count faces whose motion has
+            # more than ~6 degrees across them
+            across = np.abs(leak) > 0.1 * np.linalg.norm(v, axis=1) * np.linalg.norm(Sf[sel], axis=1)
+            leak, sel = leak[across], sel[across]
+            gross = float(np.abs(leak).sum())
+            if gross > 0:
+                k = int(np.argmax(np.abs(leak)))
+                bad.append((p["name"], rot, gross, float(leak.sum()), len(sel),
+                            np.round(g["Cf"][sel][k], 1).tolist()))
+        if not bad:
+            continue
+        total = sum(b[2] for b in bad)
+        frac = total / q_in if q_in else None
+        parts = "; ".join(
+            f"{'rotating' if rot else 'stationary'} wall {nm!r}: {n} faces {'outside' if rot else 'inside'} the zone, "
+            f"{gross:.3g} m3/s through them (e.g. at {at} mm)" for nm, rot, gross, net, n, at in bad)
+        msg = (f"rotating zone {zn!r}: the MRF frame moves fluid through walls ({total:.3g} m3/s"
+               + (f", {frac:.0%} of the inflow" if frac is not None else "") + f"): {parts}. Only surfaces of "
+               "revolution about the axis may cross the zone's boundary; keep stationary walls (volute tongue, "
+               "plates, screw heads, ports) out of the zone and the impeller's walls in it")
+        if frac is not None and frac > 0.05:
+            raise MeshError(msg)
+        if frac is None or frac > 0.002:
+            plan.setdefault("notes", []).append(msg)
+
+
 def _check_rotating_wall(nm: str, zn: str, f, mesh, g, zones: dict, plan: dict) -> None:
     """A wall that rotates with an MRF zone should lie in it. OpenFOAM's MRFnoSlip gives every face of the patch
     Omega x r whichever cell it touches (MRFnoSlipFvPatchVectorField.C: makeAbsolute on the whole patch), so faces
@@ -223,7 +301,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     g = mesh.geometry()
     q = mesh.quality()
     if not q["ok"]:
-        raise MeshError(f"mesh check failed: {q}")
+        raise MeshError(_quality_message(q, mesh, g))
     plan = {"rho": rho, "nu": nu, "mu": mu, "model": model, "patches": {}, "inlets": {}, "quality": q, "zones": {}}
     zones = {z["name"]: z for z in study.get("rotating", [])}
     mesh.zones = {}
@@ -499,6 +577,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     if (case / "system" / "fvConstraints").exists():      # left by an energy run in the same folder
         (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
+    _mrf_wall_leaks(mesh, g, zones, plan, patches)
     plan["functions"] = funcs
     plan["laplacian"], plan["sngrad"], plan["nonorth"] = lap, sn, nonorth
     plan["grad"] = grad

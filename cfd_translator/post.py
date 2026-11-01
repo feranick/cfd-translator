@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.10.28.2
+Version: 2026.11.01.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -94,6 +94,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     face_forces = {}
     net_phi, inflow = 0.0, 0.0
     wall_faces = []          # (face indices, F per face) of every wall patch
+    wall_flux = {}           # flow through walls (should be none): {wall: (net, gross)} m3/s
     visc_cmp = [0.0, 0.0]
     yplus = {}
     probes_X, probes_V = [], []
@@ -145,7 +146,9 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         scale_a = max(scale_a, float(np.linalg.norm(Ma)), float(np.linalg.norm(Fa)))
         gross_a += np.abs(np.cross(rf, Mo)).sum(axis=0) + np.abs(np.cross(rf, F)).sum(axis=0)
         net_phi += float(phi.sum())
-        inflow += float(np.clip(-phi, 0, None).sum())
+        inflow += float(np.clip(-phi, 0, None).sum()) if kind != "wall" else 0.0
+        if kind == "wall":
+            wall_flux[nm] = (float(phi.sum()), float(np.abs(phi).sum()))
         At = float(A.sum())
         if en:
             mdot = -float(phi.sum())
@@ -490,6 +493,14 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
               **({"energy_balance": energy_check} if en else {}),
               "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(ang_scale), "error": _r(ang_err),
                                            "about": _r(cofr / SCALE)}}
+    gross_w = sum(g_ for _, g_ in wall_flux.values())
+    if inflow > 0 and gross_w > 1e-3 * inflow:
+        worst = max(wall_flux, key=lambda n: wall_flux[n][1])
+        checks["wall_flux"] = {"gross": _r(gross_w), "fraction_of_inflow": _r(gross_w / inflow),
+                               "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0}}
+        warns.append(f"fluid flows through walls: {gross_w:.3g} {'kg/s' if en else 'm3/s'} ({gross_w / inflow:.1%} of the "
+                     f"inflow), most through {worst!r}. With a rotating zone, a stationary wall inside it or a rotating "
+                     "wall outside it does this (MRF); the flows and the pump's head are not physical")
     if por:
         # the balance above already holds the porous source: inflow - outflow of momentum = wall and boundary forces +
         # the media's reactions. Say which reactions the part's forces hold, and flag those left out

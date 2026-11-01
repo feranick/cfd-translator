@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.10.31.4
+Version: 2026.11.01.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -382,6 +382,8 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
         ch = res.get("checks", {})
         if ch.get("mass_balance", {}).get("error", 0) > 1e-3:
             why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
+        if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.01:
+            why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
         if why:
             why.append("do not report these numbers as results: raise solve.transient.end_time (a longer average), "
                        "or check the flow with images")
@@ -396,6 +398,8 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
     ch = res.get("checks", {})
     if ch.get("mass_balance", {}).get("error", 0) > 1e-3:
         why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
+    if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.01:
+        why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
     mb = ch.get("momentum_balance", {})
     if "note" not in mb and mb.get("error", 0) > 0.03:
         why.append(f"momentum balance off by {mb['error']:.2%}")

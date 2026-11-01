@@ -62,7 +62,11 @@ def _case(tmp: Path, n=4000, ramp=0.0, t_amp=0.5, p_amp=1000.0):
     return res, it, T, rise
 
 
-def test_monitor_entries_in_the_controldict(tmp_path):
+def test_monitor_entries_in_the_controldict(tmp_path, monkeypatch):
+    # the zone covers the whole box and its flat walls (they would leak under MRF: case._mrf_wall_leaks); this
+    # test is about the controlDict entries only
+    from cfd_translator import case as case_mod
+    monkeypatch.setattr(case_mod, "_mrf_wall_leaks", lambda *a, **k: None)
     st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
           "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 30, "radius": 500}],
           "bcs": [{"kind": "inlet", "name": "inlet", "faces": {"nx": -1}, "velocity": 0.01},
