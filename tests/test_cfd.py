@@ -805,9 +805,17 @@ def test_walls_the_mrf_frame_pushes_fluid_through(tmp_path):
           "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 300, "radius": 60}],
           "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.01}, {"kind": "outlet", "faces": {"nx": 1}}],
           "mesh": {"cells": [20, 20, 1]}}
-    with pytest.raises(MeshError, match="moves fluid through walls") as ei:
+    with pytest.raises(MeshError, match="would flow through walls") as ei:
         prepare(st, tmp_path / "a")
-    assert "stationary wall 'walls'" in str(ei.value) and "inside the zone" in str(ei.value)
+    assert "wall 'walls' (stationary)" in str(ei.value) and "inside zone 'rotor'" in str(ei.value)
+    # s180 (2026.11.01): a wall with its own rotation outside the zone (impeller_back) leaked 64 % of the inflow;
+    # the first check took it for stationary
+    own = dict(st, rotating=[dict(st["rotating"][0], radius=40)],
+               bcs=st["bcs"] + [{"kind": "wall", "name": "back", "faces": {"ny": 1},
+                                 "rotation": {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 300}}])
+    with pytest.raises(MeshError, match="would flow through walls") as ei:
+        prepare(own, tmp_path / "d")
+    assert "wall 'back' (rotating (its own rotation))" in str(ei.value) and "outside the rotating zones" in str(ei.value)
     # the zone clear of the walls: fine
     ok = dict(st, rotating=[dict(st["rotating"][0], radius=40)])
     prepare(ok, tmp_path / "b")
