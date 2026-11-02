@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.01.1
+Version: 2026.11.01.4
 
     results(study, mesh, plan, fields) -> dict
 
@@ -493,14 +493,21 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
               **({"energy_balance": energy_check} if en else {}),
               "angular_momentum_balance": {"residual_Nm": _r(ang), "scale_Nm": _r(ang_scale), "error": _r(ang_err),
                                            "about": _r(cofr / SCALE)}}
+    # flow through walls, judged on each wall's net flux: a fast-turning faceted surface carries small fluxes of
+    # both signs face by face that cancel (s180: |flux| added up 64 % of the inflow, net 1.5 %)
+    net_w = sum(abs(n_) for n_, _ in wall_flux.values())
     gross_w = sum(g_ for _, g_ in wall_flux.values())
-    if inflow > 0 and gross_w > 1e-3 * inflow:
-        worst = max(wall_flux, key=lambda n: wall_flux[n][1])
-        checks["wall_flux"] = {"gross": _r(gross_w), "fraction_of_inflow": _r(gross_w / inflow),
-                               "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0}}
-        warns.append(f"fluid flows through walls: {gross_w:.3g} {'kg/s' if en else 'm3/s'} ({gross_w / inflow:.1%} of the "
-                     f"inflow), most through {worst!r}. With a rotating zone, a stationary wall inside it or a rotating "
-                     "wall outside it does this (MRF); the flows and the pump's head are not physical")
+    if inflow > 0 and (net_w > 1e-3 * inflow or gross_w > 0.05 * inflow):
+        worst = max(wall_flux, key=lambda n: abs(wall_flux[n][0]))
+        checks["wall_flux"] = {"net": _r(net_w), "fraction_of_inflow": _r(net_w / inflow),
+                               "gross": _r(gross_w), "gross_fraction": _r(gross_w / inflow),
+                               "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0},
+                               "note": "net: what walls add to or take from the flow (judged); gross: the sum of "
+                                       "|flux| face by face, which includes fluxes that cancel along a wall"}
+        if net_w > 5e-3 * inflow:
+            warns.append(f"fluid flows through walls: net {net_w:.3g} {'kg/s' if en else 'm3/s'} ({net_w / inflow:.1%} of "
+                         f"the inflow), most through {worst!r}. With rotation: a stationary wall inside a rotating zone, "
+                         "or a rotating wall outside it, that is not a surface of revolution about the axis")
     if por:
         # the balance above already holds the porous source: inflow - outflow of momentum = wall and boundary forces +
         # the media's reactions. Say which reactions the part's forces hold, and flag those left out

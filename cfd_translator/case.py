@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.01.3
+Version: 2026.11.01.4
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -157,6 +157,16 @@ def swirl_velocity(Cf_mm: np.ndarray, spec: dict) -> np.ndarray:
     return float(spec["tangential"]) * t / np.maximum(rn, 1e-300)[:, None]
 
 
+def facet_tangential(U: np.ndarray, n: np.ndarray, angle_deg: float = 6.0) -> np.ndarray:
+    """U with its normal part removed on faces it crosses by less than angle_deg (facets of a surface it moves
+    along); faces it really crosses (blades, vanes) keep it."""
+    un = np.einsum("ij,ij->i", U, n)
+    small = np.abs(un) <= np.sin(np.radians(angle_deg)) * np.linalg.norm(U, axis=1)
+    out = U.copy()
+    out[small] -= un[small, None] * n[small]
+    return out
+
+
 def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
     return U - np.einsum("ij,ij->i", U, n)[:, None] * n
 
@@ -215,7 +225,8 @@ def _mrf_wall_leaks(mesh, g, zones: dict, plan: dict, patches: list) -> None:
                                              "rpm": zp["omega_rad_s"] * 60 / (2 * np.pi)})
             how = f"rotating with zone {r!r}"
         elif isinstance(r, dict):
-            Uw = swirl_velocity(g["Cf"][f], r)
+            nf = g["Sf"][f] / np.linalg.norm(g["Sf"][f], axis=1)[:, None]
+            Uw = facet_tangential(swirl_velocity(g["Cf"][f], r), nf)     # as the case writes it
             how = "rotating (its own rotation)"
         else:
             Uw = np.zeros((len(f), 3))
@@ -464,10 +475,12 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                 Sf = g["Sf"][f]
                 n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
                 if b.get("rotation"):
-                    # rigid rotation: the full omega x r (blades move through the fluid; on surfaces of
-                    # revolution it is tangential anyway)
+                    # rigid rotation: the full omega x r (blades move through the fluid). On the facets of a
+                    # surface of revolution it is tangential up to the faceting; that small normal part is
+                    # dropped (it fed s180's 'impeller_back' cylinders, r 137 at 1450 rpm, with a flux that
+                    # cancels only on average)
                     spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
-                    Ut = swirl_velocity(g["Cf"][f], spec)
+                    Ut = facet_tangential(swirl_velocity(g["Cf"][f], spec), n)
                     if isinstance(b["rotation"], str):
                         _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
                 else:

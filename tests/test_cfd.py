@@ -425,7 +425,9 @@ def test_rotating_zone_files_and_rotating_wall(tmp_path):
     U = np.atleast_2d(foamio.read_foam((c / "0" / "U").read_text())["boundaryField"]["spin"]["value"])
     # a rotating wall moves rigidly: omega x r = (-omega y, omega x, 0) on the lid (y = +50 mm)
     C = mesh.geometry()["Cf"][mesh.patch_faces("spin")] * 1e-3
-    assert np.allclose(U[:, 0], -np.pi * C[:, 1]) and np.allclose(U[:, 1], np.pi * C[:, 0])
+    far = np.abs(C[:, 0]) > 0.006                    # where the lid's motion crosses it by more than 6 degrees
+    assert np.allclose(U[far, 0], -np.pi * C[far, 1]) and np.allclose(U[far, 1], np.pi * C[far, 0])
+    assert np.allclose(U[~far, 1], 0) and np.allclose(U[~far, 0], -np.pi * C[~far, 1])   # facets: tangential only
     with pytest.raises(Exception, match="MRF"):
         solve_case(c)
     bad = dict(st, bcs=[{"kind": "wall", "faces": {"ny": 1}, "rotation": "nope"}])
@@ -885,3 +887,33 @@ def test_a_surface_gmsh_cannot_mesh_is_tried_with_other_algorithms():
             raise Exception("some other failure")
     with pytest.raises(Exception, match="some other failure"):
         generate(Other(0), 3, [])
+
+
+def test_faceted_rotating_walls_and_net_wall_flux():
+    """s180 (2026.11.01): 'impeller_back' is all surfaces of revolution (shaft, hub, discs, shroud rim r 137) but
+    its facets carried fluxes of both signs; |flux| added up to 64 % of the inflow, the net to 1.5 %."""
+    from cfd_translator.case import facet_tangential
+    th = np.linspace(0, 2 * np.pi, 13)[:-1] + np.pi / 12                 # a 12-facet cylinder about z
+    n = np.column_stack([np.cos(th), np.sin(th), np.zeros(12)])
+    corner = np.column_stack([np.cos(th - np.pi / 12), np.sin(th - np.pi / 12), np.zeros(12)])
+    U = np.cross([0, 0, 1.0], corner)                                   # omega x r at a facet's corner: 15 deg across
+    assert np.allclose(facet_tangential(U, n), U)                       # more than 6 degrees: kept (a real crossing)
+    U2 = np.cross([0, 0, 1.0], np.column_stack([np.cos(th - 0.05), np.sin(th - 0.05), np.zeros(12)]))
+    assert np.abs(np.einsum("ij,ij->i", facet_tangential(U2, n), n)).max() < 1e-12     # 3 deg: made tangential
+    # after a run: fluxes of both signs on a wall that cancel are not a leak
+    from cfd_translator.post import results
+    import tempfile
+    from pathlib import Path
+    st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 0.01}, {"kind": "outlet", "faces": {"nx": 1}}],
+          "mesh": {"cells": [10, 10, 1]}}
+    mesh, patches, sel, plan, w = prepare(st, Path(tempfile.mkdtemp()))
+    pat = {}
+    for P in mesh.patches:
+        kind = plan["patches"][P["name"]]["kind"]
+        phi = {"inlet": np.full(P["n"], -1e-5 / P["n"]), "outlet": np.full(P["n"], 1e-5 / P["n"])}.get(
+            kind, np.tile([3e-6, -3e-6], P["n"] // 2 + 1)[:P["n"]])
+        pat[P["name"]] = {"U": np.zeros((P["n"], 3)), "p": np.zeros(P["n"]), "phi": phi, "wss": None, "nut": None}
+    res, warns = results(st, mesh, plan, {"U": np.zeros((mesh.ncells, 3)), "p": np.zeros(mesh.ncells), "patches": pat})
+    wf = res["checks"]["wall_flux"]
+    assert wf["fraction_of_inflow"] < 1e-9 and wf["gross_fraction"] > 1 and not any("through walls" in x for x in warns)
