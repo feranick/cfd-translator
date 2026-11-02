@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.01.4
+Version: 2026.11.02.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -110,7 +110,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 warns.append(f"ran on {use} MPI rank{'s' if use > 1 else ''} instead of {procs}: {mesh.ncells} cells "
                              f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
             if transient:
-                info = _solve_transient(case, study, plan, timeout, use, folder, tstate, t_job, warns)
+                info = _solve_transient(case, study, plan, timeout, use, folder, tstate, t_job, warns, mesh)
                 if info.get("continued"):
                     if watcher is not None:
                         _cpu_note(watcher.stop(), info)
@@ -131,6 +131,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                                     jobs=tstate.get("segments", 0) + 1, init_iterations=tstate.get("init_iterations"),
                                     averaged_fields=bool(fields.get("averaged")))
                 out["solve"].pop("first_residuals", None)
+                if plan.get("sliding"):
+                    sl = plan["sliding"]
+                    out["solve"]["sliding"] = {
+                        "zone": sl["zone"], "revolutions": tr.get("revolutions"),
+                        "averaged_revolutions": tr.get("average_revolutions"), "revolution_s": tr.get("period"),
+                        "degrees_per_step": tr.get("degrees_per_step"), "interface_faces": sl["interface_faces"],
+                        "interface_lean_deg": sl["interface_lean_deg"], "rotor_walls": sl["moving_walls"]}
                 lg = dict(lg, converged=True)            # residual convergence is not the question in time
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
@@ -479,7 +486,7 @@ def _continue_transient(study: dict, folder: Path):
     write_transient(folder / "case", study, plan)
     state = {"prepared": True, "segments": 0, "init_done": True, "started": True,
              "time_steps": int(old.get("time_steps", 0)), "init_iterations": old.get("init_iterations"),
-             "continued_from": str(src), "continued_at": t}
+             "continued_from": str(src), "continued_at": t, "sliding_done": bool(plan.get("sliding"))}
     with open(folder / "prepared.pkl", "wb") as f:
         pickle.dump((mesh, patches, selection, plan, list(warns) + notes), f)
     (folder / "transient.json").write_text(json.dumps(state))
@@ -487,7 +494,7 @@ def _continue_transient(study: dict, folder: Path):
 
 
 def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs: int, folder: Path, state: dict,
-                     t_job: float, warns: list) -> dict:
+                     t_job: float, warns: list, mesh=None) -> dict:
     """The steady start (once), then the transient run up to this job's time budget. When end_time is not reached
     and this is a SLURM job, the next job is submitted (after this one) and {'continued': True, ...} returned."""
     from . import foam
@@ -510,6 +517,20 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         resume = bool(state.get("started"))
         state["started"] = True
         save()
+    if plan.get("sliding") and not state.get("sliding_done"):
+        # the zone's cells start turning: the mesh is split at its cylinder and coupled non-conformally (sliding.py)
+        from .sliding import to_sliding
+        fm = foam.find_foam()
+        if not (case / "log.checkMesh").exists():            # the conformal mesh, before it is split
+            foam._step(fm, "checkMesh", "log.checkMesh", case, 900, raise_on_error=False)
+        notes = to_sliding(case, plan, mesh, lambda cmd, log: foam._step(fm, cmd, log, case, 3600))
+        write_transient(case, study, plan)
+        state.update(sliding_done=True, sliding_notes=notes)
+        save()
+        warns += notes
+        resume = True
+    elif state.get("sliding_notes"):
+        warns += [n for n in state["sliding_notes"] if n not in warns]
     left = timeout - (time.time() - t_job)
     info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
     state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])

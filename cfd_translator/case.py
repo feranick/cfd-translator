@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.01.6
+Version: 2026.11.02.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -438,7 +438,8 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         walls = [p["name"] for p in patches if p["kind"] == "wall" and p["bc"].get("rotation") == name]
         plan["zones"][name] = {"cells": int(len(cells)), "omega_rad_s": omega, "axis": a.tolist(),
                                "center_mm": list(map(float, z.get("center", [0, 0, 0]))),
-                               "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls}
+                               "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls,
+                               "motion": z.get("motion", "mrf")}
     from .porous import build_zones as _porous_zones
     _porous_zones(study, mesh, plan)                    # porous cellZones (after the rotating ones)
     # inlets first (they set the turbulence reference)
@@ -567,7 +568,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                     spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
                     Ut = (own_rotation_velocity(mesh, g, f, spec, plan) if isinstance(b["rotation"], dict)
                           else facet_tangential(swirl_velocity(g["Cf"][f], spec), n))
-                    if isinstance(b["rotation"], str):
+                    if isinstance(b["rotation"], str) and zones[b["rotation"]].get("motion") != "sliding":
                         _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
                 else:
                     Ut = _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
@@ -695,7 +696,16 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     if (case / "system" / "fvConstraints").exists():      # left by an energy run in the same folder
         (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
-    _mrf_wall_leaks(mesh, g, zones, plan, patches)
+    slide = [z for z in zones.values() if z.get("motion") == "sliding"]
+    if slide:
+        from .sliding import check as _sliding_check
+        _sliding_check(mesh, g, slide[0], plan, patches)
+        try:                               # the steady start runs with MRF: leaks there only spoil its start
+            _mrf_wall_leaks(mesh, g, zones, plan, patches)
+        except MeshError as exc:
+            plan.setdefault("notes", []).append(f"steady start (MRF, before the mesh slides): {exc}")
+    else:
+        _mrf_wall_leaks(mesh, g, zones, plan, patches)
     plan["functions"] = funcs
     plan["laplacian"], plan["sngrad"], plan["nonorth"] = lap, sn, nonorth
     plan["grad"] = grad

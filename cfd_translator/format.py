@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.01.5
+Version: 2026.11.02.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -29,7 +29,8 @@ FLUIDS = {
 }
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
-TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue"}
+TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
+                  "degrees_per_step"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -110,6 +111,8 @@ CONVENTIONS = [
     "Vehicles, bluff bodies: read guide('vehicle_aero') (MCP tool) first: domain, snappy sizes, layers, DES windows.",
     "Pumps, fans: a rotating zone (MRF) around the impeller, its faces a wall with rotation: the zone's name. "
     "Results: rotating.<zone>.torque_Nm, power_W; with an inlet and an outlet pump.head_m, efficiency.",
+    "Sliding mesh (no frozen rotor): rotating[].motion 'sliding', mesher snappy, solve.transient; read "
+    "guide('pumps') first.",
     "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
     "results.averaged: mean, std, drift, scatter of torque, total pressures, cd, cl over the last 25 % (>= 500 "
     "its); the means replace the results (*_last: the final iteration). settled (drift < 1 %, scatter < 2 %; "
@@ -145,11 +148,12 @@ STUDY_KEYS = {
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
              "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs, "
-             "continue}: time averages; needed by kOmegaSSTDES}",
+             "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
-    "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis}]: MRF zones",
+    "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis, motion: mrf | "
+                "sliding}]: MRF zones (default) or a sliding mesh (transient, snappy)",
     "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0,a1,b0,b1]} "
               "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high} | "
               "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,..,z1], view}], "
@@ -807,14 +811,33 @@ def validate_study(st: dict) -> dict:
         znames.append(z["name"])
         errs += _rotation_errors({k: v for k, v in z.items() if k in ("axis", "center", "rpm")}, w, ("rpm",))
         for k in z:
-            if k not in ("name", "axis", "center", "rpm", "radius", "span"):
+            if k not in ("name", "axis", "center", "rpm", "radius", "span", "motion"):
                 errs.append(f"{w}: unknown key {k!r}")
+        if z.get("motion", "mrf") not in ("mrf", "sliding"):
+            errs.append(f"{w}.motion: 'mrf' (default: a frozen rotor, steady) or 'sliding' (the mesh turns; transient)")
         if not _num(z.get("radius")) or z["radius"] <= 0:
             errs.append(f"{w}.radius: a positive radius (mm)")
         if "span" in z and (not _vec(z["span"], 2) or z["span"][0] >= z["span"][1]):
             errs.append(f"{w}.span: [s0, s1] (mm along the axis from center, s0 < s1)")
     if len(set(znames)) != len(znames):
         errs.append("rotating: zone names must be unique")
+    sliding = [z["name"] for z in rot if isinstance(z, dict) and z.get("motion") == "sliding" and "name" in z]
+    if sliding:
+        if len(sliding) > 1 or len(sliding) != len(rot):
+            errs.append("rotating: one sliding zone per study, and no MRF zones beside it")
+        if not tr:
+            errs.append(f"rotating {sliding[0]!r}: a sliding mesh is transient: add solve.transient {{end_time "
+                        "(about 10 revolutions: 10 x 60 / rpm s), average_from (after 4-5 revolutions)}")
+        if (st.get("mesh") or {}).get("mesher") != "snappy":
+            errs.append(f"rotating {sliding[0]!r}: a sliding mesh needs mesh.mesher snappy (the zone's cylinder must be "
+                        "a meshed surface for its cells to slide along it)")
+        if two_d:
+            errs.append(f"rotating {sliding[0]!r}: no sliding mesh in 2d")
+    if isinstance(tr, dict) and "degrees_per_step" in tr:
+        if not sliding:
+            errs.append("solve.transient.degrees_per_step: only with a sliding zone (rotating[].motion 'sliding')")
+        elif not _num(tr["degrees_per_step"]) or not 0.05 <= tr["degrees_per_step"] <= 10:
+            errs.append("solve.transient.degrees_per_step: the largest rotation per time step, 0.05-10 degrees (default 1)")
     for i, b in enumerate(bcs):
         r = b.get("rotation") if isinstance(b, dict) else None
         if isinstance(r, str) and r not in znames:

@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.10.31.5
+Version: 2026.11.02.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -584,9 +584,16 @@ def transient_steps(study: dict) -> float | None:
     U = _velocity(study)
     W = float(tr.get("write_interval", T / 10))
     dt = min(W / 10, T / 500)
+    from .transient import sliding_zone
+    sl = sliding_zone(study)
+    co = float(tr.get("max_co", 2.0 if sl else 1.0))
+    if sl:
+        # the rotor's tip speed sets the Courant number, and at most degrees_per_step per step
+        U = max(U, abs(float(sl["rpm"])) * 2 * math.pi / 60 * float(sl["radius"]) * 1e-3)
+        dt = min(dt, float(tr.get("degrees_per_step", 1.0)) / 360.0 * 60.0 / abs(float(sl["rpm"])))
     if h and U:
-        dt = min(dt, 0.3 * float(tr.get("max_co", 1.0)) * h * 1e-3 / (1.5 * U))
-    return max(T - T0, 0.0) / dt
+        dt = min(dt, 0.3 * co * h * 1e-3 / (1.5 * U))
+    return max(T - T0, 0.0) / dt * (1.6 if sl else 1.0)      # sliding: two outer correctors, mesh motion
 
 
 def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs: int | None = None) -> float | None:

@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.10.25.3
+Version: 2026.11.02.1
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -69,11 +69,34 @@ def settings(study: dict, mesh=None) -> dict | None:
             V = mesh.geometry()["V"]
             h = float(np.cbrt(max(float(np.min(V)), 1e-30)))       # mm
         dt = min(0.2 * h * SCALE / U, W / 20)
-    return {"end_time": T, "average_from": float(tr.get("average_from", T / 3)), "max_co": float(tr.get("max_co", 1.0)),
-            "write_interval": W, "init": int(tr.get("init", 0 if model == "laminar" else 500)),
-            "max_jobs": int(tr.get("max_jobs", 10)), "dt": float(f"{dt:.4g}"), "model": model, "velocity": U,
-            "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
-            "max_dt": float(f"{min(W / 10, T / 500):.4g}")}
+    out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)), "max_co": float(tr.get("max_co", 1.0)),
+           "write_interval": W, "init": int(tr.get("init", 0 if model == "laminar" else 500)),
+           "max_jobs": int(tr.get("max_jobs", 10)), "dt": float(f"{dt:.4g}"), "model": model, "velocity": U,
+           "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
+           "max_dt": float(f"{min(W / 10, T / 500):.4g}")}
+    sl = sliding_zone(study)
+    if sl:
+        # a sliding mesh: at most degrees_per_step of rotation per time step, Courant 2 (OpenFOAM's propeller
+        # tutorial), averages over whole revolutions (the window ends at end_time)
+        Trev = 60.0 / abs(float(sl["rpm"]))
+        deg = float(tr.get("degrees_per_step", 1.0))
+        out["max_co"] = float(tr.get("max_co", 2.0))
+        out["max_dt"] = float(f"{min(out['max_dt'], deg / 360.0 * Trev):.4g}")
+        out["dt"] = min(out["dt"], out["max_dt"])
+        n = int(np.floor((T - out["average_from"]) / Trev + 1e-9))
+        if n >= 1:
+            out["average_from"] = float(f"{T - n * Trev:.10g}")
+        out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),
+                   degrees_per_step=deg, sliding=sl["name"])
+    return out
+
+
+def sliding_zone(study: dict) -> dict | None:
+    """The study's sliding zone (rotating[].motion 'sliding'), or None."""
+    for z in study.get("rotating") or []:
+        if isinstance(z, dict) and z.get("motion") == "sliding":
+            return z
+    return None
 
 
 def _dict(obj: str, location: str, body: str) -> str:
@@ -125,15 +148,23 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
           f"snGradSchemes\n{{\n    default         {plan['sngrad']};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}")
     (case / "system" / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
     fields = "U|k|omega" if turb else "U"
+    slide = bool(tr.get("sliding"))
+    # a sliding mesh (OpenFOAM 14 propeller tutorial; cfd.direct 'Using NCC'): the fluxes are corrected after
+    # the mesh moves (correctPhi: pcorr) and the mesh fluxes after the couple reconnects (correctMeshPhi: MeshPhi)
+    pc = ("    \"pcorr.*\"\n    {\n        $p;\n        tolerance       1e-02;\n        relTol          0;\n    }\n\n"
+          "    MeshPhi\n    {\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
+          "        tolerance       1e-02;\n        relTol          0;\n    }\n\n") if slide else \
+         "    pcorr\n    {\n        $p;\n        relTol          0;\n    }\n\n"
     fv = ("solvers\n{\n    p\n    {\n        solver          GAMG;\n        tolerance       1e-06;\n"
           "        relTol          0.05;\n        smoother        GaussSeidel;\n    }\n\n"
-          "    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n"
-          "    pcorr\n    {\n        $p;\n        relTol          0;\n    }\n\n"
+          "    pFinal\n    {\n        $p;\n        relTol          0;\n    }\n\n" + pc +
           f"    \"({fields})\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-07;\n        relTol          0.1;\n    }\n\n"
           f"    \"({fields})Final\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
-          "        tolerance       1e-07;\n        relTol          0;\n    }\n}\n\n"
-          f"PIMPLE\n{{\n    nOuterCorrectors 1;\n    nCorrectors     2;\n    nNonOrthogonalCorrectors {plan['nonorth']};\n"
+          "        tolerance       1e-07;\n        relTol          0;\n    }\n}\n\n" +
+          ("PIMPLE\n{\n    correctPhi      yes;\n    correctMeshPhi  yes;\n    nOuterCorrectors 2;\n    nCorrectors     1;\n"
+           if slide else "PIMPLE\n{\n    nOuterCorrectors 1;\n    nCorrectors     2;\n") +
+          f"    nNonOrthogonalCorrectors {plan['nonorth']};\n"
           "    momentumPredictor yes;\n    pRefCell        0;\n    pRefValue       0;\n}\n\n"
           "relaxationFactors\n{\n    equations\n    {\n        \".*\"            1;\n    }\n}")
     (case / "system" / "fvSolution").write_text(_dict("fvSolution", "system", fv))

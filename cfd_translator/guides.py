@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.10.28.1
+Version: 2026.11.02.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -8,6 +8,41 @@ OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions tabl
 from __future__ import annotations
 
 GUIDES = {
+    "pumps": {
+        "title": "Pumps, fans and mixers: MRF (frozen rotor) or a sliding mesh",
+        "choose": [
+            "MRF (rotating[].motion 'mrf', the default): steady, fast. The rotor is frozen where the geometry puts it, "
+            "so head and torque depend on where the blades stand against the cutwater or the stator vanes; the "
+            "rotor-stator interaction is lost. Good for trends and first designs; check two or three rotor angles.",
+            "Sliding mesh (motion 'sliding'): the zone's cells turn with the rotor (OpenFOAM's non-conformal coupling "
+            "on the zone's cylinder); transient. Head, torque, power and efficiency are averages over whole "
+            "revolutions, with their scatter. For performance numbers, pressure pulsations, and when MRF results "
+            "change with the rotor's angle.",
+        ],
+        "zone": [
+            "A cylinder (center, axis, radius, span) around the rotor in open fluid: between the impeller's outer "
+            "diameter and the cutwater or diffuser vanes (about mid-gap), its ends mid-way in the side gaps.",
+            "Inside it only the rotor's walls (rotation: the zone's name); stationary walls only if they are "
+            "surfaces of revolution about the axis (casing side discs, a stationary shaft sleeve). A blade tip "
+            "touching cells outside the zone, or a casing wall touching cells inside it, stops the run with where "
+            "it is: move the zone's ends into the gap and refine the gap (mesh.refine box) to 3 cells or more.",
+            "The same zone works for MRF and for sliding: the sliding run's steady start (solve.transient.init) uses "
+            "MRF.",
+        ],
+        "time": [
+            "solve.transient.end_time in seconds: revolutions x 60 / rpm; about 10 revolutions (5 to settle after "
+            "the steady start, 5 averaged). average_from about 4-5 revolutions in: the window is cut to whole "
+            "revolutions ending at end_time (solve.sliding.averaged_revolutions).",
+            "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
+            "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
+            "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+        ],
+        "reporting": [
+            "Give pump.head_m, power_W and efficiency as revolution averages with results.averaged (std, drift, "
+            "standard error); 'settled' needs drift < 2 % and standard error < 1 %.",
+            "Compare with the MRF result at the same flow to show how much the frozen rotor was off.",
+        ],
+    },
     "vehicle_aero": {
         "title": "Vehicles and bluff-body aerodynamics (drag, lift, wakes)",
         "domain": [

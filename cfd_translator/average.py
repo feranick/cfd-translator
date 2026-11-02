@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.10.28.2
+Version: 2026.11.02.1
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -46,8 +46,12 @@ def settings(study: dict, plan: dict | None = None) -> dict | None:
     tr = (study.get("solve") or {}).get("transient")
     if tr:
         T = float(tr["end_time"])
-        return {"transient": True, "from": float(tr.get("average_from", T / 3)), "drift": 0.02, "stderr": 0.01,
-                "min_samples": 20}
+        ptr = (plan or {}).get("transient") or {}
+        cfg = {"transient": True, "from": float(ptr.get("average_from", tr.get("average_from", T / 3))), "drift": 0.02,
+               "stderr": 0.01, "min_samples": 20}
+        if ptr.get("period"):                 # sliding mesh: whole revolutions
+            cfg["period"] = float(ptr["period"])
+        return cfg
     a = (study.get("solve") or {}).get("average")
     if a is False:
         return None
@@ -522,7 +526,9 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                 series["efficiency"] = (com, np.where(P > 0, rho * G0 * Q * H / P, np.nan))
     stats = {}
     fq, period = None, None
-    if tr:
+    if tr and cfg.get("period"):
+        period = float(cfg["period"])                 # sliding mesh: averages over whole revolutions
+    elif tr:
         sig = series.get("cl") or series.get("cd")
         fq = dominant_frequency(sig[0], sig[1], cfg["from"]) if sig is not None else None
         if fq and fq["periods"] >= 4:

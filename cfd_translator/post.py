@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.01.6
+Version: 2026.11.02.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -455,7 +455,8 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         a = np.asarray(zp["axis"], float)
         Om = zp["omega_rad_s"] * a
         V = g["V"][cells] * SCALE ** 3
-        src = rho * np.cross(Om, Uc[cells]) * V[:, None]
+        # an MRF zone's frame source; a sliding zone has none (its cells turn, U is absolute)
+        src = rho * np.cross(Om, Uc[cells]) * V[:, None] * (0.0 if zp.get("motion") == "sliding" else 1.0)
         totals += src.sum(axis=0)
         scale_m = max(scale_m, float(np.linalg.norm(src.sum(axis=0))))
         msrc = np.cross(g["C"][cells] * SCALE - cofr, src)
@@ -469,7 +470,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         power = -torque * zp["omega_rad_s"]
         out.setdefault("rotating", {})[zn] = {"torque_Nm": _r(torque), "power_W": _r(power),
                                               "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
-                                              "rotating_walls": zp["rotating_walls"]}
+                                              "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf")}
         if not zp["rotating_walls"]:
             warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
     # porous zones: their resistance enters the momentum balance like the MRF source (porous.py)
@@ -488,7 +489,10 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         Qin = sum(v["Q"] for n, v in out["flow"].items() if plan["patches"][n]["kind"] == "inlet")
         out["pump"] = {"head_m": _r(H), "flow_m3h": _r(Qin * 3600), "power_W": _r(P),
                        "efficiency": _r(rho * 9.80665 * Qin * H / P) if P > 0 else None,
-                       "note": "hydraulic efficiency of the modelled passages (frozen rotor, steady)"}
+                       "note": "hydraulic efficiency of the modelled passages (" + (
+                           "sliding mesh: time averages over whole revolutions" if any(
+                               z.get("motion") == "sliding" for z in out["rotating"].values())
+                           else "frozen rotor, steady") + ")"}
     # checks
     vol = float(g["V"].sum()) * SCALE ** 3
     qscale = max(inflow, plan.get("U_ref", 1.0) * vol ** (2 / 3) * 1e-3 * (rho if en else 1.0))
