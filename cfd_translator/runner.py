@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.02.1
+Version: 2026.11.02.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -32,7 +32,14 @@ def prepare(study: dict, folder: Path):
     else:
         groups = mesh_groups(mesh, external)
         patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
-    plan = write_case(study, mesh, patches, Path(folder) / "case")
+    try:
+        plan = write_case(study, mesh, patches, Path(folder) / "case")
+    except Exception as exc:
+        # what meshing found (unmeshed CAD faces, retried surfaces, narrow gaps) belongs in the failed result too:
+        # S50 (2026.11.01.5) stopped in the wall-leak check and its mesh notes were lost
+        exc.notes = list(getattr(exc, "notes", [])) + [w for w in list(warns) + mesh.info.get("mesh_notes", [])
+                                                       if w not in getattr(exc, "notes", [])]
+        raise
     return mesh, patches, selection, plan, list(warns) + mesh.info.pop("mesh_notes", []) + plan.pop("notes", [])
 
 

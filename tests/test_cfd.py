@@ -877,6 +877,9 @@ def test_a_surface_gmsh_cannot_mesh_is_tried_with_other_algorithms():
 
         def getBoundingBox(self, dim, tag):
             return [0, 0, 0, 2, 4, 6]
+
+        def getEntities(self, dim):
+            return []
     g, notes = FakeGmsh(2), []
     generate(g, 3, notes)
     assert g.calls == 3 and g.algs == [(2, 126, 1), (2, 126, 5)] and "surface 126 (near [1.0, 2.0, 3.0] mm)" in notes[0]
@@ -888,6 +891,47 @@ def test_a_surface_gmsh_cannot_mesh_is_tried_with_other_algorithms():
             raise Exception("some other failure")
     with pytest.raises(Exception, match="some other failure"):
         generate(Other(0), 3, [])
+
+
+def test_a_surface_gmsh_leaves_empty_without_an_error_is_tried_again():
+    """S50 on spark2 (2026.11.02): Gmsh logged a failure on face 121 and returned; the part's surface had a hole
+    there (1023 open edges) and snappyHexMesh's fluid region leaked out."""
+    from cfd_translator.mesher import generate
+
+    class Gmsh:
+        def __init__(self, works_with):
+            self.works_with, self.algs, self.calls = works_with, {}, 0
+            self.model = self.mesh = self
+            self.option = self
+
+        def getNumber(self, name):
+            return 6                                     # the global algorithm (Frontal-Delaunay) failed already
+
+        def generate(self, dim):
+            self.calls += 1
+
+        def clear(self):
+            pass
+
+        def setAlgorithm(self, dim, tag, val):
+            self.algs[tag] = val
+
+        def getBoundingBox(self, dim, tag):
+            return [0, 0, -124, 0, 0, -122.6]
+
+        def getEntities(self, dim):
+            return [(2, 120), (2, 121)]
+
+        def getElements(self, dim, tag):
+            ok = tag != 121 or self.algs.get(121) == self.works_with
+            return [2], [[1, 2] if ok else []], [[]]
+    g, notes = Gmsh(5), []
+    generate(g, 2, notes)
+    assert g.calls == 3 and g.algs == {121: 5}                # MeshAdapt (still empty), then Delaunay
+    assert "surface 121 (near [0.0, 0.0, -123.3] mm) (no elements, no error)" in notes[0] and "MeshAdapt" in notes[0]
+    g, notes = Gmsh(99), []                                   # nothing meshes it: reported, not raised
+    generate(g, 2, notes)
+    assert g.calls == 4 and "without elements with every 2D algorithm (MeshAdapt, Delaunay, BAMG)" in notes[-1]
 
 
 def test_faceted_rotating_walls_and_net_wall_flux():

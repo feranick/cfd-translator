@@ -1,6 +1,6 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, Gmsh (tetrahedra, or a swept 2D mesh), or
 snappyHexMesh (mesh.mesher "snappy": snappy.py).
-Version: 2026.11.01.2
+Version: 2026.11.02.2
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -226,36 +226,75 @@ def mesh_study(study: dict, workdir: Path, size_factor: float = 1.0):
 
 
 _FAILED_SURFACE = re.compile(r"(?:mesh periodic surface|surface)\s+(\d+)", re.I)
-SURFACE_ALGORITHMS = (1, 5, 6)               # MeshAdapt, Delaunay, Frontal-Delaunay: tried in turn on a failing surface
+SURFACE_ALGORITHMS = (1, 5, 6, 7)            # tried in turn on a failing surface (the global one left out)
+ALGORITHM_NAMES = {1: "MeshAdapt", 2: "Automatic", 5: "Delaunay", 6: "Frontal-Delaunay", 7: "BAMG", 8: "Frontal-Quad"}
+
+
+def _algorithms(gmsh) -> list:
+    try:
+        d = int(gmsh.option.getNumber("Mesh.Algorithm"))
+    except Exception:  # noqa: BLE001 (no such option: try them all)
+        d = None
+    return [a for a in SURFACE_ALGORITHMS if a != d]
+
+
+def empty_surfaces(gmsh) -> list[int]:
+    """Surfaces of the model without a single 2D element: Gmsh failed on them without raising (it logs the
+    error and goes on: S50 on spark2, 2026.11.02, face 121 left a hole in the part's surface)."""
+    out = []
+    for _, s in gmsh.model.getEntities(2):
+        _, tags, _ = gmsh.model.mesh.getElements(2, s)
+        if not any(len(t) for t in tags):
+            out.append(int(s))
+    return out
 
 
 def generate(gmsh, dim: int, notes: list | None = None) -> None:
-    """gmsh.model.mesh.generate(dim), again with another 2D algorithm on a surface Gmsh could not mesh ('Impossible
-    to mesh periodic surface 126': S50 at 0.7 x size on mochi, 2026.11.01; full cylinders and tori meshed through
-    their seam). Each failing surface gets MeshAdapt, then Delaunay, then Frontal-Delaunay."""
+    """gmsh.model.mesh.generate(dim), again with another 2D algorithm on each surface Gmsh could not mesh: one it
+    raises about ('Impossible to mesh periodic surface 126': S50 at 0.7 x size on mochi, 2026.11.01; full cylinders
+    and tori meshed through their seam) and one it leaves without elements and only logs (S50 face 121 on spark2,
+    2026.11.02). Each such surface gets MeshAdapt, Delaunay, Frontal-Delaunay and BAMG in turn (not the global
+    algorithm, which already failed). Surfaces still empty after all of them stay empty: the callers report them
+    (snappy: 'Gmsh could not triangulate ...')."""
+    algs = _algorithms(gmsh)
     tried: dict[int, int] = {}
+
+    def retry(sf: int, how: str) -> bool:
+        k = tried.get(sf, 0)
+        if k >= len(algs):
+            return False
+        tried[sf] = k + 1
+        gmsh.model.mesh.setAlgorithm(2, sf, algs[k])
+        if notes is not None:
+            bb = gmsh.model.getBoundingBox(2, sf)
+            at = [round(0.5 * (bb[i] + bb[i + 3]), 1) for i in range(3)]
+            notes.append(f"Gmsh could not mesh surface {sf} (near {at} mm) {how}: meshed it again with "
+                         f"{ALGORITHM_NAMES.get(algs[k], algs[k])}")
+        return True
     while True:
         try:
             gmsh.model.mesh.generate(dim)
-            return
         except Exception as exc:  # noqa: BLE001 (Gmsh raises plain Exception)
             m = _FAILED_SURFACE.search(str(exc))
             if not m:
                 raise
             sf = int(m.group(1))
-            k = tried.get(sf, 0)
-            if k >= len(SURFACE_ALGORITHMS):
+            if not retry(sf, "with its algorithm"):
                 raise MeshError(f"Gmsh could not mesh surface {sf} with any 2D algorithm ({exc}); it is often a full "
                                 "cylinder, cone or torus face whose seam meets a tiny edge: change mesh.size a little, "
                                 "refine there (mesh.refine), or split or simplify that face in the CAD") from exc
-            tried[sf] = k + 1
             gmsh.model.mesh.clear()
-            gmsh.model.mesh.setAlgorithm(2, sf, SURFACE_ALGORITHMS[k])
-            if notes is not None:
-                bb = gmsh.model.getBoundingBox(2, sf)
-                at = [round(0.5 * (bb[i] + bb[i + 3]), 1) for i in range(3)]
-                notes.append(f"Gmsh could not mesh surface {sf} (near {at} mm) with its default algorithm: meshed "
-                             f"it again with {('MeshAdapt', 'Delaunay', 'Frontal-Delaunay')[k]}")
+            continue
+        empty = [s for s in empty_surfaces(gmsh) if tried.get(s, 0) < len(algs)]
+        if not empty:
+            left = [s for s in empty_surfaces(gmsh)] if tried else []
+            if left and notes is not None:
+                notes.append(f"Gmsh left surface(s) {left} without elements with every 2D algorithm "
+                             f"({', '.join(ALGORITHM_NAMES.get(a, str(a)) for a in algs)})")
+            return
+        for s in empty:
+            retry(s, "(no elements, no error)")
+        gmsh.model.mesh.clear()
 
 
 def _tets(gmsh, study, vol, info, h):
