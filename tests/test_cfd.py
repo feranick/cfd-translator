@@ -814,7 +814,7 @@ def test_walls_the_mrf_frame_pushes_fluid_through(tmp_path):
     # the first check took it for stationary
     own = dict(st, rotating=[dict(st["rotating"][0], radius=40)],
                bcs=st["bcs"] + [{"kind": "wall", "name": "back", "faces": {"ny": 1},
-                                 "rotation": {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 300}}])
+                                 "rotation": {"axis": [0, 0, 1], "center": [30, 0, 0], "rpm": 300}}])
     with pytest.raises(MeshError, match="would flow through walls") as ei:
         prepare(own, tmp_path / "d")
     assert "wall 'back' (rotating (its own rotation))" in str(ei.value) and "outside the rotating zones" in str(ei.value)
@@ -918,3 +918,40 @@ def test_faceted_rotating_walls_and_net_wall_flux():
     res, warns = results(st, mesh, plan, {"U": np.zeros((mesh.ncells, 3)), "p": np.zeros(mesh.ncells), "patches": pat})
     wf = res["checks"]["wall_flux"]
     assert wf["fraction_of_inflow"] < 1e-9 and wf["gross_fraction"] > 1 and not any("through walls" in x for x in warns)
+
+
+def test_surfaces_of_revolution_and_own_rotation_walls():
+    """s180 (2026.11.01, .4): the pre-check still found 0.036 m3/s through 'impeller_back' (hub, shaft, discs, rim
+    r 137, all round about x): snapped faces of a cylinder are jagged, so Omega x r crossed them by more than 6
+    degrees, and inside the zone (same speed) the wall's tangential velocity no longer matched the frame."""
+    from cfd_translator.case import own_rotation_velocity, revolution_tags, rotation_key
+    # a triangulated cylinder about x (tag 1), a disc square to x (2), a flat vane in a plane through the axis (3)
+    th = np.linspace(0, 2 * np.pi, 49)
+    ring = lambda x, r: np.column_stack([np.full(48, x), r * np.cos(th[:-1]), r * np.sin(th[:-1])])  # noqa: E731
+    pts = np.concatenate([ring(0, 137), ring(17, 137), [[20, 0, 0]], ring(20, 40),
+                          [[0, 10, 0], [17, 10, 0], [17, 60, 0], [0, 60, 0]]])
+    cyl = np.array([[i, (i + 1) % 48, 48 + (i + 1) % 48] for i in range(48)] + [[i, 48 + (i + 1) % 48, 48 + i] for i in range(48)])
+    disc = np.array([[96, 97 + i, 97 + (i + 1) % 48] for i in range(48)])
+    plate = np.array([[145, 146, 147], [145, 147, 148]])
+    surf = [(1, cyl), (2, disc), (3, plate)]
+    assert revolution_tags(pts, surf, [1, 0, 0], [0, 0, 0]) == [1, 2]
+    assert rotation_key([2, 0, 0], [5, 0, 0]) == rotation_key([1, 0, 0], [0, 0, 0])      # same axis line
+    # a wall with its own rotation on a cartesian (jagged) mesh
+    m = box_mesh(100, 100, 10, 10, 10, 1)
+    m.patches = [{"name": "w", "type": "wall", "start": m.ninternal, "n": m.nboundary, "tags": m.tags()}]
+    g = m.geometry()
+    f = np.arange(m.ninternal, m.nfaces)
+    n = g["Sf"][f] / np.linalg.norm(g["Sf"][f], axis=1)[:, None]
+    spec = {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 600}
+    m.zones = {}
+    U0 = own_rotation_velocity(m, g, f, spec, {"zones": {}})
+    assert np.abs(np.einsum("ij,ij->i", U0, n)).max() > 1                 # not known as revolution: the motion kept
+    m.info["revolution_tags"] = {rotation_key([0, 0, 1], [0, 0, 0]): m.tags()}
+    U1 = own_rotation_velocity(m, g, f, spec, {"zones": {}})
+    assert np.abs(np.einsum("ij,ij->i", U1, n)).max() < 1e-12             # surfaces of revolution: along them
+    # inside a zone turning with it: the full Omega x r (the zone's relative flux cancels it exactly)
+    m.zones = {"z": np.arange(m.ncells)}
+    plan = {"zones": {"z": {"axis": [0, 0, 1], "center_mm": [0, 0, 0], "omega_rad_s": 600 * 2 * np.pi / 60}}}
+    U2 = own_rotation_velocity(m, g, f, spec, plan)
+    from cfd_translator.case import swirl_velocity
+    assert np.allclose(U2, swirl_velocity(g["Cf"][f], spec))

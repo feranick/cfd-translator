@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.01.4
+Version: 2026.11.01.6
 
     results(study, mesh, plan, fields) -> dict
 
@@ -148,7 +148,18 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         net_phi += float(phi.sum())
         inflow += float(np.clip(-phi, 0, None).sum()) if kind != "wall" else 0.0
         if kind == "wall":
-            wall_flux[nm] = (float(phi.sum()), float(np.abs(phi).sum()))
+            # judged: |flux| on CAD faces that are not surfaces of revolution about a rotation axis (where the
+            # snapped faces' fluxes of both signs cancel next to each other), when the mesher found them; else
+            # |net| per CAD face
+            tg = mesh.btag[f - ni]
+            rv = mesh.info.get("revolution_tags")
+            if rv:
+                rev = set().union(*[set(v) for v in rv.values()])
+                judged = float(np.abs(phi[~np.isin(tg, list(rev))]).sum())
+            else:
+                ut, inv = np.unique(tg, return_inverse=True)
+                judged = float(np.abs(np.bincount(inv, phi, len(ut))).sum())
+            wall_flux[nm] = (judged, float(np.abs(phi).sum()))
         At = float(A.sum())
         if en:
             mdot = -float(phi.sum())
@@ -495,15 +506,17 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                                            "about": _r(cofr / SCALE)}}
     # flow through walls, judged on each wall's net flux: a fast-turning faceted surface carries small fluxes of
     # both signs face by face that cancel (s180: |flux| added up 64 % of the inflow, net 1.5 %)
-    net_w = sum(abs(n_) for n_, _ in wall_flux.values())
+    net_w = sum(n_ for n_, _ in wall_flux.values())
     gross_w = sum(g_ for _, g_ in wall_flux.values())
     if inflow > 0 and (net_w > 1e-3 * inflow or gross_w > 0.05 * inflow):
-        worst = max(wall_flux, key=lambda n: abs(wall_flux[n][0]))
+        worst = max(wall_flux, key=lambda n: wall_flux[n][0])
         checks["wall_flux"] = {"net": _r(net_w), "fraction_of_inflow": _r(net_w / inflow),
                                "gross": _r(gross_w), "gross_fraction": _r(gross_w / inflow),
                                "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0},
-                               "note": "net: what walls add to or take from the flow (judged); gross: the sum of "
-                                       "|flux| face by face, which includes fluxes that cancel along a wall"}
+                               "note": "net (judged): |flux| through each wall's faces, leaving out CAD faces that "
+                                       "are surfaces of revolution about a rotation axis (whose snapped faces carry "
+                                       "fluxes of both signs that cancel); without that information, |sum| per CAD "
+                                       "face. gross: |flux| added over every face"}
         if net_w > 5e-3 * inflow:
             warns.append(f"fluid flows through walls: net {net_w:.3g} {'kg/s' if en else 'm3/s'} ({net_w / inflow:.1%} of "
                          f"the inflow), most through {worst!r}. With rotation: a stationary wall inside a rotating zone, "

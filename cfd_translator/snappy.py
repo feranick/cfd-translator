@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.01.5
+Version: 2026.11.01.6
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -751,6 +751,17 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
         st = settings(study, True, box, pbb)
     else:
         st = settings(study, False, list(pbb[0]) + list(pbb[1]), pbb)
+    # CAD faces that are surfaces of revolution about each rotation axis of the study (walls with their own
+    # rotation move along them: case.own_rotation_velocity)
+    from .case import revolution_tags, rotation_key
+    axes = {}
+    for z in study.get("rotating") or []:
+        axes[rotation_key(z["axis"], z.get("center"))] = (z["axis"], z.get("center"))
+    for bc in study.get("bcs") or []:
+        r = bc.get("rotation")
+        if isinstance(r, dict) and "axis" in r:
+            axes[rotation_key(r["axis"], r.get("center"))] = (r["axis"], r.get("center"))
+    rev_tags = {k: revolution_tags(pts, surf, ax, c) for k, (ax, c) in axes.items()}
     # a closed surface, or the fluid region leaks (internal flow: out to the background box)
     notes += list(getattr(surface_premesh, "notes", []) or [])
     health = surface_health(pts, surf)
@@ -1095,7 +1106,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                    "illegal_faces": report.get("illegal_faces", 0), "gap_cells": report.get("gap_cells", 0),
                    "attempts": attempts, "narrow_gaps": gaps, "procs": procs},
         "assigned": (out_patches, selection, warns + notes),
-        "snapped_zones": snapped})
+        "snapped_zones": snapped, "revolution_tags": rev_tags})
     if lay:
         mesh.info["layers"] = lay
     return mesh

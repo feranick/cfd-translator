@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.01.5
+Version: 2026.11.01.6
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -167,6 +167,83 @@ def facet_tangential(U: np.ndarray, n: np.ndarray, angle_deg: float = 6.0) -> np
     return out
 
 
+def _same_rotation(spec: dict, zp: dict) -> bool:
+    """Does a wall's own rotation {axis, center, rpm} turn exactly with an MRF zone (plan entry)?"""
+    a = np.asarray(spec["axis"], float)
+    a /= np.linalg.norm(a)
+    b = np.asarray(zp["axis"], float)
+    b /= np.linalg.norm(b)
+    if "rpm" not in spec or a @ b < 1 - 1e-9:
+        return False
+    w = float(spec["rpm"]) * 2 * np.pi / 60
+    if abs(w - zp["omega_rad_s"]) > 1e-9 * max(abs(w), 1.0):
+        return False
+    d = np.asarray(zp["center_mm"], float) - np.asarray(spec.get("center", [0, 0, 0]), float)
+    return float(np.linalg.norm(d - (d @ a) * a)) < 1e-6
+
+
+def rotation_key(axis, center) -> str:
+    a = np.asarray(axis, float)
+    a = a / np.linalg.norm(a)
+    c = np.asarray(center if center is not None else [0, 0, 0], float)
+    c = c - (c @ a) * a                                          # the axis line, not a point on it
+    return ",".join(f"{v:.6g}" for v in np.concatenate([a, c]) + 0.0)
+
+
+def revolution_tags(pts: np.ndarray, surf: list, axis, center, max_deg: float = 15.0, mean_deg: float = 5.0) -> list:
+    """CAD faces (tags) of a triangulated surface that are surfaces of revolution about the axis: their triangles'
+    normals have (almost) no part along the direction of rotation (mean under mean_deg, none over max_deg)."""
+    a = np.asarray(axis, float)
+    a /= np.linalg.norm(a)
+    o = np.asarray(center if center is not None else [0, 0, 0], float)
+    out = []
+    for tg, tri in surf:
+        if not len(tri):
+            continue
+        P = pts[tri]
+        nv = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+        ar = np.linalg.norm(nv, axis=1)
+        c = P.mean(axis=1) - o
+        t = np.cross(a, c)
+        tn = np.linalg.norm(t, axis=1)
+        ok = (ar > 0) & (tn > 1e-9 * max(float(tn.max()), 1e-30))
+        if not ok.any():
+            out.append(int(tg))                                  # on the axis: nothing moves across it
+            continue
+        sn = np.abs(np.einsum("ij,ij->i", nv[ok] / ar[ok, None], t[ok] / tn[ok, None]))
+        if float((sn * ar[ok]).sum() / ar[ok].sum()) < np.sin(np.radians(mean_deg)) and \
+                float(sn.max()) < np.sin(np.radians(max_deg)):
+            out.append(int(tg))
+    return sorted(out)
+
+
+def own_rotation_velocity(mesh, g, f, spec: dict, plan: dict) -> np.ndarray:
+    """The velocity of a wall with its own rotation {axis, center, rpm} at its faces f (m/s).
+    - Faces whose cell turns with it (an MRF zone at the same axis and speed): the full Omega x r, which the zone's
+      relative flux cancels exactly.
+    - Faces of a CAD face that is a surface of revolution about the axis (mesh.info['revolution_tags'], found on
+      the CAD's own triangulation by the snappy mesher): it moves along itself, so the normal part is removed face
+      by face, however jagged the snapped faces are.
+    - Anything else (blades, vanes) keeps the full motion, except across facets of less than 6 degrees.
+    s180 (2026.11.01): 'impeller_back' (hub, shaft, discs, rim r 137) fed 0.036 m3/s through its snapped faces."""
+    U = swirl_velocity(g["Cf"][f], spec)
+    Sf = g["Sf"][f]
+    n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
+    same = np.zeros(len(f), bool)
+    for zn, zp in (plan.get("zones") or {}).items():
+        if _same_rotation(spec, zp):
+            same |= np.isin(mesh.owner[f], mesh.zones[zn])
+    rev = set((mesh.info.get("revolution_tags") or {}).get(rotation_key(spec["axis"], spec.get("center")), []))
+    tags = mesh.btag[f - mesh.ninternal]
+    on_rev = np.isin(tags, list(rev)) & ~same if rev else np.zeros(len(f), bool)
+    out = U.copy()
+    un = np.einsum("ij,ij->i", U, n)
+    out[on_rev] -= un[on_rev, None] * n[on_rev]
+    rest = ~same & ~on_rev
+    out[rest] = facet_tangential(U[rest], n[rest])
+    return out
+
+
 def _tangential(U: np.ndarray, n: np.ndarray) -> np.ndarray:
     return U - np.einsum("ij,ij->i", U, n)[:, None] * n
 
@@ -214,6 +291,8 @@ def _mrf_wall_leaks(mesh, g, zones: dict, plan: dict, patches: list) -> None:
     # the frame velocity of each cell (m/s): Omega x r in a zone, 0 elsewhere
     frame_zone = np.full(mesh.ncells, -1)
     zlist = list(zones)
+    rev_all = set().union(*[set(v) for v in (mesh.info.get("revolution_tags") or {}).values()]) \
+        if mesh.info.get("revolution_tags") else set()
     for k, zn in enumerate(zlist):
         frame_zone[mesh.zones[zn]] = k
     bad = []
@@ -228,8 +307,7 @@ def _mrf_wall_leaks(mesh, g, zones: dict, plan: dict, patches: list) -> None:
                                              "rpm": zp["omega_rad_s"] * 60 / (2 * np.pi)})
             how = f"rotating with zone {r!r}"
         elif isinstance(r, dict):
-            nf = g["Sf"][f] / np.linalg.norm(g["Sf"][f], axis=1)[:, None]
-            Uw = facet_tangential(swirl_velocity(g["Cf"][f], r), nf)     # as the case writes it
+            Uw = own_rotation_velocity(mesh, g, f, r, plan)              # as the case writes it
             how = "rotating (its own rotation)"
         else:
             Uw = np.zeros((len(f), 3))
@@ -244,9 +322,13 @@ def _mrf_wall_leaks(mesh, g, zones: dict, plan: dict, patches: list) -> None:
                                                        "rpm": zp["omega_rad_s"] * 60 / (2 * np.pi)})
         rel = Uw - Vf
         leak = np.einsum("ij,ij->i", rel, Sf[f])                                    # m3/s per face
-        # facets of a surface of revolution move almost along themselves: count faces whose motion has more
-        # than ~6 degrees across them
+        # what counts: faces whose relative motion crosses them by more than ~6 degrees, except on CAD faces that
+        # are surfaces of revolution about the axis (their snapped or faceted faces carry fluxes of both signs that
+        # cancel next to each other: s180's 'impeller_back')
+        tags = mesh.btag[f - mesh.ninternal]
         across = np.abs(leak) > 0.1 * np.linalg.norm(rel, axis=1) * np.linalg.norm(Sf[f], axis=1)
+        if rev_all:
+            across &= ~np.isin(tags, list(rev_all))
         if not across.any():
             continue
         lk, ff, zz = leak[across], f[across], zc[across]
@@ -483,7 +565,8 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                     # dropped (it fed s180's 'impeller_back' cylinders, r 137 at 1450 rpm, with a flux that
                     # cancels only on average)
                     spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
-                    Ut = facet_tangential(swirl_velocity(g["Cf"][f], spec), n)
+                    Ut = (own_rotation_velocity(mesh, g, f, spec, plan) if isinstance(b["rotation"], dict)
+                          else facet_tangential(swirl_velocity(g["Cf"][f], spec), n))
                     if isinstance(b["rotation"], str):
                         _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
                 else:
