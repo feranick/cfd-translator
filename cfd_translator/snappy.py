@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.10.31.4
+Version: 2026.11.01.5
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -695,6 +695,24 @@ def cut_off_regions(mesh, open_patches: set) -> dict | None:
             "at": [round(float(v), 1) for v in g["C"][lab == big].mean(axis=0)]}
 
 
+NOLAYERS = "_nolayers"
+
+
+def touching_tags(surf: list, tags: set) -> set:
+    """CAD faces (tags) of the triangulated surface that share a vertex with any face in tags (not those)."""
+    if not tags:
+        return set()
+    verts = set()
+    for tg, tri in surf:
+        if tg in tags:
+            verts.update(np.unique(tri).tolist())
+    out = set()
+    for tg, tri in surf:
+        if tg not in tags and len(tri) and not verts.isdisjoint(np.unique(tri).tolist()):
+            out.add(int(tg))
+    return out
+
+
 def _gap_text(gaps: list) -> str:
     if not gaps:
         return "No narrow gaps were found between facing walls."
@@ -776,13 +794,31 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     # regions of the OBJ (part faces) and patches of the background box
     tri_of = dict(surf)
     regions, box_patches, of_names = [], [], {}
+    # mesh.layers.at_openings false: the wall faces that touch an inlet, outlet or opening get no layers (layers
+    # can fold cells where they end at an open patch: S50, 2026.11.01). They go to a region of their own whose
+    # patch is merged back into their bc when the mesh is read
+    near_open = set()
+    if st["layers"] and (m.get("layers") or {}).get("at_openings", True) is False:
+        open_tags = {t for p in patches if p["kind"] in ("inlet", "outlet", "opening") for t in p["tags"]
+                     if info[t]["on"] == "part"}
+        near_open = touching_tags(surf, open_tags)
     for k, p in enumerate(patches):
         pt = [t for t in p["tags"] if info[t]["on"] == "part"]
         bt = [t for t in p["tags"] if info[t]["on"] == "box"]
-        if pt:
-            regions.append((f"r{k}", p["name"], p["type"], pt))
+        cut = [t for t in pt if t in near_open] if p["kind"] == "wall" else []
+        rest = [t for t in pt if t not in cut]
+        if rest:
+            regions.append((f"r{k}", p["name"], p["type"], rest))
             for alias in (p["name"], f"{PART}_r{k}", PART):
-                of_names.setdefault(alias, (k, pt))
+                of_names.setdefault(alias, (k, rest))
+        if cut:
+            nm_ = p["name"] + NOLAYERS
+            regions.append((f"r{k}o", nm_, p["type"], cut))
+            for alias in (nm_, f"{PART}_r{k}o"):
+                of_names[alias] = (k, cut)
+            notes.append(f"no prism layers on {len(cut)} face(s) of {p['name']!r} touching an inlet or outlet "
+                         "(mesh.layers.at_openings false)")
+        pt = rest + cut
         if bt:
             nm = p["name"] if not pt else p["name"] + "_box"
             box_patches.append((nm, p["type"], [info[t]["box"] for t in bt]))
@@ -865,103 +901,119 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     attempts = []
     qual = st["quality"]
     merge_faces, flatness, attempt, quality_retried = True, 0.5, 0, False
-    while True:
-        for p in sd.glob("processor*"):
-            shutil.rmtree(p, ignore_errors=True)
-        shutil.rmtree(sd / "constant" / "polyMesh", ignore_errors=True)
-        (sd / "system" / "snappyHexMeshDict").write_text(snappy_dict(st, reg3, ipt, layer_patches, zones, qual,
-                                                                            outside_point=opt, merge_faces=merge_faces,
-                                                                            flatness=flatness))
-        (sd / "system" / "meshQualityDict").write_text(_hdr("meshQualityDict") +
-                                                       "".join(f"{k} {v:g};\n" for k, v in qual.items()))
-        foam._step(fm, "blockMesh", "log.blockMesh", sd, tmo)
-        if not (sd / "constant" / "extendedFeatureEdgeMesh").is_dir() and st["features"] is not None:
-            foam._step(fm, "surfaceFeatures", "log.surfaceFeatures", sd, tmo)
-        if procs > 1:
-            foam._step(fm, "decomposePar -force", "log.decomposePar", sd, tmo)
-            for pd in sd.glob("processor*"):            # the surface and its edges, wherever the ranks look for them
-                for sub in ("geometry", "extendedFeatureEdgeMesh"):
-                    if (sd / "constant" / sub).is_dir() and not (pd / "constant" / sub).exists():
-                        shutil.copytree(sd / "constant" / sub, pd / "constant" / sub)
-            rc = foam._step(fm, f"{foam.mpirun_command(procs)} -np {procs} snappyHexMesh -parallel",
-                            "log.snappyHexMesh", sd, tmo, raise_on_error=False)
-            log = parse_log(_read(sd / "log.snappyHexMesh"))
-            if rc == 0:
-                foam._step(fm, "reconstructPar -constant", "log.reconstructPar", sd, tmo)
-        else:
-            rc = foam._step(fm, "snappyHexMesh", "log.snappyHexMesh", sd, tmo, raise_on_error=False)
-            log = parse_log(_read(sd / "log.snappyHexMesh"))
-        if rc == 0 and not log["finished"]:
-            raise MeshError("snappyHexMesh left no finished log (log.snappyHexMesh): " + (_read(sd / "log.snappyHexMesh")[-1500:]
-                                                                                          or "the file is missing"))
-        if rc != 0 or "fatal" in log:
-            text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
-            if "checkFaceFlatness" in text and flatness > -1:
-                # a degenerate face (zero area, in a narrow gap) made the flatness check divide by zero: the
-                # floating point trap stops snappyHexMesh (s180 gap05 on mochi, 2026.10.31). Again without it
-                flatness = -1.0
-                attempt += 1
-                notes.append("snappyHexMesh stopped on a floating point exception in its face-flatness check "
-                             "(degenerate faces in a narrow gap): made again with minFaceFlatness -1 (that check off)")
-                continue
-            if "Multiple outside loops" in text and merge_faces:
-                # combineFaces could not merge the boundary faces at a narrow gap (layer addition): again without
-                merge_faces = False
-                attempt += 1
-                notes.append("snappyHexMesh stopped merging faces at a narrow gap ('Multiple outside loops'): made "
-                             "again with addLayersControls mergeFaces false")
-                continue
-            hint = ""                   # first, so the result's 3000-character error keeps it
-            if "Multiple outside loops" in text:
-                hint = ("This happens where two walls are much closer than the surface cells: " + _gap_text(gaps) +
-                        " Open such gaps to at least three surface cells, or close them.")
-            elif "haven't set cell zone" in text:
-                hint = ("snappyHexMesh could not tell which side of a zone's boundary some cells are on: a rotating or "
-                        "porous zone whose edge runs through a gap narrower than the surface cells, or cells cut off "
-                        "between walls. " + zone_gap_text + "Put the zone's edges in open fluid or in the solid "
-                        "casing, or refine the gap.")
-            elif "checkFaceFlatness" in text:
-                hint = ("snappyHexMesh hit a degenerate face even with the flatness check off: " + _gap_text(gaps) +
-                        " Open or close the gap.")
-            hint += leak_hint
-            raise MeshError(("cfdt: " + hint.strip() + "\n" if hint.strip() else "") + "snappyHexMesh stopped:\n" +
-                            text[-2400:])
-        foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
-        from .foamio import parse_checkmesh
-        cm = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))
-        rec = {"attempt": attempt + 1, "quality": {"maxNonOrtho": qual["maxNonOrtho"],
-                                                   "maxInternalSkewness": qual["maxInternalSkewness"]},
-               "checkMesh": {k: cm[k] for k in ("ok", "failed_checks", "max_non_orthogonality", "max_skewness",
-                                                "min_volume", "cells") if k in cm},
-               "illegal_faces": log["illegal_faces"], "cells": log["cells"]}
-        attempts.append(rec)
-        if cm.get("ok") and not log["illegal_faces"]:
-            break
-        if quality_retried or not st["retry"]:
-            break
-        quality_retried = True
-        attempt += 1
-        qual = stricter(qual)
-        notes.append("the first mesh failed checkMesh or had illegal faces: made again with stricter quality settings")
-    # read it back; tags per face from the surface it lies on
-    d = sd / "constant" / "polyMesh"
-    mesh = from_foam(d)
-    open_names = {nm for nm, (k, _) in of_names.items() if patches[k]["kind"] in ("inlet", "outlet", "opening")}
-    pockets = cut_off_regions(mesh, open_names)
-    if pockets:
-        # cells cut off from every inlet and outlet (closed pockets in narrow gaps): their pressure has no
-        # reference, the solver's first pressure solve gives NaN (s180, 2026.10.31: 75 regions). Remove them
-        keep = pockets["keep"]
-        sets = d / "sets"
-        sets.mkdir(exist_ok=True)
-        (sets / "cfdtKeep").write_text(_hdr("cfdtKeep", "cellSet", "constant/polyMesh/sets") +
-                                       f"{len(keep)}\n(\n" + "\n".join(map(str, keep.tolist())) + "\n)\n")
-        foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields", "log.subsetMesh", sd, tmo)
-        notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
-                     f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
-                     "snappyHexMesh closed them off in narrow gaps; left in, they make the pressure solver fail (NaN)")
+    layers_dropped = False
+    for layered in (True, False):
+        quality_retried = False
+        while True:
+            for p in sd.glob("processor*"):
+                shutil.rmtree(p, ignore_errors=True)
+            shutil.rmtree(sd / "constant" / "polyMesh", ignore_errors=True)
+            (sd / "system" / "snappyHexMeshDict").write_text(snappy_dict(st, reg3, ipt, layer_patches, zones, qual, layers_on=layered,
+                                                                                outside_point=opt, merge_faces=merge_faces,
+                                                                                flatness=flatness))
+            (sd / "system" / "meshQualityDict").write_text(_hdr("meshQualityDict") +
+                                                           "".join(f"{k} {v:g};\n" for k, v in qual.items()))
+            foam._step(fm, "blockMesh", "log.blockMesh", sd, tmo)
+            if not (sd / "constant" / "extendedFeatureEdgeMesh").is_dir() and st["features"] is not None:
+                foam._step(fm, "surfaceFeatures", "log.surfaceFeatures", sd, tmo)
+            if procs > 1:
+                foam._step(fm, "decomposePar -force", "log.decomposePar", sd, tmo)
+                for pd in sd.glob("processor*"):            # the surface and its edges, wherever the ranks look for them
+                    for sub in ("geometry", "extendedFeatureEdgeMesh"):
+                        if (sd / "constant" / sub).is_dir() and not (pd / "constant" / sub).exists():
+                            shutil.copytree(sd / "constant" / sub, pd / "constant" / sub)
+                rc = foam._step(fm, f"{foam.mpirun_command(procs)} -np {procs} snappyHexMesh -parallel",
+                                "log.snappyHexMesh", sd, tmo, raise_on_error=False)
+                log = parse_log(_read(sd / "log.snappyHexMesh"))
+                if rc == 0:
+                    foam._step(fm, "reconstructPar -constant", "log.reconstructPar", sd, tmo)
+            else:
+                rc = foam._step(fm, "snappyHexMesh", "log.snappyHexMesh", sd, tmo, raise_on_error=False)
+                log = parse_log(_read(sd / "log.snappyHexMesh"))
+            if rc == 0 and not log["finished"]:
+                raise MeshError("snappyHexMesh left no finished log (log.snappyHexMesh): " + (_read(sd / "log.snappyHexMesh")[-1500:]
+                                                                                              or "the file is missing"))
+            if rc != 0 or "fatal" in log:
+                text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
+                if "checkFaceFlatness" in text and flatness > -1:
+                    # a degenerate face (zero area, in a narrow gap) made the flatness check divide by zero: the
+                    # floating point trap stops snappyHexMesh (s180 gap05 on mochi, 2026.10.31). Again without it
+                    flatness = -1.0
+                    attempt += 1
+                    notes.append("snappyHexMesh stopped on a floating point exception in its face-flatness check "
+                                 "(degenerate faces in a narrow gap): made again with minFaceFlatness -1 (that check off)")
+                    continue
+                if "Multiple outside loops" in text and merge_faces:
+                    # combineFaces could not merge the boundary faces at a narrow gap (layer addition): again without
+                    merge_faces = False
+                    attempt += 1
+                    notes.append("snappyHexMesh stopped merging faces at a narrow gap ('Multiple outside loops'): made "
+                                 "again with addLayersControls mergeFaces false")
+                    continue
+                hint = ""                   # first, so the result's 3000-character error keeps it
+                if "Multiple outside loops" in text:
+                    hint = ("This happens where two walls are much closer than the surface cells: " + _gap_text(gaps) +
+                            " Open such gaps to at least three surface cells, or close them.")
+                elif "haven't set cell zone" in text:
+                    hint = ("snappyHexMesh could not tell which side of a zone's boundary some cells are on: a rotating or "
+                            "porous zone whose edge runs through a gap narrower than the surface cells, or cells cut off "
+                            "between walls. " + zone_gap_text + "Put the zone's edges in open fluid or in the solid "
+                            "casing, or refine the gap.")
+                elif "checkFaceFlatness" in text:
+                    hint = ("snappyHexMesh hit a degenerate face even with the flatness check off: " + _gap_text(gaps) +
+                            " Open or close the gap.")
+                hint += leak_hint
+                raise MeshError(("cfdt: " + hint.strip() + "\n" if hint.strip() else "") + "snappyHexMesh stopped:\n" +
+                                text[-2400:])
+            foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
+            from .foamio import parse_checkmesh
+            cm = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))
+            rec = {"attempt": attempt + 1, "quality": {"maxNonOrtho": qual["maxNonOrtho"],
+                                                       "maxInternalSkewness": qual["maxInternalSkewness"]},
+                   "checkMesh": {k: cm[k] for k in ("ok", "failed_checks", "max_non_orthogonality", "max_skewness",
+                                                    "min_volume", "cells") if k in cm},
+                   "illegal_faces": log["illegal_faces"], "cells": log["cells"]}
+            attempts.append(rec)
+            if cm.get("ok") and not log["illegal_faces"]:
+                break
+            if quality_retried or not st["retry"]:
+                break
+            quality_retried = True
+            attempt += 1
+            qual = stricter(qual)
+            notes.append("the first mesh failed checkMesh or had illegal faces: made again with stricter quality settings")
+        # read it back; tags per face from the surface it lies on
+        d = sd / "constant" / "polyMesh"
         mesh = from_foam(d)
-        mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
+        open_names = {nm for nm, (k, _) in of_names.items() if patches[k]["kind"] in ("inlet", "outlet", "opening")}
+        pockets = cut_off_regions(mesh, open_names)
+        if pockets:
+            # cells cut off from every inlet and outlet (closed pockets in narrow gaps): their pressure has no
+            # reference, the solver's first pressure solve gives NaN (s180, 2026.10.31: 75 regions). Remove them
+            keep = pockets["keep"]
+            sets = d / "sets"
+            sets.mkdir(exist_ok=True)
+            (sets / "cfdtKeep").write_text(_hdr("cfdtKeep", "cellSet", "constant/polyMesh/sets") +
+                                           f"{len(keep)}\n(\n" + "\n".join(map(str, keep.tolist())) + "\n)\n")
+            foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields", "log.subsetMesh", sd, tmo)
+            notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
+                         f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
+                         "snappyHexMesh closed them off in narrow gaps; left in, they make the pressure solver fail (NaN)")
+            mesh = from_foam(d)
+            mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
+        # prism layers can fold cells where a layered wall meets an inlet or outlet (S50, 2026.11.01: 92 degrees
+        # 0.3 mm inside the outlet plane): such a mesh is made again without layers rather than rejected
+        q_ = mesh.quality()
+        if q_["ok"] or not (layered and st["layers"] and layer_patches):
+            break
+        where = "; ".join(f"{w['deg']} deg at {w['at']}" for w in (q_.get("worst_non_ortho") or [])[:6])
+        notes.append(f"the mesh with prism layers had folded cells ({q_.get('non_ortho_over_70', 0)} faces above 70 "
+                     f"degrees; {where} mm): made again without layers. To keep layers elsewhere, leave them off the "
+                     "walls there (mesh.layers.at_openings false for walls touching inlets and outlets, or "
+                     "mesh.layers.on)")
+        layers_dropped = True
+    if layers_dropped:
+        st = dict(st, layers=None)
     fp = mesh.info["foam_patches"]
     ni = mesh.ninternal
     g = mesh.geometry()
@@ -987,9 +1039,15 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
         f = np.arange(P["start"], P["start"] + P["n"])
         btag[f - ni] = _nearest_tags(g["Cf"][f], tg, tri_of, pts, info, box)
         p = patches[k]
-        out_patches.append({"name": P["name"], "type": p["type"], "kind": p["kind"], "bc": p["bc"],
-                            "tags": sorted({int(t) for t in np.unique(btag[f - ni])})})
+        new_tags = {int(t) for t in np.unique(btag[f - ni])}
+        if P["name"].endswith(NOLAYERS) and out_patches and out_patches[-1]["_k"] == k:
+            out_patches[-1]["tags"] = sorted(set(out_patches[-1]["tags"]) | new_tags)    # back into its bc
+        else:
+            out_patches.append({"name": P["name"][:-len(NOLAYERS)] if P["name"].endswith(NOLAYERS) else P["name"],
+                                "type": p["type"], "kind": p["kind"], "bc": p["bc"], "tags": sorted(new_tags), "_k": k})
         seen.add(k)
+    for op in out_patches:
+        op.pop("_k", None)
     for k, p in enumerate(patches):
         if k not in seen:
             raise MeshError(f"bc {p['name']!r} has no faces in the snappyHexMesh mesh (its faces are smaller than the "

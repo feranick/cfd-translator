@@ -541,3 +541,41 @@ def test_a_nan_run_is_stopped_and_reported(tmp_path, monkeypatch):
         foam._step({}, "sh -c \"printf 'Time = 3s\\nGAMG:  Solving for p, Initial residual = nan, Final residual = nan, "
                        "No Iterations 1000\\n'; sleep 30\" foamRun", "log.foamRun", tmp_path, 60)
     assert __import__("time").time() - t0 < 10
+
+
+def _mesh_named(case, logname, names=("inlet", "outlet", "walls"), fold=False):
+    m = box_mesh(100, 20, 10, 10, 2, 2)
+    if fold:
+        m.points = m.points.copy()
+        m.points[:, 0] += 60 * m.points[:, 1]
+        m._geo = None
+    m.set_patches([{"name": names[0], "type": "patch", "tags": [0]}, {"name": names[1], "type": "patch", "tags": [1]},
+                   {"name": names[2], "type": "wall", "tags": [2, 3, 4, 5]}])
+    _write_binary(case / "constant" / "polyMesh", m)
+    (case / logname).write_text("Layer mesh : cells:400  faces:1300  points:500\n\nFinished meshing without any errors\n"
+                                "Finished meshing in = 1.5 s.\n")
+    return 0
+
+
+def test_a_layered_mesh_that_folds_is_made_again_without_layers(tmp_path, monkeypatch):
+    """S50 (2026.11.01): 92 degrees 0.3 mm inside the outlet plane, one rejection per 20-minute attempt."""
+    from cfd_translator.runner import prepare
+    calls = _stand_in(monkeypatch, tmp_path, lambda k, txt, case, logname: _mesh_named(case, logname, fold=(k == 0)))
+    mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
+    assert len(calls) == 2 and "addLayers       true" in calls[0] and "addLayers       false" in calls[1]
+    assert any("made again without layers" in w for w in warns) and plan["quality"]["ok"]
+
+
+def test_no_layers_on_walls_touching_openings(tmp_path, monkeypatch):
+    from cfd_translator.runner import prepare
+    st = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], layers=dict(ST_BOX["mesh"]["layers"], at_openings=False)))
+    from cfd_translator.format import validate_study
+    assert validate_study(st)["ok"]
+    calls = _stand_in(monkeypatch, tmp_path,
+                      lambda k, txt, case, logname: _mesh_named(case, logname, ("inlet", "outlet", "walls_nolayers")))
+    mesh, patches, sel, plan, warns = prepare(st, tmp_path)
+    assert "r2o { name walls_nolayers; }" in calls[0]                       # the cube's side walls all touch an opening
+    assert [p["name"] for p in patches] == ["inlet", "outlet", "walls"]      # merged back into their bc
+    assert any("at_openings false" in w for w in warns)
+    assert snappy.touching_tags([(1, np.array([[0, 1, 2]])), (2, np.array([[2, 3, 4]])), (3, np.array([[5, 6, 7]]))],
+                                {1}) == {2}

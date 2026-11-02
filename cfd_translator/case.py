@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.01.4
+Version: 2026.11.01.5
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -188,10 +188,13 @@ def _quality_message(q: dict, mesh, g) -> str:
     worst = q.get("worst_non_ortho") or []
     if worst:
         h = float(np.cbrt(np.median(np.abs(g["V"]))))
-        sph = [{"at": w["at"], "r": round(3 * h, 3), "size": round(h / 3, 3)} for w in worst[:3]]
-        msg += (". Worst places: " + "; ".join(f"{w['deg']} deg at {w['at']} mm" for w in worst[:5]) +
+        bad = [w for w in worst if w["deg"] >= 80] or worst[:3]
+        sph = [{"at": w["at"], "r": round(3 * h, 3), "size": round(h / 3, 3)} for w in bad]
+        msg += (f". {q.get('folded_faces', 0)} faces folded past 89 degrees; the bad places (worst first): " +
+                "; ".join(f"{w['deg']} deg at {w['at']} mm" for w in worst) +
                 ". Usually small features (screw heads, thin lips, tiny gaps) smaller than the cells around them: "
-                "remove them from the geometry, or refine there, e.g. mesh.refine " + json.dumps(sph))
+                "remove them from the geometry, or refine there, e.g. mesh.refine " + json.dumps(sph) +
+                ". Next to an inlet or outlet with snappy prism layers: mesh.layers.at_openings false")
     return msg
 
 

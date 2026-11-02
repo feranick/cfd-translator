@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.10.28.3
+Version: 2026.11.01.5
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -171,7 +171,7 @@ STUDY_KEYS = {
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers", "mesher", "surface", "features",
              "gap", "quality", "max_cells", "optimize"}
-LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle"}
+LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
               "transient"}
 AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
@@ -648,17 +648,19 @@ def validate_study(st: dict) -> dict:
                   and ("y_plus" not in L or (_num(L["y_plus"]) and L["y_plus"] > 0))
                   and ("n" not in L or (isinstance(L["n"], int) and 1 <= L["n"] <= 30))
                   and _num(L.get("growth", 1.2)) and 1 <= L.get("growth", 1.2) <= 2
-                  and ("feature_angle" not in L or (_num(L["feature_angle"]) and 30 <= L["feature_angle"] <= 180)))
+                  and ("feature_angle" not in L or (_num(L["feature_angle"]) and 30 <= L["feature_angle"] <= 180))
+                  and ("at_openings" not in L or isinstance(L["at_openings"], bool)))
         if not ok:
             errs.append("mesh.layers: {first (mm) | y_plus, n (1-30; snappy: default so the last layer is half a "
-                        "surface cell), growth (1-2, default 1.2), on: [bc names] (snappy), feature_angle (snappy, 130)}")
+                        "surface cell), growth (1-2, default 1.2), on: [bc names] (snappy), feature_angle (snappy, 130), "
+                        "at_openings (snappy, true; false: none on walls touching inlets and outlets)}")
         elif not snappy:
             if not (two_d or "extrude" in m):
                 errs.append("mesh.layers: with Gmsh, boundary layers need a swept mesh (2d or extrude); "
                             "3D layers: mesher snappy")
             if "n" not in L:
                 errs.append("mesh.layers.n: needed with Gmsh")
-            for k in ("on", "feature_angle"):
+            for k in ("on", "feature_angle", "at_openings"):
                 if k in L:
                     errs.append(f"mesh.layers.{k}: only with mesher snappy")
         if isinstance(L, dict) and "on" in L:

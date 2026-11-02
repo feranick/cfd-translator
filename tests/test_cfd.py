@@ -848,7 +848,8 @@ def test_a_folded_mesh_says_where_and_what_to_do():
     q = m.quality()
     assert not q["ok"]
     msg = _quality_message(q, m, m.geometry())
-    assert "folded past 89 degrees" in msg and "Worst places" in msg and '"size"' in msg and "screw heads" in msg
+    assert "folded past 89 degrees" in msg and "the bad places" in msg and '"size"' in msg and "screw heads" in msg
+    assert "at_openings false" in msg and q["folded_faces"] > 0
 
 
 def test_a_surface_gmsh_cannot_mesh_is_tried_with_other_algorithms():

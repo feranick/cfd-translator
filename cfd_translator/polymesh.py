@@ -174,10 +174,11 @@ class PolyMesh:
             for k in range(len(top)):
                 if all(np.linalg.norm(Cf[k] - np.asarray(w["at"])) > sep for w in worst):
                     worst.append({"at": [round(float(v), 1) for v in Cf[k]], "deg": round(float(nonorth[top[k]]), 1)})
-                    if len(worst) >= 5:
+                    if len(worst) >= 12:                # every bad region in one report (S50: one per attempt)
                         break
         return {"cells": int(nc), "faces": int(self.nfaces), "internal_faces": int(ni), "points": int(len(self.points)),
-                "non_ortho_over_70": int(len(bad)), **({"worst_non_ortho": worst} if worst else {}),
+                "non_ortho_over_70": int(len(bad)), "folded_faces": int((nonorth >= 89.0).sum()) if ni else 0,
+                **({"worst_non_ortho": worst} if worst else {}),
                 "volume_mm3": float(V.sum()), "min_volume_mm3": float(V.min()) if nc else 0.0,
                 "max_open_cell": open_rel, "max_non_orthogonality": float(nonorth.max()) if ni else 0.0,
                 "mean_non_orthogonality": float(nonorth.mean()) if ni else 0.0,
