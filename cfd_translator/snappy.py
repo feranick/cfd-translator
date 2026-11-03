@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.01.6
+Version: 2026.11.03.3
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -730,6 +730,25 @@ def mesh_snappy(study: dict, folder: Path):
     except MeshError as exc:
         exc.notes = list(notes)
         raise
+    except Exception as exc:  # noqa: BLE001 (foam.Killed and others: keep what was found)
+        if type(exc).__name__ == "Killed":
+            exc.notes = list(notes)
+        raise
+
+
+_STAGES = ((r"Refinement phase|Refining surface|Removing mesh beyond surface", "refining the mesh"),
+           (r"Snapping phase|Snap phase|Morph phase|Snapping to features", "snapping to the surface"),
+           (r"layer addition|Adding layers|Layer addition", "adding prism layers"))
+
+
+def stage_of(text: str) -> str | None:
+    """The snappyHexMesh phase a log stopped in."""
+    best, at = None, -1
+    for pat, what in _STAGES:
+        hits = [m.start() for m in re.finditer(pat, text, re.I)]
+        if hits and hits[-1] > at:
+            best, at = what, hits[-1]
+    return best
 
 
 def _mesh_snappy(study: dict, folder: Path, notes: list):
@@ -913,6 +932,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     qual = st["quality"]
     merge_faces, flatness, attempt, quality_retried = True, 0.5, 0, False
     layers_dropped = False
+    kept_layered = None
     for layered in (True, False):
         quality_retried = False
         while True:
@@ -944,6 +964,13 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
             if rc == 0 and not log["finished"]:
                 raise MeshError("snappyHexMesh left no finished log (log.snappyHexMesh): " + (_read(sd / "log.snappyHexMesh")[-1500:]
                                                                                               or "the file is missing"))
+            if rc != 0 and foam.was_killed(_read(sd / "log.snappyHexMesh")[-30000:], rc):
+                # killed from outside (carbonio, 8 GB, 2026.11.03: an MPI 'proc-aborted-strsignal' while adding
+                # layers), not a meshing failure
+                cells = list(log["cells"].values())
+                raise foam.Killed(foam.memory_hint("snappyHexMesh", stage_of(_read(sd / "log.snappyHexMesh")),
+                                                   cells[-1] if cells else None) + "\n" +
+                                  foam._tail(sd / "log.snappyHexMesh", 15))
             if rc != 0 or "fatal" in log:
                 text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
                 if "checkFaceFlatness" in text and flatness > -1:
@@ -981,7 +1008,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
             cm = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))
             rec = {"attempt": attempt + 1, "quality": {"maxNonOrtho": qual["maxNonOrtho"],
                                                        "maxInternalSkewness": qual["maxInternalSkewness"]},
-                   "checkMesh": {k: cm[k] for k in ("ok", "failed_checks", "max_non_orthogonality", "max_skewness",
+                   "checkMesh": {k: cm[k] for k in ("ok", "failed_checks", "errors", "max_non_orthogonality", "max_skewness",
                                                     "min_volume", "cells") if k in cm},
                    "illegal_faces": log["illegal_faces"], "cells": log["cells"]}
             attempts.append(rec)
@@ -1013,15 +1040,46 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
             mesh = from_foam(d)
             mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
         # prism layers can fold cells where a layered wall meets an inlet or outlet (S50, 2026.11.01: 92 degrees
-        # 0.3 mm inside the outlet plane): such a mesh is made again without layers rather than rejected
+        # 0.3 mm inside the outlet plane): such a mesh is made again without layers rather than rejected. So is one
+        # that fails checkMesh (s50_Q40_vol_n35, 2026.11.03: 3 faces incorrectly oriented, worst 84 degrees); if the
+        # mesh without layers fails checkMesh too, the layers were not the cause and the layered mesh is kept
         q_ = mesh.quality()
-        if q_["ok"] or not (layered and st["layers"] and layer_patches):
+        cm_ = attempts[-1]["checkMesh"] if attempts else {"ok": True}
+        if not layered and kept_layered is not None:
+            if cm_.get("ok", True) or not q_["ok"]:
+                notes.append("without prism layers the mesh passes checkMesh: it is used")
+            else:
+                # the layered one back (its files, cell zones and log)
+                shutil.rmtree(d, ignore_errors=True)
+                shutil.copytree(kept_layered["dir"], d)
+                shutil.copyfile(kept_layered["log"], sd / "log.snappyHexMesh")
+                mesh = kept_layered["mesh"]
+                attempts.append(kept_layered["attempt"])
+                layers_dropped = False
+                notes.append("without prism layers the mesh fails checkMesh as well (" +
+                             "; ".join(cm_.get("errors", [])[:3]) + "): the layers were not the cause, so the mesh "
+                             "with layers is kept")
+            break
+        if (q_["ok"] and cm_.get("ok", True)) or not (layered and st["layers"] and layer_patches):
             break
         where = "; ".join(f"{w['deg']} deg at {w['at']}" for w in (q_.get("worst_non_ortho") or [])[:6])
-        notes.append(f"the mesh with prism layers had folded cells ({q_.get('non_ortho_over_70', 0)} faces above 70 "
-                     f"degrees; {where} mm): made again without layers. To keep layers elsewhere, leave them off the "
-                     "walls there (mesh.layers.at_openings false for walls touching inlets and outlets, or "
-                     "mesh.layers.on)")
+        if not q_["ok"]:
+            notes.append(f"the mesh with prism layers had folded cells ({q_.get('non_ortho_over_70', 0)} faces above 70 "
+                         f"degrees; {where} mm): made again without layers. To keep layers elsewhere, leave them off the "
+                         "walls there (mesh.layers.at_openings false for walls touching inlets and outlets, or "
+                         "mesh.layers.on)")
+        else:
+            errs_ = "; ".join(e.strip("* ").strip() for e in cm_.get("errors", [])[:4]) or \
+                f"{cm_.get('failed_checks', '?')} failed checks"
+            notes.append(f"the mesh with prism layers fails checkMesh ({errs_}; {q_.get('non_ortho_over_70', 0)} faces "
+                         f"above 70 degrees" + (f": {where} mm" if where else "") + "): made again without layers. "
+                         "To keep layers elsewhere, leave them off the walls there (mesh.layers.on, or "
+                         "mesh.layers.at_openings false)")
+            keep = sd / "polyMesh.layered"
+            shutil.rmtree(keep, ignore_errors=True)
+            shutil.copytree(d, keep)
+            shutil.copyfile(sd / "log.snappyHexMesh", sd / "log.snappyHexMesh.layered")
+            kept_layered = {"dir": keep, "log": sd / "log.snappyHexMesh.layered", "mesh": mesh, "attempt": attempts[-1]}
         layers_dropped = True
     if layers_dropped:
         st = dict(st, layers=None)

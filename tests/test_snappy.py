@@ -579,3 +579,83 @@ def test_no_layers_on_walls_touching_openings(tmp_path, monkeypatch):
     assert any("at_openings false" in w for w in warns)
     assert snappy.touching_tags([(1, np.array([[0, 1, 2]])), (2, np.array([[2, 3, 4]])), (3, np.array([[5, 6, 7]]))],
                                 {1}) == {2}
+
+
+def _check_by_layers(monkeypatch, fail_layered=True, fail_plain=False):
+    """checkMesh stand-in failing (3 faces incorrectly oriented) on the meshes made with or without layers."""
+    from cfd_translator import foam
+    inner = foam._step
+    state = {"layers": None}
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):
+        case = Path(case)
+        if cmd.startswith("snappyHexMesh"):
+            state["layers"] = "addLayers       true" in (case / "system" / "snappyHexMeshDict").read_text()
+        rc = inner(fm, cmd, logname, case, timeout, raise_on_error)
+        if cmd.startswith("checkMesh") and (fail_layered if state["layers"] else fail_plain):
+            (case / logname).write_text("    Mesh non-orthogonality Max: 84 average: 10\n"
+                                        " ***Number of faces incorrectly oriented: 3\n\nFailed 1 mesh checks.\n")
+        return rc
+    monkeypatch.setattr(foam, "_step", step)
+
+
+def _mesh_by_layers(k, txt, case, logname):
+    m = box_mesh(100, 20, 10, 10 if "addLayers       true" in txt else 20, 2, 2)     # tell them apart by cells
+    m.set_patches([{"name": "inlet", "type": "patch", "tags": [0]}, {"name": "outlet", "type": "patch", "tags": [1]},
+                   {"name": "walls", "type": "wall", "tags": [2, 3, 4, 5]}])
+    _write_binary(case / "constant" / "polyMesh", m)
+    (case / logname).write_text("Layer mesh : cells:400  faces:1300  points:500\n\nFinished meshing without any errors\n"
+                                "Finished meshing in = 1.5 s.\n")
+    return 0
+
+
+def test_a_layered_mesh_that_fails_checkmesh_is_made_again_without_layers(tmp_path, monkeypatch):
+    """s50_Q40_vol_n35 (2026.11.03): checkMesh failed (3 faces incorrectly oriented, worst 84 degrees) and the
+    layers were kept, because only folds past 89 degrees triggered the rebuild."""
+    from cfd_translator.runner import prepare
+    calls = _stand_in(monkeypatch, tmp_path, _mesh_by_layers)
+    _check_by_layers(monkeypatch, fail_layered=True, fail_plain=False)
+    mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
+    assert ["addLayers       true" in c for c in calls] == [True, True, False]      # stricter quality, then no layers
+    assert mesh.ncells == 80 and any("fails checkMesh (Number of faces incorrectly oriented: 3" in w for w in warns)
+    assert any("without prism layers the mesh passes checkMesh" in w for w in warns)
+
+
+def test_layers_kept_when_the_mesh_fails_checkmesh_without_them_too(tmp_path, monkeypatch):
+    from cfd_translator.runner import prepare
+    calls = _stand_in(monkeypatch, tmp_path, _mesh_by_layers)
+    _check_by_layers(monkeypatch, fail_layered=True, fail_plain=True)
+    mesh, patches, sel, plan, warns = prepare(ST_BOX, tmp_path)
+    assert len(calls) == 4 and mesh.ncells == 40                                     # the layered mesh is back
+    assert any("the layers were not the cause" in w for w in warns)
+    assert mesh.info.get("layers") is not None
+
+
+def test_snappy_killed_for_memory_says_so(tmp_path, monkeypatch):
+    """carbonio (8 GB, 2026.11.03): snappyHexMesh was killed while adding layers; the result said 'MeshError' with an
+    MPI 'proc-aborted-strsignal' trace."""
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+
+    def killed(k, txt, case, logname):
+        (case / logname).write_text("Refinement phase\n----------------\nRefined mesh : cells:2100000\n"
+                                    "Snapped mesh : cells:2250000\nShrinking and layer addition phase\n"
+                                    "Layer addition iteration 0\n--------------------------------------------------\n"
+                                    "prterun noticed that process rank 3 with PID 1234 on node carbonio exited on\n"
+                                    "signal 9 (Killed).\n[proc-aborted-strsignal]\n")
+        return 137
+    _stand_in(monkeypatch, tmp_path, killed)
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "8192")
+    with pytest.raises(foam.Killed) as ei:
+        prepare(ST_BOX, tmp_path)
+    msg = str(ei.value)
+    assert "snappyHexMesh was killed while adding prism layers" in msg and "this job had 8 GB" in msg
+    assert '"mem": "16G"' in msg and "2,250,000 cells" in msg
+    assert type(ei.value).__name__ == "Killed" and hasattr(ei.value, "notes")
+
+
+def test_a_killed_step_raises_killed(tmp_path):
+    from cfd_translator import foam
+    with pytest.raises(foam.Killed, match="sh was killed .signal 9., almost certainly because it ran out of memory"):
+        foam._step({}, "sh -c 'echo working; exit 137'", "log.x", tmp_path, 30)
+    assert foam.was_killed("x\nKilled\n") and not foam.was_killed("all fine", 1)

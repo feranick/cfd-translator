@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.03.2
+Version: 2026.11.03.3
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -181,6 +181,32 @@ def _tail(path: Path, n: int = 40) -> str:
         return "(no log)"
 
 
+class Killed(Exception):
+    """An OpenFOAM program was killed from outside (SIGKILL), nearly always for lack of memory."""
+
+
+_KILLED = re.compile(r"proc-aborted-strsignal|exited on signal 9|signal 9 \(Killed\)|^Killed|oom[-_ ]kill|"
+                     r"Out of memory|std::bad_alloc|Cannot allocate memory", re.I | re.M)
+
+
+def was_killed(text: str, rc: int | None = None) -> bool:
+    """Signs that a program was killed (SIGKILL: exit 137 or -9; OpenMPI's 'proc-aborted-strsignal', 'exited on
+    signal 9 (Killed)'; the kernel's or SLURM's OOM killer; a failed allocation)."""
+    return rc in (137, -9) or bool(_KILLED.search((text or "")[-30000:]))
+
+
+def memory_hint(what: str, stage: str | None = None, cells: int | None = None) -> str:
+    """Why a program was killed and what to do: its memory limit (SLURM_MEM_PER_NODE) and run.mem."""
+    mb = os.environ.get("SLURM_MEM_PER_NODE")
+    have = f"{int(mb) / 1024:.3g} GB" if mb and mb.isdigit() else None
+    nxt = f"{2 * int(mb) // 1024}G" if mb and mb.isdigit() else "16G"
+    return (f"{what} was killed{' while ' + stage if stage else ''} (signal 9), almost certainly because it ran out of "
+            f"memory{' (this job had ' + have + ')' if have else ''}"
+            f"{f'; the mesh had {cells:,} cells at that point' if cells else ''}. Give the study more: \"run\": "
+            f"{{\"mem\": \"{nxt}\"}} (within study_format's status.executor.caps), or run it on a machine with more "
+            "memory (run.host), or make fewer cells (a larger mesh.size or surface level, fewer refine regions).")
+
+
 def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_on_error: bool = True,
           deadline: float | None = None, on_deadline=None) -> int:
     try:
@@ -190,7 +216,11 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
     if rc != 0 and raise_on_error:
-        raise FoamError(f"{cmd} exited with code {rc}:\n" + _tail(case / logname))
+        tail = _tail(case / logname)
+        if was_killed(tail, rc):
+            raise Killed(memory_hint(cmd.split(" -np ")[-1].split()[1] if " -np " in cmd else cmd.split()[0]) +
+                         "\n" + tail[-1500:])
+        raise FoamError(f"{cmd} exited with code {rc}:\n" + tail)
     return rc
 
 
@@ -256,7 +286,10 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
     if rc != 0:
-        raise FoamError(f"{solve[0]} exited with code {rc}:\n" + _tail(case / solve[1]))
+        tail = _tail(case / solve[1])
+        if was_killed(tail, rc):
+            raise Killed(memory_hint("foamRun") + "\n" + tail[-1500:])
+        raise FoamError(f"{solve[0]} exited with code {rc}:\n" + tail)
     reached = True
     if transient:
         from .transient import latest_time, reset_stop
