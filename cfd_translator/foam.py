@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.03.1
+Version: 2026.11.03.2
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -224,6 +224,10 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     procs = int(procs or os.environ.get("CFDT_PROCS", "1"))
     out["procs"] = procs
     transient = resume or deadline is not None
+    dec = decomposed(case)
+    if dec and (procs <= 1 or dec["procs"] != procs):
+        raise FoamError(f"this case stays decomposed for {dec['procs']} ranks (a sliding mesh's couple was built on the "
+                        f"decomposed case: {DECOMPOSED_NOTE}); run it on {dec['procs']} ranks (solve.procs), not {procs}")
     if procs > 1:
         have = len(list(case.glob("processor*")))
         if not (resume and have == procs):
@@ -262,9 +266,98 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
         reached = bool(m and t is not None and t >= float(m.group(1)) * (1 - 1e-6))
         out["time"] = t
     out["reached_end"] = reached
-    if procs > 1 and reached:
+    if procs > 1 and reached and not dec:
         _step(foam, "reconstructPar -latestTime", "log.reconstructPar", case, timeout)
     return out
+
+
+class _Decomposed:
+    """Fields of a case that stays decomposed (a sliding mesh, sliding.to_sliding in parallel), put together in the
+    layout of the complete conformal mesh without reconstructPar: cells by the decomposition's cellProcAddressing
+    (the topology change keeps every cell), each original patch's faces by faceProcAddressing and the patch's start
+    before the change (it keeps them in order); both saved in processor*/cfdt_addressing."""
+
+    def __init__(self, case: Path, mesh, procs: int):
+        self.case, self.mesh, self.procs = Path(case), mesh, procs
+        self.cells, self.patch_faces = [], []
+        starts = {P["name"]: P["start"] for P in mesh.patches}
+        for k in range(procs):
+            d = self.case / f"processor{k}" / "cfdt_addressing"
+            self.cells.append(foamio.read_labels(d / "cellProcAddressing"))
+            fa = np.abs(foamio.read_labels(d / "faceProcAddressing")) - 1
+            pf = {}
+            for b in foamio.read_boundary((d / "boundary").read_text(errors="replace")):
+                if b["name"] in starts and b["n"]:
+                    pf[b["name"]] = fa[b["start"]:b["start"] + b["n"]] - starts[b["name"]]
+            self.patch_faces.append(pf)
+
+    def field(self, time_name: str, name: str):
+        parts = []
+        for k in range(self.procs):
+            f = self.case / f"processor{k}" / time_name / name
+            if not f.is_file():
+                return None
+            parts.append(foamio.read_foam(f.read_text()))
+        cls = str((parts[0].get("FoamFile") or {}).get("class", ""))
+        surface = cls.startswith("surface") or name == "phi"
+        width = 3 if "Vector" in cls else 6 if "SymmTensor" in cls else 1
+        nc = self.mesh.ncells
+        out = {k: v for k, v in parts[0].items() if k not in ("internalField", "boundaryField")}
+
+        def expand(a, n):
+            a = np.asarray(a, float)
+            if width == 1:
+                return np.full(n, float(a)) if a.ndim == 0 else a
+            return np.tile(a, (n, 1)) if a.ndim == 1 else a
+        if not surface:
+            G = np.zeros(nc) if width == 1 else np.zeros((nc, width))
+            for k, part in enumerate(parts):
+                G[self.cells[k]] = expand(part["internalField"], len(self.cells[k]))
+            out["internalField"] = G
+        else:
+            out["internalField"] = 0.0
+        bf = {}
+        for P in self.mesh.patches:
+            nm = P["name"]
+            ent, vals, ok = None, None, True
+            for k, part in enumerate(parts):
+                idx = self.patch_faces[k].get(nm)
+                if idx is None:
+                    continue
+                e = (part.get("boundaryField") or {}).get(nm)
+                if e is None:
+                    ok = False
+                    continue
+                ent = ent or {kk: vv for kk, vv in e.items() if kk != "value"}
+                v = e.get("value")
+                if v is None or isinstance(v, str):
+                    ok = False
+                    continue
+                a = expand(v, len(idx))
+                if vals is None:
+                    vals = np.zeros(P["n"]) if width == 1 else np.zeros((P["n"], width))
+                vals[idx] = a
+            if ent is not None:
+                if ok and vals is not None:
+                    ent["value"] = vals
+                bf[nm] = ent
+        out["boundaryField"] = bf
+        return out
+
+
+DECOMPOSED_NOTE = "decomposePar and reconstructPar loop over every pair of the couple's faces"
+
+
+def decomposed(case: Path) -> dict | None:
+    """The case's record of staying decomposed (sliding.to_sliding in parallel), or None."""
+    f = Path(case) / "cfdt_decomposed.json"
+    if not f.is_file():
+        return None
+    import json
+    try:
+        return json.loads(f.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def hwthreads() -> int:
@@ -301,13 +394,19 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
     Boundary values not written (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does.
     mean (transient runs): UMean and pMean (fieldAverage) stand for U and p when they were written."""
     case = Path(case)
-    t = foamio.latest_time(case)
+    dec = decomposed(case)
+    t = foamio.latest_time(case / "processor0" if dec else case)
     if t is None:
         raise FoamError("no results written (no time directory after 0)")
+    if dec:
+        joiner = _Decomposed(case, mesh, int(dec["procs"]))
 
-    def load(name):
-        p = t / name
-        return foamio.read_foam(p.read_text()) if p.is_file() else None
+        def load(name):
+            return joiner.field(t.name, name)
+    else:
+        def load(name):
+            p = t / name
+            return foamio.read_foam(p.read_text()) if p.is_file() else None
     U, p, phi = load("U"), load("p"), load("phi")
     vof = plan.get("vof")
     alpha = p_abs = None

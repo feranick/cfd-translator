@@ -291,3 +291,93 @@ def test_the_transient_run_turns_the_mesh_once(tmp_path, monkeypatch):
     seen.clear()
     runner._solve_transient(case, st, plan, 3600, 1, folder, saved, 0.0, [], m)
     assert seen == [("run", True, True)]
+
+
+def _labels(path, a):
+    from cfd_translator.polymesh import header
+    path.write_text(header("labelList", path.name, "constant/polyMesh") + f"\n{len(a)}\n(\n" +
+                    "\n".join(str(int(x)) for x in a) + "\n)\n")
+
+
+def test_parallel_topology_steps_and_the_decomposed_reader(tmp_path, monkeypatch):
+    """s180 (13.3 M cells, spark2, 2026.11.03): decomposePar of the coupled mesh stopped after 'Distributing faces
+    to processors' (processInterCyclics loops over every pair of the couple's faces). Now the conformal case is
+    decomposed first, the three utilities run in parallel, and the results are read from processor*."""
+    from cfd_translator import foam
+    from cfd_translator.case import _field, _nonuniform
+    from cfd_translator.polymesh import header
+    m = pump_mesh()
+    pts = patches_for(m)
+    st = _study()
+    st["model"] = "kOmegaSST"
+    st["solve"]["transient"]["init"] = 0
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    case = tmp_path / "case"
+    plan = write_case(st, m, pts, case)
+    f, _ = interface(m, m.zones["rotor"])
+    C = m.geometry()["C"]
+    proc_of = (C[:, 0] > 0).astype(int)                       # two processors: x <= 0, x > 0
+    calls = []
+
+    def run_step(cmd, log):
+        calls.append(cmd)
+        if cmd == "decomposePar -force":
+            for k in range(2):
+                d = case / f"processor{k}" / "constant" / "polyMesh"
+                d.mkdir(parents=True)
+                _labels(d / "cellProcAddressing", np.nonzero(proc_of == k)[0])
+                fa, lines, start = [], [], 0
+                for P in m.patches:
+                    gf = np.arange(P["start"], P["start"] + P["n"])
+                    mine = gf[proc_of[m.owner[gf]] == k]
+                    fa += list(mine + 1)
+                    lines += [f"    {P['name']}", "    {", "        type            patch;",
+                              f"        nFaces          {len(mine)};", f"        startFace       {start};", "    }"]
+                    start += len(mine)
+                _labels(d / "faceProcAddressing", fa)
+                (d / "boundary").write_text(header("polyBoundaryMesh", "boundary", "constant/polyMesh") +
+                                            f"{len(m.patches)}\n(\n" + "\n".join(lines) + "\n)\n")
+        elif "createBaffles" in cmd:
+            for k, n in ((0, len(f) // 2), (1, len(f) - len(f) // 2)):
+                b = case / f"processor{k}" / "constant" / "polyMesh" / "boundary"
+                t = b.read_text()
+                extra = "".join(f"    {nm}\n    {{\n        type            patch;\n        nFaces          {n};\n"
+                                f"        startFace       0;\n    }}\n" for nm in ("rotor_rotor", "rotor_stator"))
+                i = t.rindex(")")
+                b.write_text(t[:i] + extra + t[i:])
+    notes = to_sliding(case, plan, m, run_step, 2, "mpirun")
+    assert calls == ["decomposePar -force", "mpirun -np 2 createBaffles -parallel", "mpirun -np 2 splitBaffles -parallel",
+                     "mpirun -np 2 createNonConformalCouples -parallel -fields rotor_rotor rotor_stator"]
+    assert foam.decomposed(case)["procs"] == 2 and "stays decomposed" in notes[0]
+    assert (case / "processor1" / "cfdt_addressing" / "faceProcAddressing").is_file()
+    assert "numberOfSubdomains 2;" in (case / "system" / "decomposeParDict").read_text()
+    # fields written per processor by the 'solver': read back in the complete mesh's layout
+    p_true = C[:, 0] * 0.1 + C[:, 1]
+    U_true = np.column_stack([C[:, 0], C[:, 1], C[:, 2]])
+    for k in range(2):
+        t = case / f"processor{k}" / "0.4"
+        t.mkdir()
+        cells = np.nonzero(proc_of == k)[0]
+        bp, bu, bphi = {}, {}, {}
+        for P in m.patches:
+            gf = np.arange(P["start"], P["start"] + P["n"])
+            mine = gf[proc_of[m.owner[gf]] == k]
+            Cf = m.geometry()["Cf"][mine]
+            bp[P["name"]] = {"type": "calculated", "value": _nonuniform(Cf[:, 0] * 0.1 + Cf[:, 1])}
+            bu[P["name"]] = {"type": "calculated", "value": _nonuniform(Cf)} if len(mine) else {"type": "noSlip"}
+            bphi[P["name"]] = {"type": "calculated", "value": _nonuniform(np.full(len(mine), float(k + 1)))}
+        (t / "p").write_text(_field("volScalarField", "p", "[0 2 -2 0 0 0 0]", _nonuniform(p_true[cells]), bp))
+        (t / "U").write_text(_field("volVectorField", "U", "[0 1 -1 0 0 0 0]", _nonuniform(U_true[cells]), bu))
+        (t / "phi").write_text(_field("surfaceScalarField", "phi", "[0 3 -1 0 0 0 0]", "uniform 0", bphi))
+    fields = foam.read_fields(case, m, plan)
+    assert fields["time"] == "0.4"
+    assert np.allclose(fields["p"], p_true) and np.allclose(fields["U"], U_true)
+    for P in m.patches:
+        gf = np.arange(P["start"], P["start"] + P["n"])
+        Cf = m.geometry()["Cf"][gf]
+        assert np.allclose(fields["patches"][P["name"]]["p"], Cf[:, 0] * 0.1 + Cf[:, 1])
+        assert np.allclose(fields["patches"][P["name"]]["phi"], proc_of[m.owner[gf]] + 1)
+    # the solver must keep the decomposition: another rank count is refused, reconstructPar is not run
+    monkeypatch.setattr(foam, "find_foam", lambda: {"version": "14"})
+    with pytest.raises(foam.FoamError, match="stays decomposed for 2 ranks"):
+        foam.run(case, 100, 4, resume=True)

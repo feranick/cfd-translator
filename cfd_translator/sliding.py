@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.02.3
+Version: 2026.11.03.2
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -239,16 +239,24 @@ def _boundary(poly: Path) -> list[dict]:
     return read_boundary((Path(poly) / "boundary").read_text(errors="replace"))
 
 
-def to_sliding(case: Path, plan: dict, mesh, run_step) -> list[str]:
+DECOMPOSED = "cfdt_decomposed.json"
+
+
+def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: str | None = None) -> list[str]:
     """Turns the case into a sliding-mesh case (see the module's notes). run_step(command, log) runs an OpenFOAM
-    utility in the case (raising on failure). Returns notes."""
+    utility in the case (raising on failure). With procs > 1 the conformal case is decomposed first and the three
+    utilities run in parallel (as OpenFOAM's propeller tutorial does): decomposePar on a mesh that already has the
+    couple loops over every pair of faces of the two sides (domainDecompositionDecompose.C, processInterCyclics),
+    which for s180 (1.24 M faces a side) never finished. The case then stays decomposed; foam.read_fields reads the
+    processor directories (cfdt_decomposed.json). Returns notes."""
+    import json
     case = Path(case)
     sl = plan["sliding"]
     zero = case / "0"
     # the solution of the steady start, without what does not survive the topology change
-    for d in [case] + sorted(case.glob("processor*")):
-        if d.name.startswith("processor"):
-            shutil.rmtree(d, ignore_errors=True)            # decomposed again for the transient run
+    for d in sorted(case.glob("processor*")):
+        shutil.rmtree(d, ignore_errors=True)                # decomposed again for the transient run
+    (case / DECOMPOSED).unlink(missing_ok=True)
     # createBaffles (fields true) reads every field in 0/ and needs a boundary condition for each on the new
     # patches: only the solved fields stay; the rest (phi, wallShearStress, yPlus, the monitors' total(p): s180 on
     # spark2, 2026.11.02, "keyword total(p) is undefined") go to 0.steady/, and the transient run writes its own
@@ -275,11 +283,36 @@ def to_sliding(case: Path, plan: dict, mesh, run_step) -> list[str]:
     write_face_zone(poly, sl["face_zone"], f, flip)
     (case / "system" / "createBafflesDict").write_text(create_baffles_dict(sl, _turbulent(plan)))
     before = {p["name"]: p for p in mesh.patches}
-    run_step("createBaffles", "log.createBaffles")
-    run_step("splitBaffles", "log.splitBaffles")
-    run_step(f"createNonConformalCouples -fields {sl['rotor']} {sl['stator']}", "log.createNonConformalCouples")
+    par = ""
+    if procs > 1:
+        (case / "system" / "decomposeParDict").write_text(
+            "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
+            f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
+        run_step("decomposePar -force", "log.decomposePar")
+        # the conformal decomposition's addressing: cells keep it through the topology change, and each original
+        # patch keeps its faces in order, so the results can be put together without reconstructPar
+        for k in range(procs):
+            d = case / f"processor{k}"
+            src = d / "constant" / "polyMesh"
+            dst = d / "cfdt_addressing"
+            dst.mkdir(exist_ok=True)
+            for nm in ("cellProcAddressing", "faceProcAddressing", "boundary"):
+                if not (src / nm).is_file():
+                    raise SlidingError(f"decomposePar wrote no {src / nm}")
+                shutil.copyfile(src / nm, dst / nm)
+        par = f"{mpirun or 'mpirun'} -np {procs} "
+    run_step(f"{par}createBaffles" + (" -parallel" if par else ""), "log.createBaffles")
+    run_step(f"{par}splitBaffles" + (" -parallel" if par else ""), "log.splitBaffles")
+    run_step(f"{par}createNonConformalCouples" + (" -parallel" if par else "") +
+             f" -fields {sl['rotor']} {sl['stator']}", "log.createNonConformalCouples")
     # the patches the results read must be the same faces in the same order (createBaffles keeps their order)
-    after = {p["name"]: p for p in _boundary(poly)}
+    if par:
+        after = {}
+        for k in range(procs):
+            for p in _boundary(case / f"processor{k}" / "constant" / "polyMesh"):
+                after.setdefault(p["name"], {"name": p["name"], "n": 0})["n"] += p["n"]
+    else:
+        after = {p["name"]: p for p in _boundary(poly)}
     for nm, p in before.items():
         q = after.get(nm)
         if q is None or q["n"] != p["n"]:
@@ -287,6 +320,11 @@ def to_sliding(case: Path, plan: dict, mesh, run_step) -> list[str]:
     for nm in (sl["rotor"], sl["stator"]):
         if after.get(nm, {}).get("n", 0) != len(f):
             raise SlidingError(f"createBaffles made {after.get(nm, {}).get('n', 0)} faces on {nm!r}, expected {len(f)}")
-    sl["patches_added"] = sorted(set(after) - set(before))
+    sl["patches_added"] = sorted(n for n in set(after) - set(before) if not n.startswith(("procBoundary", "nonConformalProcessorCyclic")))
+    if par:
+        (case / DECOMPOSED).write_text(json.dumps({"procs": procs, "why": "sliding mesh: the couple is built on the "
+                                                  "decomposed case; results are read from processor*"}))
+        sl["decomposed"] = procs
     return [f"sliding mesh: zone {sl['zone']!r} turns at {sl['omega_rad_s'] * 60 / (2 * np.pi):g} rpm; {len(f)} faces "
-            f"on its cylinder coupled non-conformally ({sl['rotor']} | {sl['stator']})"]
+            f"on its cylinder coupled non-conformally ({sl['rotor']} | {sl['stator']})" +
+            (f", built on the case decomposed for {procs} ranks (it stays decomposed)" if par else "")]

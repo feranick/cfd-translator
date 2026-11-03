@@ -1,5 +1,5 @@
 """foamio.py — tolerant readers of OpenFOAM files and logs.
-Version: 2026.10.21.2
+Version: 2026.11.03.2
 
     read_foam(text) -> dict              any ASCII dictionary or field file (lists as NumPy arrays)
     read_list(text) -> np.ndarray        polyMesh lists (points, owner, neighbour)
@@ -270,6 +270,15 @@ def read_mesh_arrays(d: Path) -> dict:
         out["ncells"] = int(max(out["owner"].max(initial=-1), out["neighbour"].max(initial=-1)) + 1)
     out["boundary"] = read_boundary((d / "boundary").read_text(errors="replace"))
     return out
+
+
+def read_labels(path: Path) -> np.ndarray:
+    """A labelList file (cellProcAddressing, faceProcAddressing), ASCII or binary."""
+    hdr, raw, pos = _mesh_file(path)
+    lab, _ = _arch(hdr)
+    binary = hdr.get("format", "ascii") == "binary"
+    a, _ = _next_list(raw, pos, binary, lab if binary else np.int64)
+    return np.asarray(a, np.int64)
 
 
 def latest_time(case: Path):
