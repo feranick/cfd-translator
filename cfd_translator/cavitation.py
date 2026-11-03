@@ -1,5 +1,5 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel.
-Version: 2026.11.03.1
+Version: 2026.11.03.4
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -20,7 +20,7 @@ fvModels VoFCavitation {model; <model> {pSat; liquid water; ...}}; fields alpha.
 LTS: ddt localEuler and PIMPLE maxCo/maxAlphaCo/rDeltaT smoothing and damping.
 
 How a point runs: the inlet's total pressure starts high enough for no vapour and falls to p_v + rho g NPSH over
-the first `ramp` of the iterations, while the outlet's flow rate rises to the study's over the first tenth: a
+the first `ramp` of the iterations, while the outlet's flow rate rises from 5 % to the study's over the first tenth: a
 cold start at the target suction pressure would boil the whole inlet. The last quarter of the iterations is
 averaged (head, torque, power) as for a steady MRF run.
 """
@@ -182,7 +182,9 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     l_ref = 2 * max((float(z["radius"]) for z in zones.values()), default=0.0) * SCALE or \
         float(plan["inlets"][inlet].get("hydraulic_diameter_m", 0.05))
     p0_tab = _table([(0, p_start), (n_ramp, cv["p0_Pa"]), (10 * iters + 1e6, cv["p0_Pa"])])
-    q_tab = _table([(0, 0.0), (n_flow, Q), (10 * iters + 1e6, Q)])
+    # the outlet's flow rises from 5 % (not 0: flowRateOutletVelocity divides its estimate by the flow rate,
+    # estimatedFlowRate/flowRate, a 0/0 that stopped the first S50 run on carbonio with SIGFPE, 2026.11.03)
+    q_tab = _table([(0, 0.05 * Q), (n_flow, Q), (10 * iters + 1e6, Q)])
     plan["vof"] = {**cv, "p_ref_Pa": cv["p0_Pa"], "p_start_Pa": p_start, "inlet": inlet, "outlet": outlet, "Q": Q,
                    "ramp_iterations": n_ramp, "flow_ramp_iterations": n_flow, "u_tip": u_tip}
     plan["fixed_pressure"] = True

@@ -70,6 +70,7 @@ def test_vof_case_files(tmp_path):
     assert "uniformTotalPressure" in prgh and f"(1200 {vf['p0_Pa']:.10g})" in prgh and "fixedFluxPressure" in prgh
     u = (c / "0" / "U").read_text()
     assert "flowRateOutletVelocity" in u and "(400 0.002)" in u and "pressureInletOutletVelocity" in u
+    assert "table ((0 0.0001)" in u            # never 0: flowRateOutletVelocity divides by it (SIGFPE, carbonio)
     assert (c / "0" / "alpha.water").exists() and not (c / "0" / "p").exists()
     ctl = foamio.read_foam(cd.split("functions")[0] + "\n")
     assert ctl["solver"] == "incompressibleVoF"
