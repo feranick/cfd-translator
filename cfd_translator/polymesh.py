@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.10.21.2
+Version: 2026.11.02.3
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -273,7 +273,7 @@ class PolyMesh:
         (d / "boundary").write_text("\n".join(lines))
         zf = d / "cellZones"
         if self.zones:
-            z = [header("regIOobject", "cellZones", "constant/polyMesh"), f"{len(self.zones)}", "("]
+            z = [header("cellZoneList", "cellZones", "constant/polyMesh"), f"{len(self.zones)}", "("]
             for name, cells in self.zones.items():
                 c = np.asarray(cells, np.int64)
                 z += [name, "{", "    type cellZone;", f"    cellLabels List<label> {len(c)}", "("]

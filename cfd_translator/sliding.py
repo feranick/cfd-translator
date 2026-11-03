@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.02.1
+Version: 2026.11.02.3
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -185,6 +185,14 @@ def dynamic_mesh_dict(sl: dict) -> str:
     return _dict("dynamicMeshDict", "constant", body)
 
 
+SOLVED = ("U", "p")
+SOLVED_TURB = ("U", "p", "k", "omega", "nut")
+
+
+def _turbulent(plan: dict) -> bool:
+    return (plan.get("transient") or {}).get("model", plan.get("model", "laminar")) != "laminar"
+
+
 def create_baffles_dict(sl: dict, turb: bool) -> str:
     from .case import _dict
     pf = ("        U\n        {\n            type            movingWallSlipVelocity;\n            value           uniform (0 0 0);\n        }\n"
@@ -206,7 +214,7 @@ def create_baffles_dict(sl: dict, turb: bool) -> str:
 
 def write_face_zone(poly: Path, name: str, faces: np.ndarray, flip: np.ndarray) -> None:
     from .polymesh import header
-    lines = [header("regIOobject", "faceZones", "constant/polyMesh"), "1", "(", name, "{", "    type faceZone;",
+    lines = [header("faceZoneList", "faceZones", "constant/polyMesh"), "1", "(", name, "{", "    type faceZone;",
              f"    faceLabels List<label> {len(faces)}", "("]
     lines += [str(int(i)) for i in faces]
     lines += [")", ";", f"    flipMap List<bool> {len(flip)}", "("]
@@ -241,8 +249,15 @@ def to_sliding(case: Path, plan: dict, mesh, run_step) -> list[str]:
     for d in [case] + sorted(case.glob("processor*")):
         if d.name.startswith("processor"):
             shutil.rmtree(d, ignore_errors=True)            # decomposed again for the transient run
-    for f in ("phi", "wallShearStress", "yPlus", "UMean", "pMean", "UPrime2Mean"):
-        (zero / f).unlink(missing_ok=True)
+    # createBaffles (fields true) reads every field in 0/ and needs a boundary condition for each on the new
+    # patches: only the solved fields stay; the rest (phi, wallShearStress, yPlus, the monitors' total(p): s180 on
+    # spark2, 2026.11.02, "keyword total(p) is undefined") go to 0.steady/, and the transient run writes its own
+    keep = set(SOLVED_TURB if _turbulent(plan) else SOLVED)
+    aside = case / "0.steady"
+    for f in sorted(zero.iterdir()) if zero.is_dir() else []:
+        if f.is_file() and f.name not in keep:
+            aside.mkdir(exist_ok=True)
+            shutil.move(str(f), str(aside / f.name))
     # the rotor's walls move with the mesh
     uf = zero / "U"
     txt = uf.read_text()
@@ -258,8 +273,7 @@ def to_sliding(case: Path, plan: dict, mesh, run_step) -> list[str]:
     poly = case / "constant" / "polyMesh"
     f, flip = interface(mesh, mesh.zones[sl["zone"]])
     write_face_zone(poly, sl["face_zone"], f, flip)
-    turb = (plan.get("transient") or {}).get("model", plan.get("model", "laminar")) != "laminar"
-    (case / "system" / "createBafflesDict").write_text(create_baffles_dict(sl, turb))
+    (case / "system" / "createBafflesDict").write_text(create_baffles_dict(sl, _turbulent(plan)))
     before = {p["name"]: p for p in mesh.patches}
     run_step("createBaffles", "log.createBaffles")
     run_step("splitBaffles", "log.splitBaffles")

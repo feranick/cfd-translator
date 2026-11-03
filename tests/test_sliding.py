@@ -198,7 +198,14 @@ def test_case_files_and_the_topology_steps(tmp_path):
                             f"        startFace       {m.nfaces};\n    }}\n" for n in ("rotor_rotor", "rotor_stator"))
             k = b.rindex(")")
             (case / "constant" / "polyMesh" / "boundary").write_text(b[:k] + extra + b[k:])
+    # what the steady start leaves beside the solved fields (s180 on spark2: createBaffles stopped on total(p))
+    for extra_field in ("total(p)", "phi", "wallShearStress", "yPlus"):
+        (case / "0" / extra_field).write_text("FoamFile {}\n")
     notes = to_sliding(case, plan, m, run_step)
+    assert sorted(p.name for p in (case / "0").iterdir() if p.is_file()) == ["U", "k", "nut", "omega", "p"]
+    assert (case / "0.steady" / "total(p)").exists() and (case / "0.steady" / "phi").exists()
+    assert "class       faceZoneList;" in (case / "constant" / "polyMesh" / "faceZones").read_text()
+    assert "class       cellZoneList;" in (case / "constant" / "polyMesh" / "cellZones").read_text()
     assert calls == ["createBaffles", "splitBaffles", "createNonConformalCouples -fields rotor_rotor rotor_stator"]
     assert not (case / "constant" / "MRFProperties").exists()
     dyn = (case / "constant" / "dynamicMeshDict").read_text()
