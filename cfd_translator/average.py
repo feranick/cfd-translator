@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.02.1
+Version: 2026.11.03.1
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -57,6 +57,7 @@ def settings(study: dict, plan: dict | None = None) -> dict | None:
         return None
     if a is None:
         has_zones = bool((plan or {}).get("zones")) if plan is not None else bool(study.get("rotating"))
+        has_zones = has_zones or bool(study.get("cavitation"))      # pseudo-steady VoF: judged by settling
         # turbulent external flow with a reference (drag and lift coefficients): the forces wobble the same way
         ext = (study.get("domain") or {}).get("kind") == "external" and study.get("model", "laminar") != "laminar" \
             and bool((study.get("reference") or {}).get("velocity")) and bool((study.get("reference") or {}).get("area"))
@@ -85,6 +86,11 @@ def monitor_functions(study: dict, plan: dict, rho: float) -> tuple[list, dict]:
     if cfg is None:
         return [], {}
     kinds = {n: v["kind"] for n, v in plan["patches"].items()}
+    vof = plan.get("vof")
+    # cavitation (incompressibleVoF): p in Pa, absolute; the mixture's density field 'rho' (OpenFOAM's pressure
+    # function object looks rho up as a field when p is in Pa), forces against the inlet's total pressure
+    rho_key = "rho             rho;" if vof else f"rho             rhoInf;\nrhoInf          {rho:.12g};"
+    p_ref = float(vof["p_ref_Pa"]) if vof else 0.0
     ends = [n for n, k in kinds.items() if k in ("inlet", "outlet", "opening")]
     funcs, mon = [], {"pressure": {}, "torque": {}, "settings": cfg}
     if any(k == "inlet" for k in kinds.values()) and any(k in ("outlet", "opening") for k in kinds.values()):
@@ -96,8 +102,7 @@ type            pressure;
 libs            ("libfieldFunctionObjects.so");
 calcTotal       yes;
 calcCoeff       no;
-rho             rhoInf;
-rhoInf          {rho:.12g};
+{rho_key}
 pRef            0;
 result          total(p);
 executeControl  timeStep;
@@ -138,9 +143,8 @@ writeControl    timeStep;
 writeInterval   1;
 log             false;
 patches         ({' '.join(body)});
-rho             rhoInf;
-rhoInf          {rho:.12g};
-pRef            0;{chr(10) + "porosity        yes;" if por else ""}
+{rho_key}
+pRef            {p_ref:.12g};{chr(10) + "porosity        yes;" if por else ""}
 CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
         mon["forces"] = {"fo": "cfdtF_body", "patches": list(body), "porosity": por}
     for zn, zp in (plan.get("zones") or {}).items():
@@ -155,9 +159,8 @@ writeControl    timeStep;
 writeInterval   1;
 log             false;
 patches         ({' '.join(zp['rotating_walls'])});
-rho             rhoInf;
-rhoInf          {rho:.12g};
-pRef            0;
+{rho_key}
+pRef            {p_ref:.12g};
 CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
         mon["torque"][zn] = fo
     if not mon["pressure"] and not mon["torque"] and not mon.get("forces"):
@@ -477,7 +480,7 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     co = res.get("coefficients") or {}
     porous_note = None
     if fm and co.get("q_Pa") and co.get("area_m2"):
-        got = _force_series(case, fm["fo"], 1.0 if plan.get("energy") else rho)
+        got = _force_series(case, fm["fo"], 1.0 if plan.get("energy") or plan.get("vof") else rho)
         if got is None:
             warns.append(f"averaging: no force history (postProcessing/{fm['fo']}); final-iteration coefficients kept")
         else:

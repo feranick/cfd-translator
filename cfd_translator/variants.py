@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.10.22.3
+Version: 2026.11.03.1
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -12,6 +12,8 @@ One study can stand for several:
 
     "mesh_scales": [1, 0.707, 0.5]      every mesh length times each factor: studies <name>_L1, _L2, _L3
     "variants": {"a": {...}, "b": {...}}  each a patch merged into the study: <name>_a, <name>_b
+    "cavitation": {"npsh": [8, 5, 3, 2]}  a study per NPSH: <name>_npsh8, ...; compare() adds the NPSH curve and
+                                          NPSH3 (cavitation.npsh_curve)
 
 When they have run, compare() puts their main results side by side; with mesh_scales it also gives the
 change between the two finest levels and, when the changes shrink, Richardson's extrapolation.
@@ -168,6 +170,25 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
     """(studies with every variant spelled out, groups {base: {names, scales}}, errors {name: [...]})."""
     out, groups, errs = {}, {}, {}
     for name, st in studies.items():
+        cv = st.get("cavitation") if isinstance(st, dict) else None
+        if isinstance(cv, dict) and isinstance(cv.get("npsh"), list):
+            vals = cv["npsh"]
+            if {"variants", "mesh_scales"} & set(st):
+                errs[name] = ["an NPSH sweep (cavitation.npsh list) goes without variants or mesh_scales"]
+                continue
+            if not (2 <= len(vals) <= 12 and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0
+                                                 for x in vals) and len(set(vals)) == len(vals)):
+                errs[name] = ["cavitation.npsh: 2-12 different NPSH values (m, > 0), e.g. [10, 6, 4, 3, 2.5, 2]; the "
+                              "highest should be free of cavitation (the reference head)"]
+                continue
+            names = []
+            for x in vals:
+                n = f"{name}_npsh{float(x):g}"
+                out[n] = merge(st, {"cavitation": {"npsh": float(x)}})
+                names.append(n)
+            groups[name] = {"names": names, "scales": None, "npsh": [float(x) for x in vals],
+                            "head_drop": float(cv.get("head_drop", 0.03))}
+            continue
         if not isinstance(st, dict) or not ({"variants", "mesh_scales"} & set(st)):
             out[name] = st
             continue
@@ -203,7 +224,8 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
 
 # ---- comparison --------------------------------------------------------------------------------------
 QUANTITIES = ("coefficients.cd", "coefficients.cl", "pressure_drop", "total_pressure_drop", "head_loss_m",
-              "y_plus_part_mean", "pump.head_m", "pump.efficiency", "age.mean_residence_time_s")
+              "y_plus_part_mean", "pump.head_m", "pump.efficiency", "age.mean_residence_time_s",
+              "cavitation.npsh_inlet_m", "cavitation.vapour_volume_mm3")
 
 
 def _get(d: dict, path: str):
@@ -260,4 +282,16 @@ def compare(results: dict, group: dict) -> dict:
             if all(x is not None for x in vals) and q != "y_plus_part_mean":
                 conv[q] = convergence(vals, group["scales"])
         out["mesh_convergence"] = conv
+    if group.get("npsh"):
+        from .cavitation import npsh_curve
+        pts = []
+        for n, v in zip(group["names"], group["npsh"]):
+            r = rows.get(n) or {}
+            if "cells" in r:
+                pts.append({"name": n, "npsh": v, "head": r.get("pump.head_m"), "reliable": r.get("reliable"),
+                            "vapour_mm3": r.get("cavitation.vapour_volume_mm3"),
+                            "npsh_inlet": r.get("cavitation.npsh_inlet_m")})
+        out["npsh_curve"] = npsh_curve(pts, group.get("head_drop", 0.03))
+        if len(pts) < len(group["names"]):
+            out["npsh_curve"]["pending"] = [n for n in group["names"] if "cells" not in (rows.get(n) or {})]
     return out

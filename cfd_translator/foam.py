@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.10.31.5
+Version: 2026.11.03.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -309,6 +309,17 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
         p = t / name
         return foamio.read_foam(p.read_text()) if p.is_file() else None
     U, p, phi = load("U"), load("p"), load("phi")
+    vof = plan.get("vof")
+    alpha = p_abs = None
+    if vof:
+        # cavitation (incompressibleVoF): p and p_rgh in Pa, absolute (equal with g = 0); post reads p kinematic
+        # and gauge, here to the inlet's target total pressure, with the liquid's density
+        if p is None:
+            p = load("p_rgh")
+        if p is not None:
+            p_abs = np.asarray(p["internalField"], float)
+            p = cavitation_kinematic(p, vof)
+        alpha = load("alpha.water")
     if U is None or p is None or phi is None:
         raise FoamError(f"{t.name}: U, p or phi missing")
     averaged = False
@@ -327,6 +338,9 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
             a = np.tile(a, (nc, 1)) if width == 3 else np.full(nc, float(a))
         return a
     Uc, pc = internal(U, 3), internal(p, 1)
+    ac = internal(alpha, 1) if alpha is not None else None
+    if p_abs is not None and p_abs.ndim == 0:
+        p_abs = np.full(nc, float(p_abs))
     Tc = internal(T, 1) if T else None
     rc = internal(rho, 1) if rho else None
     g = mesh.geometry()
@@ -370,6 +384,8 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
                 notes.append(f"{nm}: no value for {typ}; used the cell values")
             return c
         rec = {"U": bval(U, 3, Uc), "p": bval(p, 1, pc), "phi": bval(phi, 1, None)}
+        if alpha is not None:
+            rec["alpha"] = bval(alpha, 1, ac)
         rec["wss"] = bval(wss, 3, None) if (wss and P["type"] == "wall" and nm in wss["boundaryField"]) else None
         rec["nut"] = bval(nut, 1, None) if nut and nm in nut["boundaryField"] else None
         rec["yPlus"] = bval(yp, 1, None) if (yp and P["type"] == "wall" and nm in yp["boundaryField"]) else None
@@ -389,4 +405,17 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
         out["scalars"] = {sn: {"internal": scc, "patches": scal_b.get(sn, {})} for sn, (sf, scc) in scal.items()}
     if T:
         out["T"], out["rho"] = Tc, rc
+    if vof:
+        out["p_abs"] = p_abs
+        if ac is not None:
+            out["alpha"] = ac
+            # the vapour fraction as a scalar, so slices can show it (render: field 'vapour')
+            out.setdefault("scalars", {})["vapour"] = {
+                "internal": 1.0 - ac,
+                "patches": {n: (1.0 - np.asarray(r["alpha"], float)) for n, r in patches.items() if r.get("alpha") is not None}}
     return out
+
+
+def cavitation_kinematic(p: dict, vof: dict) -> dict:
+    from .cavitation import to_kinematic
+    return to_kinematic(p, float(vof["p_ref_Pa"]), float(vof["rho_l"]))

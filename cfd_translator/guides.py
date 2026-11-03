@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.02.1
+Version: 2026.11.03.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 GUIDES = {
     "pumps": {
-        "title": "Pumps, fans and mixers: MRF (frozen rotor) or a sliding mesh",
+        "title": "Pumps, fans and mixers: MRF (frozen rotor) or a sliding mesh; cavitation and NPSH curves",
         "choose": [
             "MRF (rotating[].motion 'mrf', the default): steady, fast. The rotor is frozen where the geometry puts it, "
             "so head and torque depend on where the blades stand against the cutwater or the stator vanes; the "
@@ -36,6 +36,23 @@ GUIDES = {
             "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
             "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
             "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+        ],
+        "cavitation": [
+            "cavitation: {npsh: [12, 8, 6, 5, 4, 3.5, 3, 2.5]} turns the pump study into an NPSH sweep: one study per "
+            "value (<name>_npsh<value>), liquid and vapour (OpenFOAM incompressibleVoF with Schnerr-Sauer mass "
+            "transfer), MRF frozen rotor, pseudo-steady (local time step), iterations 4000 by default.",
+            "The study keeps its inlet flow_rate and outlet: the inlet then holds the absolute total pressure p_vapour "
+            "+ rho g NPSH, the outlet draws the flow rate (the outlet's pressure is not used). temperature (20 C) sets "
+            "water's vapour pressure; another liquid needs p_vapour and vapour {rho, mu}.",
+            "The highest NPSH must be free of vapour (its head is the reference); space the points closer where the "
+            "head starts to fall. 'variants' in study_status gives npsh_curve: head and vapour volume per point and "
+            "npsh3_m (3 % head drop, interpolated; head_drop changes the 3 %).",
+            "Each point: results.cavitation (vapour_volume_mm3, vapour_region, walls with vapour, min_pressure_Pa, "
+            "npsh_inlet_m from the flow-weighted inlet total pressure, sigma_tip) and pump.head_m, power_W averaged "
+            "over the last quarter. images: a 'vapour' slice (field vapour) shows where it forms.",
+            "Mesh: the blades' leading edges and suction sides need fine cells (refine there, 0.2-0.5 mm on a "
+            "small pump); vapour sheets thinner than a few cells are not resolved. Each NPSH point meshes again "
+            "for now.",
         ],
         "reporting": [
             "Give pump.head_m, power_W and efficiency as revolution averages with results.averaged (std, drift, "

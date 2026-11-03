@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.10.31.4
+Version: 2026.11.03.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -402,6 +402,8 @@ def _progress_of(d: Path, study: dict) -> dict:
         return out
     if trs:
         s = dict(s, iterations=init)
+    elif isinstance(study.get("cavitation"), dict):
+        s = dict(s, iterations=int(study["cavitation"].get("iterations", s.get("iterations", 4000))))
     nmax = int(s.get("iterations", 3000 if study.get("model", "laminar") != "laminar" else 2000))
     start = (d / "case" / "log.checkMesh").stat().st_mtime if (d / "case" / "log.checkMesh").exists() else log.stat().st_ctime
     el = max(time.time() - start, 1e-3)

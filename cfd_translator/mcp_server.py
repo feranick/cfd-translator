@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.02.1
+Version: 2026.11.03.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -64,7 +64,8 @@ before trusting numbers; if 'reliable' is false, do not report the numbers as re
 pressure) for losses. Pumps and fans: a 'rotating' zone (MRF) around the impeller, its faces a wall
 with rotation: the zone's name; results give rotating.<zone>.torque_Nm, power_W and pump.head_m,
 efficiency. The zone is frozen (MRF) unless motion is 'sliding' (the mesh turns: transient, revolution
-averages, no frozen-rotor dependence; read guide('pumps') first). Long runs: set solve.procs (MPI ranks). Pending studies report 'progress' with eta_min_max:
+averages, no frozen-rotor dependence); cavitation {npsh: [m, ...]} gives the NPSH curve and NPSH3 (liquid +
+vapour); read guide('pumps') first. Long runs: set solve.procs (MPI ranks). Pending studies report 'progress' with eta_min_max:
 polling costs tokens, so when a run needs more than about 5 minutes, tell the user when it should
 finish and stop; collect it later with study_status.
 Heat and compressible gas: "energy": true (OpenFOAM fluid; air becomes a perfect gas up to transonic
@@ -268,7 +269,7 @@ def guide(topic: str = "") -> dict:
     """How to set up a kind of study, from the runs that validated it (longer than study_format holds):
     'vehicle_aero' (cars, bluff bodies: domain, snappy sizes, layers, steady RANS vs DES, averaging windows,
     reporting, which Ahmed benchmark to run); 'pumps' (MRF or sliding mesh, the rotating zone, time steps and
-    revolution averages). Without a topic: the list."""
+    revolution averages, cavitation and NPSH sweeps). Without a topic: the list."""
     return api.guide(topic or None)
 
 

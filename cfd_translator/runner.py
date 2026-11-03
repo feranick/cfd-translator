@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.02.2
+Version: 2026.11.03.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -174,6 +174,10 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         from .post import check_expect, results
         res, w = results(study, mesh, plan, fields)
         warns += w
+        if plan.get("vof"):                       # cavitation: vapour volume and where, NPSH at the inlet
+            from .cavitation import results as _cav
+            res["cavitation"], w = _cav(study, mesh, plan, fields, res)
+            warns += w
         if solver != "ref" and plan.get("monitors"):
             from .average import average_results
             try:
@@ -280,6 +284,13 @@ def reprocess_study(folder: Path, name: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             source = f"the saved state (the case could not be read: {exc})"
     res, w = results(study, mesh, plan, fields)
+    if plan.get("vof"):
+        if fields.get("alpha") is not None:
+            from .cavitation import results as _cav
+            res["cavitation"], w3 = _cav(study, mesh, plan, fields, res)
+            w = list(w) + w3
+        elif (old.get("results") or {}).get("cavitation"):
+            res["cavitation"] = old["results"]["cavitation"]
     out = dict(old)
     solve = dict(old.get("solve") or {})
     if old.get("solver") != "ref" and plan.get("monitors") and case.is_dir():
@@ -414,6 +425,8 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
         why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
     if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.02:
         why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
+    if ch.get("alpha_bounds") and not ch["alpha_bounds"].get("ok", True):
+        why.append(f"the liquid fraction left [0, 1] ({ch['alpha_bounds']['min']} .. {ch['alpha_bounds']['max']})")
     mb = ch.get("momentum_balance", {})
     if "note" not in mb and mb.get("error", 0) > 0.03:
         why.append(f"momentum balance off by {mb['error']:.2%}")

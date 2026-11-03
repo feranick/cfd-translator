@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.10.28.1
+Version: 2026.11.03.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
         isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
@@ -24,7 +24,7 @@ from .polymesh import SCALE, PolyMesh
 AXES = {"x": 0, "y": 1, "z": 2}
 FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa, gauge)",
           "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)",
-          "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)"}
+          "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)", "vapour": "vapour volume fraction"}
 CMAPS = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "q": "inferno", "mach": "magma", "age": "cividis",
          "u": "viridis", "wall_shear": "viridis"}
 

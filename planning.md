@@ -165,7 +165,50 @@ Tracers (format, case, results, checks, 4 benchmarks, tests with synthetic field
 zones about one more. Each: keywords checked in the v14 source first, sandbox tests, then the benchmarks on mochi
 with local runs (as for the venturi). README: format, results, the new checks, versions.
 
+## Plan: cavitation (incompressibleVoF + VoFCavitation), 2026.11.03
+
+User's choices (2026.11.03): MRF pseudo-steady first; a built-in NPSH sweep. Sliding-mesh cavitation is a future
+feature (below).
+
+OpenFOAM 14 facts (tutorials incompressibleVoF/propeller and DTCHull, sources read on GitHub):
+- solver incompressibleVoF; constant/phaseProperties `phases (water vapour); pSat 2300; sigma 0.07;`;
+  physicalProperties.water / .vapour `viscosityModel constant; nu; rho;`; constant/g (0 0 0) for a pump.
+- constant/fvModels `VoFCavitation { type VoFCavitation; model SchnerrSauer; SchnerrSauer { pSat; liquid water;
+  n 1.6e13; dNuc 2e-6; Cc 1; Cv 1; } }` (Kunz, Merkle: UInf, tInf, Cc, Cv).
+- Fields alpha.water, U, p_rgh (Pa, absolute; p_rgh = p with g = 0), k/omega/nut. BCs: walls fixedFluxPressure
+  (p_rgh), zeroGradient (alpha); total-pressure inlet `uniformTotalPressure` (p0 a Function1 of time: a ramp);
+  outlet `flowRateOutletVelocity` (volumetricFlowRate, a Function1).
+- VoFSolver has MRFZones, and LTS (ddt localEuler; PIMPLE maxCo, maxAlphaCo, rDeltaTSmoothingCoeff,
+  rDeltaTDampingCoeff, maxDeltaT) for pseudo-steady runs. Schemes: div(phi,alpha) Gauss noInterfaceCompression
+  vanLeer (cavitation), div(rhoPhi,U), div(((rho*nuEff)*dev2(T(grad(U))))). Solvers "alpha.water.*" (MULES,
+  MULESCorr), p_rgh, p_rghFinal, "pcorr.*".
+
+Design (cavitation.py):
+- study `cavitation: {npsh: m or [m, ...], temperature C (20) | p_vapour Pa, model SchnerrSauer|Kunz|Merkle,
+  iterations, ramp (0.3), head_drop (0.03)}`; water only for now (vapour properties from the temperature), or
+  p_vapour + vapour {rho, mu} for another liquid. One inlet (its flow_rate moves to the outlet, as
+  flowRateOutletVelocity) and one outlet; the inlet gets total pressure p_v + rho g NPSH (absolute), ramped down from
+  a cavitation-free level over the first `ramp` of the iterations. MRF zones as for the steady pump.
+- An npsh list expands like variants (<name>_npsh<value>); compare() gives head vs NPSH, vapour volume, and NPSH3
+  (head 3 % below the highest-NPSH point, interpolated).
+- Results: per point head, power, efficiency (averaged over the last iterations), vapour volume (m3 and % of the
+  zone/domain), min pressure, where the vapour is; images of alpha.water.
+- Reading: p and p_rgh in Pa absolute -> post's kinematic gauge layout (p - p_ref) / rho_liquid; phi volumetric.
+
+Future (not now):
+- **Sliding-mesh cavitation**: the same case on the sliding zone (incompressibleVoF supports the NCC mover, as its
+  propeller tutorial: correctPhi, correctMeshPhi, movingWallVelocity / movingWallSlipVelocity, alpha zeroGradient
+  on the couple's patches); averages over whole revolutions; cavity shedding and pressure pulsations. Needs
+  sliding.to_sliding to set alpha.water / p_rgh patchFields and a transient VoF controlDict (maxCo, maxAlphaCo).
+- One mesh shared by all NPSH points of a sweep (now each point meshes again).
+- Free-surface VoF (tanks, priming, sloshing), air entrainment.
+
 ## State
+
+**2026.11.03.1**: cavitation (MRF, pseudo-steady, NPSH sweep) coded per the plan above; unverified on OpenFOAM. First
+run: one S50 point at a high NPSH (no vapour expected: head within a few % of the MRF run), then the sweep. Watch:
+VoF's `p` written (else p_rgh is read), `uniformTotalPressure` on p_rgh with the mixture's rho, the pressure and
+forces function objects with `rho rho` and p in Pa, LTS stability (maxCo 5, maxAlphaCo 2), the ramp's start level.
 
 **2026.10.22.4**: #25 transient (transient.py): URANS / kOmegaSSTDES / laminar, steady start, fieldAverage, time averages with frequency/Strouhal, stop (stopAt writeNow) and continue in a dependent SLURM job. Unverified on OpenFOAM: run cylinder_2d2 (quick), cylinder_2d2_restart (job chaining), then ahmed25_des / ahmed35_des. Watch: fieldAverage startTime key (timeControl), stopAt writeNow picked up in parallel (timeStamp check), reconstructPar after the last segment, Courant-limited dt with thin layer cells.
 

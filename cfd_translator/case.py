@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.02.1
+Version: 2026.11.03.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -386,6 +386,54 @@ def _check_rotating_wall(nm: str, zn: str, f, mesh, g, zones: dict, plan: dict) 
         "vane tips facing its ends across a narrow gap); they still move at Omega x r (MRFnoSlip)")
 
 
+def wall_velocity(p: dict, mesh, g, zones: dict, plan: dict) -> dict:
+    """The velocity boundary condition of a wall patch: noSlip, a moving wall's tangential velocity, a rigid
+    rotation (omega x r), or MRFnoSlip for a wall turning with an MRF zone (plan['patches'] notes it)."""
+    nm, b = p["name"], p["bc"]
+    vw = b.get("velocity")
+    if not (b.get("rotation") or (vw and np.linalg.norm(vw) > 0)):
+        return {"type": "noSlip"}
+    f = mesh.patch_faces(nm)
+    Sf = g["Sf"][f]
+    n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
+    if b.get("rotation"):
+        # rigid rotation: the full omega x r (blades move through the fluid). On the facets of a
+        # surface of revolution it is tangential up to the faceting; that small normal part is
+        # dropped (it fed s180's 'impeller_back' cylinders, r 137 at 1450 rpm, with a flux that
+        # cancels only on average)
+        spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
+        Ut = (own_rotation_velocity(mesh, g, f, spec, plan) if isinstance(b["rotation"], dict)
+              else facet_tangential(swirl_velocity(g["Cf"][f], spec), n))
+        if isinstance(b["rotation"], str) and zones[b["rotation"]].get("motion") != "sliding":
+            _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
+    else:
+        Ut = _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
+    same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * max(float(np.abs(Ut).max()), 1e-300))
+    out = {"type": "fixedValue", "value": _uniform(Ut[0]) if same else _nonuniform(Ut)}
+    if isinstance(b.get("rotation"), str):        # rotating with an MRF zone (OpenFOAM 14: MRFnoSlip)
+        out["type"] = "MRFnoSlip"
+        plan["patches"][nm]["zone"] = b["rotation"]
+    plan["patches"][nm]["moving"] = True
+    return out
+
+
+def write_mrf(case: Path, zones: dict, plan: dict) -> None:
+    """constant/MRFProperties for the rotating zones (removed when there are none)."""
+    mrf = Path(case) / "constant" / "MRFProperties"
+    if zones:
+        body = []
+        for name, z in zones.items():
+            zp = plan["zones"][name]
+            o = np.asarray(zp["center_mm"]) * SCALE
+            body.append(f"{name}\n{{\n    cellZone        {name};\n"
+                        f"    origin          ({o[0]:.12g} {o[1]:.12g} {o[2]:.12g});\n"
+                        f"    axis            ({zp['axis'][0]:.12g} {zp['axis'][1]:.12g} {zp['axis'][2]:.12g});\n"
+                        f"    omega           {zp['omega_rad_s']:.12g};   // rad/s ({zones[name]['rpm']:g} rpm)\n}}")
+        mrf.write_text(_dict("MRFProperties", "constant", "\n\n".join(body)))
+    elif mrf.exists():
+        mrf.unlink()
+
+
 def nonortho_schemes(q: dict) -> tuple[str, str, int, float]:
     """(laplacian, snGrad, non-orthogonal correctors, relaxation factor) for the mesh's worst
     non-orthogonality. 70-80 degrees: limited 0.33 and two correctors; above 80 (Gmsh tetrahedra reached 88 and
@@ -519,6 +567,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         Lr = float(study.get("reference", {}).get("length", 0)) * SCALE or mesh.info.get("diag", 1.0) * SCALE * 0.07
         om0 = float(np.sqrt(k0) / (CMU ** 0.25 * Lr))
     plan["U_ref"] = uref
+    if study.get("cavitation"):                 # liquid and vapour (cavitation.py: incompressibleVoF, LTS)
+        from .cavitation import write_vof
+        return write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g, q)
     if energy:
         return _write_energy(study, mesh, patches, case, plan, U, kin, k0, om0, th, turb, external)
     # fields
@@ -555,31 +606,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
             wb[nm] = {"type": "inletOutlet", "inletValue": _uniform(om0), "value": _uniform(om0)}
             nb[nm] = {"type": "calculated", "value": _uniform(0)}
         elif kind == "wall":
-            vw = b.get("velocity")
-            if b.get("rotation") or (vw and np.linalg.norm(vw) > 0):
-                f = mesh.patch_faces(nm)
-                Sf = g["Sf"][f]
-                n = Sf / np.linalg.norm(Sf, axis=1)[:, None]
-                if b.get("rotation"):
-                    # rigid rotation: the full omega x r (blades move through the fluid). On the facets of a
-                    # surface of revolution it is tangential up to the faceting; that small normal part is
-                    # dropped (it fed s180's 'impeller_back' cylinders, r 137 at 1450 rpm, with a flux that
-                    # cancels only on average)
-                    spec = zones[b["rotation"]] if isinstance(b["rotation"], str) else b["rotation"]
-                    Ut = (own_rotation_velocity(mesh, g, f, spec, plan) if isinstance(b["rotation"], dict)
-                          else facet_tangential(swirl_velocity(g["Cf"][f], spec), n))
-                    if isinstance(b["rotation"], str) and zones[b["rotation"]].get("motion") != "sliding":
-                        _check_rotating_wall(nm, b["rotation"], f, mesh, g, zones, plan)
-                else:
-                    Ut = _tangential(np.tile(np.asarray(vw, float), (len(f), 1)), n)
-                same = np.allclose(Ut, Ut[0], rtol=0, atol=1e-12 * max(float(np.abs(Ut).max()), 1e-300))
-                Ub[nm] = {"type": "fixedValue", "value": _uniform(Ut[0]) if same else _nonuniform(Ut)}
-                if isinstance(b.get("rotation"), str):        # rotating with an MRF zone (OpenFOAM 14: MRFnoSlip)
-                    Ub[nm]["type"] = "MRFnoSlip"
-                    plan["patches"][nm]["zone"] = b["rotation"]
-                plan["patches"][nm]["moving"] = True
-            else:
-                Ub[nm] = {"type": "noSlip"}
+            Ub[nm] = wall_velocity(p, mesh, g, zones, plan)
             pb[nm] = {"type": "zeroGradient"}
             kb[nm] = {"type": "kqRWallFunction", "value": _uniform(k0)}
             wb[nm] = {"type": "omegaWallFunction", "value": _uniform(om0)}
@@ -610,19 +637,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     else:
         mt = "simulationType  laminar;"
     (case / "constant" / "momentumTransport").write_text(_dict("momentumTransport", "constant", mt))
-    mrf = case / "constant" / "MRFProperties"
-    if zones:
-        body = []
-        for name, z in zones.items():
-            zp = plan["zones"][name]
-            o = np.asarray(zp["center_mm"]) * SCALE
-            body.append(f"{name}\n{{\n    cellZone        {name};\n"
-                        f"    origin          ({o[0]:.12g} {o[1]:.12g} {o[2]:.12g});\n"
-                        f"    axis            ({zp['axis'][0]:.12g} {zp['axis'][1]:.12g} {zp['axis'][2]:.12g});\n"
-                        f"    omega           {zp['omega_rad_s']:.12g};   // rad/s ({zones[name]['rpm']:g} rpm)\n}}")
-        mrf.write_text(_dict("MRFProperties", "constant", "\n\n".join(body)))
-    elif mrf.exists():
-        mrf.unlink()
+    write_mrf(case, zones, plan)
     mesh.write(case)
     # system
     s = study.get("solve", {})

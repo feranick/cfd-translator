@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.02.1
+Version: 2026.11.03.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -111,8 +111,8 @@ CONVENTIONS = [
     "Vehicles, bluff bodies: read guide('vehicle_aero') (MCP tool) first: domain, snappy sizes, layers, DES windows.",
     "Pumps, fans: a rotating zone (MRF) around the impeller, its faces a wall with rotation: the zone's name. "
     "Results: rotating.<zone>.torque_Nm, power_W; with an inlet and an outlet pump.head_m, efficiency.",
-    "Sliding mesh (no frozen rotor): rotating[].motion 'sliding', mesher snappy, solve.transient; read "
-    "guide('pumps') first.",
+    "Sliding mesh (no frozen rotor): rotating[].motion 'sliding', mesher snappy, solve.transient; cavitation and "
+    "NPSH curves: cavitation {npsh}; read guide('pumps') first.",
     "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
     "results.averaged: mean, std, drift, scatter of torque, total pressures, cd, cl over the last 25 % (>= 500 "
     "its); the means replace the results (*_last: the final iteration). settled (drift < 1 %, scatter < 2 %; "
@@ -162,6 +162,8 @@ STUDY_KEYS = {
     "conditions": "{p (Pa absolute, 101325), T (C, 20)}: operating pressure, initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
+    "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3), temperature C | p_vapour Pa, model, iterations}: liquid + "
+                  "vapour (VoF); guide('pumps')",
     "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
     "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
                    "'variants'); or variants: {suffix: {changes}}",
@@ -245,7 +247,7 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
 
 def _scalar_names(st: dict) -> tuple:
     names = tuple(s.get("name") for s in (st.get("scalars") or []) if isinstance(s, dict) and isinstance(s.get("name"), str))
-    return names + (("age",) if st.get("age") else ())
+    return names + (("age",) if st.get("age") else ()) + (("vapour",) if st.get("cavitation") else ())
 
 
 def image_errors(im, two_d: bool = False, scalars: tuple = (), ref_velocity: bool = True) -> list[str]:
@@ -842,6 +844,9 @@ def validate_study(st: dict) -> dict:
         r = b.get("rotation") if isinstance(b, dict) else None
         if isinstance(r, str) and r not in znames:
             errs.append(f"bcs[{i}].rotation: {r!r} is not a rotating zone ({znames or 'none defined'})")
+    # cavitation (cavitation.py)
+    from .cavitation import errors as _cavitation_errors
+    errs += _cavitation_errors(st)
     # images
     if "images" in st:
         errs += image_errors(st["images"], two_d, _scalar_names(st), bool((st.get("reference") or {}).get("velocity")))
