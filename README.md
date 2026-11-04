@@ -512,4 +512,4 @@ examples/studies.json      planning.md (session context)
 | 2026.10.16.2 | Boundary layers: the walls are found on the swept mesh itself (no separate Gmsh surface mesh); cylinder fit accepts coarse, short triangulations (facet normals tilted ~20°). |
 | 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
 
-Author: Nicola Ferralis <ferralis@generalflash.com>
+Author: Nicola Ferralis <feranick@hotmail.com>
