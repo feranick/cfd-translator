@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.03.2
+Version: 2026.11.03.5
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -144,7 +144,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         "zone": sl["zone"], "revolutions": tr.get("revolutions"),
                         "averaged_revolutions": tr.get("average_revolutions"), "revolution_s": tr.get("period"),
                         "degrees_per_step": tr.get("degrees_per_step"), "interface_faces": sl["interface_faces"],
-                        "interface_lean_deg": sl["interface_lean_deg"], "rotor_walls": sl["moving_walls"]}
+                        "interface_lean_deg": sl["interface_lean_deg"], "rotor_walls": sl["moving_walls"],
+                        "spinning_walls": sl.get("spinning_walls", []), "interface_cells": sl.get("interface_cells"),
+                        "correct_mesh_phi": tr.get("correct_mesh_phi", True)}
                 lg = dict(lg, converged=True)            # residual convergence is not the question in time
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
@@ -525,6 +527,8 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     def save():
         sf.write_text(json.dumps(state))
     margin = min(900.0, max(60.0, 0.1 * timeout))
+    if state.get("correct_mesh_phi") is False:          # switched off by an earlier job of this run
+        tr["correct_mesh_phi"] = False
     if tr["init"] and not state.get("init_done"):
         info0 = foam.run(case, timeout, procs)
         state["init_iterations"] = info0["log"]["iterations"]
@@ -553,7 +557,26 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     elif state.get("sliding_notes"):
         warns += [n for n in state["sliding_notes"] if n not in warns]
     left = timeout - (time.time() - t_job)
-    info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
+    try:
+        info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
+    except foam.FoamError:
+        # S50 on spark2 (2026.11.03): the first mesh motion crashed in OpenFOAM's mesh-flux correction at the
+        # interface (fvMeshStitchers::moving::unconformInternalFaceCorrectMeshPhi, free(), exit 139). It is optional
+        # (cfd.direct, 'Using NCC': conservation holds without it; it removes pressure noise): once more without it
+        if not (plan.get("sliding") and tr.get("correct_mesh_phi", True) and mesh_phi_crash(case)):
+            raise
+        tr["correct_mesh_phi"] = False
+        write_transient(case, study, plan)
+        note = ("OpenFOAM crashed in the sliding interface's mesh-flux correction (unconformInternalFaceCorrectMeshPhi, "
+                "see log.foamRun.part*): run again with PIMPLE correctMeshPhi off; expect some pressure noise at the "
+                "interface. Poor cells there (sliding.interface_cells) are a likely cause: improve them and set "
+                "solve.transient.correct_mesh_phi true again")
+        warns.append(note)
+        state["sliding_notes"] = list(state.get("sliding_notes", [])) + [note]
+        state["correct_mesh_phi"] = False
+        save()
+        left = timeout - (time.time() - t_job)
+        info = foam.run(case, max(left, 120.0), procs, resume=True, deadline=t_job + timeout - margin)
     state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
     state["time"] = info.get("time")
     if info.get("reached_end"):
@@ -577,6 +600,16 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         fm = foam.find_foam()
         foam._step(fm, "reconstructPar -latestTime", "log.reconstructPar", case, 3600)
     return info
+
+
+def mesh_phi_crash(case: Path) -> bool:
+    """Did foamRun stop in the sliding interface's mesh-flux correction (a crash, not a fatal error)?"""
+    try:
+        t = (Path(case) / "log.foamRun").read_text(errors="replace")[-60000:]
+    except OSError:
+        return False
+    return "CorrectMeshPhi" in t and any(k in t for k in ("Segmentation", "sigSegv", "free()", "signal 11", "Aborted",
+                                                          "exited on signal", "SIGSEGV", "double free"))
 
 
 def _save(out: dict, folder: Path, name: str) -> dict:

@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.03.1
+Version: 2026.11.03.5
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -28,6 +28,13 @@ GUIDES = {
             "it is: move the zone's ends into the gap and refine the gap (mesh.refine box) to 3 cells or more.",
             "The same zone works for MRF and for sliding: the sliding run's steady start (solve.transient.init) uses "
             "MRF.",
+            "Round rotor walls (hub, shaft, back shroud) may reach outside the sliding zone if their bc holds nothing "
+            "else: such a wall gets the rotating-wall velocity everywhere and its friction counts in the torque. "
+            "Give them a wall bc of their own (rotation: the zone's name, or {axis, rpm} at the zone's speed); a bc "
+            "that also holds blades must lie inside the zone.",
+            "The cells along the zone's boundary matter: the interface's mesh-flux correction works on them "
+            "(solve.sliding.interface_cells). If OpenFOAM crashes there, cfdt runs again with "
+            "solve.transient.correct_mesh_phi false (some pressure noise at the interface).",
         ],
         "time": [
             "solve.transient.end_time in seconds: revolutions x 60 / rpm; about 10 revolutions (5 to settle after "

@@ -381,3 +381,86 @@ def test_parallel_topology_steps_and_the_decomposed_reader(tmp_path, monkeypatch
     monkeypatch.setattr(foam, "find_foam", lambda: {"version": "14"})
     with pytest.raises(foam.FoamError, match="stays decomposed for 2 ranks"):
         foam.run(case, 100, 4, resume=True)
+
+
+def test_round_rotor_walls_outside_the_zone_keep_turning(tmp_path):
+    """S50 (spark2, 2026.11.03): 68 % of 'impeller_back' (hub, shaft, back shroud: surfaces of revolution) lay
+    outside the sliding zone and stood still, so its disk friction was missing from the torque."""
+    m = pump_mesh(vane=None)
+    pts = patches_for(m)
+    m.zones = {"rotor": zone_of(m, 11.5)}
+    # the casing (r 20) as a rotor wall with its own rotation at the zone's speed: all of it outside the zone
+    for p in pts:
+        if p["name"] == "casing":
+            p["bc"]["rotation"] = {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 1500}
+    plan = plan_for(11.5)
+    check(m, m.geometry(), ZONE, plan, pts)
+    assert plan["sliding"]["spinning_walls"] == ["casing"] and "casing" not in plan["sliding"]["moving_walls"]
+    assert any("rotatingWallVelocity" in n for n in plan["notes"])
+    assert plan["sliding"]["interface_cells"]["max_non_ortho"] < 5
+
+
+def test_own_rotation_walls_count_in_the_zone_torque(tmp_path):
+    m = pump_mesh(vane=None)
+    pts = patches_for(m)
+    for p in pts:
+        if p["name"] == "casing":
+            p["bc"]["rotation"] = {"axis": [0, 0, 1], "center": [0, 0, 5], "rpm": 1500}     # same axis line and speed
+    st = dict(_study(), model="kOmegaSST", rotating=[dict(ZONE, motion="mrf")])
+    st["solve"] = {"iterations": 10}
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    plan = write_case(st, m, pts, tmp_path / "case")
+    assert plan["zones"]["rotor"]["rotating_walls"] == ["hub", "blade", "casing"]
+
+
+def test_spinning_wall_bc_and_mesh_phi_retry(tmp_path, monkeypatch):
+    from cfd_translator import foam, runner
+    from cfd_translator.runner import mesh_phi_crash
+    m = pump_mesh(vane=None)
+    pts = patches_for(m)
+    for p in pts:
+        if p["name"] == "casing":
+            p["bc"]["rotation"] = {"axis": [0, 0, 1], "rpm": 1500}
+    st = _study()
+    st["model"] = "kOmegaSST"
+    st["solve"]["transient"]["init"] = 0
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    folder = tmp_path / "s"
+    case = folder / "case"
+    plan = write_case(st, m, pts, case)
+    f, _ = interface(m, m.zones["rotor"])
+    runs = []
+
+    def fake_step(fm, cmd, log, c, timeout, raise_on_error=True, **k):
+        if cmd == "createBaffles":
+            b = (c / "constant" / "polyMesh" / "boundary").read_text()
+            extra = "".join(f"    {n}\n    {{\n        type            patch;\n        nFaces          {len(f)};\n"
+                            f"        startFace       {m.nfaces};\n    }}\n" for n in ("rotor_rotor", "rotor_stator"))
+            i = b.rindex(")")
+            (c / "constant" / "polyMesh" / "boundary").write_text(b[:i] + extra + b[i:])
+        return 0
+
+    def fake_run(c, timeout, procs, resume=False, deadline=None):
+        runs.append("correctMeshPhi  yes" in (c / "system" / "fvSolution").read_text())
+        if len(runs) == 1:
+            (c / "log.foamRun").write_text("#3  Foam::fvMeshStitchers::moving::unconformInternalFaceCorrectMeshPhi(...)\n"
+                                           "#4  free()\nSegmentation fault\n")
+            raise foam.FoamError("foamRun exited with code 139")
+        return {"log": {"iterations": 10}, "checkMesh": {"ok": True}, "time": 0.4, "reached_end": True}
+    monkeypatch.setattr(foam, "run", fake_run)
+    monkeypatch.setattr(foam, "_step", fake_step)
+    monkeypatch.setattr(foam, "find_foam", lambda: {"version": "14"})
+    (case / "log.checkMesh").write_text("Mesh OK.\n")
+    state = {"prepared": True, "segments": 0, "init_done": False, "started": False, "time_steps": 0}
+    warns = []
+    runner._solve_transient(case, st, plan, 3600, 1, folder, state, 0.0, warns, m)
+    assert runs == [True, False] and state["correct_mesh_phi"] is False
+    assert any("correctMeshPhi off" in w for w in warns)
+    U = (case / "0" / "U").read_text()
+    blk = U[U.index("    casing"):]
+    blk = blk[:blk.index("}")]
+    assert "rotatingWallVelocity" in blk and "omega           157.0796" in blk and "axis            (0 0 1)" in blk
+    assert mesh_phi_crash(case)
+    from cfd_translator.format import validate_study
+    assert validate_study(_study(correct_mesh_phi=False))["ok"]
+    assert any("correct_mesh_phi" in e for e in validate_study(_study(correct_mesh_phi="no"))["errors"])

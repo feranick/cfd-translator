@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.03.2
+Version: 2026.11.03.5
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -105,11 +105,32 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
             f"{_places(Cf, sn * A)} mm): the cells could not slide along it. The zone's cylinder must lie in open "
             "fluid, clear of walls (snappyHexMesh snaps its faces to the cylinder only there); check center, "
             "radius and span against the casing, and refine where it passes through narrow gaps")
+    # the cells on both sides of the couple: the stitcher intersects their faces and corrects the mesh fluxes in
+    # them (S50 on spark2, 2026.11.03: a segfault there on a mesh failing checkMesh); report how bad they are
+    side = np.unique(np.concatenate([mesh.owner[f], mesh.neighbour[f]]))
+    near = np.zeros(mesh.ncells, bool)
+    near[side] = True
+    ni = mesh.ninternal
+    fi = np.nonzero(near[mesh.owner[:ni]] | near[mesh.neighbour])[0]
+    if len(fi):
+        d = g["C"][mesh.neighbour[fi]] - g["C"][mesh.owner[fi]]
+        S = g["Sf"][fi]
+        cosang = np.einsum("ij,ij->i", d, S) / np.maximum(np.linalg.norm(d, axis=1) * np.linalg.norm(S, axis=1), 1e-300)
+        no = np.degrees(np.arccos(np.clip(cosang, -1, 1)))
+        k = int(np.argmax(no))
+        q_if = {"max_non_ortho": round(float(no[k]), 1), "at": np.round(g["Cf"][fi[k]], 1).tolist(),
+                "over_70": int((no > 70).sum())}
+        plan.setdefault("sliding_quality", q_if)
+        if q_if["max_non_ortho"] > 70:
+            notes.append(f"cells at the sliding interface are poor: {q_if['over_70']} faces above 70 degrees "
+                         f"non-orthogonality, worst {q_if['max_non_ortho']} at {q_if['at']} mm. The interface's mesh-flux "
+                         "correction works on these cells; refine there (a mesh.refine cylinder along the zone's "
+                         "boundary) or move the zone's boundary into more regular cells")
     plan.setdefault("zones", {}).setdefault(zn, {})
     # 2. the walls: rotating ones inside, stationary ones outside (or surfaces of revolution)
     rev = set((mesh.info.get("revolution_tags") or {}).get(rotation_key(zone["axis"], zone.get("center")), []))
     zp = plan["zones"][zn]
-    moving = []
+    moving, spin = [], []
     for p in patches:
         if p["kind"] != "wall":
             continue
@@ -140,10 +161,21 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
                 notes.append(f"{fb:.2%} of wall {p['name']!r} (rotor) bounds cells just outside sliding zone {zn!r}: "
                              "those faces stand still")
             fo = float(Aw[out & on_rev].sum() / tot)
+            all_rev = float(Aw[~on_rev].sum() / tot) < 0.001
+            if all_rev and fo > 0.001:
+                # hub, shaft, shrouds only (s50 'impeller_back', 68 % outside the zone, 2026.11.03): every face moves
+                # along itself, so OpenFOAM's rotatingWallVelocity (omega x r at the faces' current centres, normal
+                # part removed) is right inside the zone and outside it, and its disk friction stays in the torque
+                spin.append(p["name"])
+                notes.append(f"wall {p['name']!r} (rotor, all surfaces of revolution) lies {fo:.0%} outside sliding "
+                             f"zone {zn!r}: it gets the rotating-wall velocity everywhere (rotatingWallVelocity), so "
+                             "its friction counts in the torque")
+                continue
             if fo > 0.001:
-                notes.append(f"{fo:.1%} of wall {p['name']!r} (rotor; surfaces of revolution: hub, shaft, shrouds) lies "
-                             f"outside sliding zone {zn!r}: it is treated as standing still there (no disk friction "
-                             "from it in the torque)")
+                notes.append(f"{fo:.1%} of wall {p['name']!r} (rotor; its hub, shaft or shroud faces) lies outside "
+                             f"sliding zone {zn!r} and stands still there (no disk friction from it in the torque): "
+                             "the same bc also holds blades, which must move with the mesh. Give those round faces "
+                             "a bc of their own with the same rotation, or enlarge the zone")
             if float(Aw[inside].sum() / tot) > 0.5:
                 moving.append(p["name"])
             elif isinstance(r, str):
@@ -161,8 +193,10 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
                 notes.append(f"{fb:.2%} of stationary wall {p['name']!r} bounds cells inside sliding zone {zn!r}: "
                              "those faces turn with it")
     nm = names(zn)
-    plan["sliding"] = {"zone": zn, **nm, "interface_faces": int(len(f)), "interface_area_mm2": float(A.sum()),
+    plan["sliding"] = {"zone": zn, **nm, **({"interface_cells": plan.pop("sliding_quality")}
+                                          if "sliding_quality" in plan else {}), "interface_faces": int(len(f)), "interface_area_mm2": float(A.sum()),
                        "interface_lean_deg": round(mean_deg, 2), "moving_walls": moving,
+                       "spinning_walls": spin,
                        "omega_rad_s": zp.get("omega_rad_s"), "axis": a.tolist(), "center_mm": o.tolist()}
     tr = plan.get("transient") or {}
     if tr.get("average_revolutions") is not None and tr["average_revolutions"] < 3:
@@ -271,6 +305,15 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
     txt = uf.read_text()
     for w in sl["moving_walls"]:
         txt, ok = set_patch_type(txt, w, "movingWallVelocity")
+        if not ok:
+            raise SlidingError(f"0/U has no entry for wall {w!r}")
+    for w in sl.get("spinning_walls", []):
+        o = np.asarray(sl["center_mm"], float) * SCALE
+        ax = sl["axis"]
+        txt, ok = set_patch_type(txt, w, "rotatingWallVelocity;\n        origin          "
+                                 f"({o[0]:.12g} {o[1]:.12g} {o[2]:.12g});\n        axis            "
+                                 f"({ax[0]:.12g} {ax[1]:.12g} {ax[2]:.12g});\n        omega           "
+                                 f"{float(sl['omega_rad_s']):.12g}")
         if not ok:
             raise SlidingError(f"0/U has no entry for wall {w!r}")
     uf.write_text(txt)

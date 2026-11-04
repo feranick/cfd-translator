@@ -125,6 +125,11 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    boundaries, the MRF steady start then `movingWallVelocity`, foamRun with the mover and NCC, time per
    revolution (1 deg steps, maxCo 2), results read from processors, averages over whole revolutions. The case
    archive (.tgz) has no results for decomposed cases.
+   S50 sliding (spark2, 2026.11.03, 7.25 M cells, checkMesh failing): steady start and parallel couple fine, then a
+   crash in unconformInternalFaceCorrectMeshPhi (free(), exit 139) at the first motion. 11.03.5 retries with
+   correctMeshPhi off and reports the interface cells' quality; round rotor walls outside the zone now spin
+   (rotatingWallVelocity); own-rotation walls count in the zone's torque. Open: whether the crash is the mesh
+   (poor cells at the interface) or OpenFOAM's stitcher; a small sliding benchmark would tell.
 3. **S50 meshing**: layered meshes failing checkMesh now rebuilt without layers (.11.03.3; restored if that fails
    too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
    closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %

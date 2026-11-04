@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.03.1
+Version: 2026.11.03.5
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -488,6 +488,11 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                                "center_mm": list(map(float, z.get("center", [0, 0, 0]))),
                                "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls,
                                "motion": z.get("motion", "mrf")}
+        # walls with their own rotation at the zone's axis and speed (an impeller's back shroud, hub, shaft): their
+        # torque is the rotor's too (disk friction), so they count in rotating.<zone>.torque_Nm and power
+        plan["zones"][name]["rotating_walls"] += [
+            p["name"] for p in patches if p["kind"] == "wall" and isinstance(p["bc"].get("rotation"), dict)
+            and _same_rotation(p["bc"]["rotation"], plan["zones"][name])]
     from .porous import build_zones as _porous_zones
     _porous_zones(study, mesh, plan)                    # porous cellZones (after the rotating ones)
     # inlets first (they set the turbulence reference)

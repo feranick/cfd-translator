@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.02.1
+Version: 2026.11.03.5
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -87,7 +87,7 @@ def settings(study: dict, mesh=None) -> dict | None:
         if n >= 1:
             out["average_from"] = float(f"{T - n * Trev:.10g}")
         out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),
-                   degrees_per_step=deg, sliding=sl["name"])
+                   degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)))
     return out
 
 
@@ -162,7 +162,8 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
           "        tolerance       1e-07;\n        relTol          0.1;\n    }\n\n"
           f"    \"({fields})Final\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-07;\n        relTol          0;\n    }\n}\n\n" +
-          ("PIMPLE\n{\n    correctPhi      yes;\n    correctMeshPhi  yes;\n    nOuterCorrectors 2;\n    nCorrectors     1;\n"
+          ("PIMPLE\n{\n    correctPhi      yes;\n    correctMeshPhi  " +
+           ("yes" if tr.get("correct_mesh_phi", True) else "no") + ";\n    nOuterCorrectors 2;\n    nCorrectors     1;\n"
            if slide else "PIMPLE\n{\n    nOuterCorrectors 1;\n    nCorrectors     2;\n") +
           f"    nNonOrthogonalCorrectors {plan['nonorth']};\n"
           "    momentumPredictor yes;\n    pRefCell        0;\n    pRefValue       0;\n}\n\n"

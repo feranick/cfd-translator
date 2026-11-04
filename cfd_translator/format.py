@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.03.1
+Version: 2026.11.03.5
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -30,7 +30,7 @@ FLUIDS = {
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
-                  "degrees_per_step"}
+                  "degrees_per_step", "correct_mesh_phi"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -835,6 +835,9 @@ def validate_study(st: dict) -> dict:
                         "a meshed surface for its cells to slide along it)")
         if two_d:
             errs.append(f"rotating {sliding[0]!r}: no sliding mesh in 2d")
+    if isinstance(tr, dict) and "correct_mesh_phi" in tr and (not sliding or not isinstance(tr["correct_mesh_phi"], bool)):
+        errs.append("solve.transient.correct_mesh_phi: true | false, with a sliding zone only (OpenFOAM's mesh-flux "
+                    "correction at the interface; default true)")
     if isinstance(tr, dict) and "degrees_per_step" in tr:
         if not sliding:
             errs.append("solve.transient.degrees_per_step: only with a sliding zone (rotating[].motion 'sliding')")
