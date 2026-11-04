@@ -134,6 +134,15 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
    closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %
    of the inflow at 11.01.5): the zone or the geometry must change, for MRF and sliding alike (`guide('pumps')`).
+3b. **Wall-flux warning after reprocess** (2026.11.03): 1.3 % of the inflow through walls on the S50 15 % and 35 %
+   runs; every S50 run (2 Nov baseline too) has 0.3-0.9 % more outflow than inflow, so it was always there.
+   11.03.7 adds `checks.wall_flux.where` (inside/outside the zone, CAD faces, places) to find it. Earlier note:
+   the reprocessed S50 15 % run (11.03.6) warns that 1.3 % of the flow passes through walls. The user compares
+   it with the baseline rerun and looks at where it happens (`checks.wall_flux.by_wall`) before relying on it.
+   Suspect to rule out first: the saved state (render.save_state) keeps only scalar/list `mesh.info`, so
+   `revolution_tags` (a dict) is lost and a reprocess judges wall flux with the older per-CAD-face net rule,
+   not the run's own (face by face, surfaces of revolution left out). If so: keep revolution_tags in state.json,
+   and say in the warning which rule was used.
 4. **S180 MRF**: wall-leak and own-rotation fixes through 11.01.6; s180_base_Q250_v6 timed out on spark2 (job 322):
    check its state with the user.
 5. **#25 transient / #26 Ahmed and Rogue DES**: cylinder benchmarks pass (10.22.5); Rogue spatial DES runs

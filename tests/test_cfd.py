@@ -834,6 +834,14 @@ def test_walls_the_mrf_frame_pushes_fluid_through(tmp_path):
                           "wss": None, "nut": None}
     res, warns = results(ok, mesh, plan, {"U": U, "p": np.zeros(mesh.ncells), "patches": pat})
     assert res["checks"]["wall_flux"]["fraction_of_inflow"] == pytest.approx(2.0) and any("through walls" in x for x in warns)
+    # where (S50, 2026.11.03): signed sums per wall inside/outside the zone, per CAD face and per place
+    wh = res["checks"]["wall_flux"]["where"]
+    wb = next(iter(wh["by_wall"].values()))
+    assert wb["net_in"] == pytest.approx(2e-5) and wb["outside_zones"] == pytest.approx(2e-5) and wb["inside_zones"] == 0
+    assert wh["cad_faces"][0]["net_in"] > 0 and wh["cad_faces"][0]["in_zone"] == 0
+    assert wh["cad_faces"][0]["r_mm"] >= 40 and wh["zone_radius_mm"] == 40
+    assert len(wh["places"]) == 6 and all(p_["in_zone"] == 0 for p_ in wh["places"])
+    assert abs(wh["places"][0]["net_in"]) >= abs(wh["places"][-1]["net_in"])
     from cfd_translator.runner import _verdict
     rel, why = _verdict({"solve": {"converged": True}}, res)
     assert not rel and any("through walls" in x for x in why)

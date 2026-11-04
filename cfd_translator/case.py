@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.03.6
+Version: 2026.11.03.7
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -493,6 +493,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         plan["zones"][name] = {"cells": int(len(cells)), "omega_rad_s": omega, "axis": a.tolist(),
                                "center_mm": list(map(float, z.get("center", [0, 0, 0]))),
                                "volume_mm3": float(g["V"][cells].sum()), "rotating_walls": walls,
+                               "radius_mm": float(z["radius"]),
                                "motion": z.get("motion", "mrf")}
         # walls with their own rotation at the zone's axis and speed (an impeller's back shroud, hub, shaft): their
         # torque is the rotor's too (disk friction), so they count in rotating.<zone>.torque_Nm and power

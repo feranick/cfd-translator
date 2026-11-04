@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.11.03.1
+Version: 2026.11.03.7
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
         isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
@@ -375,7 +375,8 @@ def save_state(folder: Path, mesh, plan: dict, fields: dict, study: dict | None 
             arr[f"scalarpatch/{nm}/{pn}"] = np.asarray(v, float)
     np.savez_compressed(folder / "state.npz", **arr)
     meta = {"ncells": int(mesh.ncells), "patches": mesh.patches, "tag_info": {str(k): v for k, v in mesh.tag_info.items()},
-            "info": {k: v for k, v in mesh.info.items() if isinstance(v, (int, float, str, list, bool))}, "plan": plan,
+            "info": {k: v for k, v in mesh.info.items() if isinstance(v, (int, float, str, list, bool))
+                     or k == "revolution_tags"}, "plan": plan,
             "study": study or {}}
     (folder / "state.json").write_text(json.dumps(meta, default=float))
 

@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.03.6
+Version: 2026.11.03.7
 
     results(study, mesh, plan, fields) -> dict
 
@@ -63,6 +63,62 @@ class _Probe:
         return coef[0], float(d.min())
 
 
+def wall_flux_where(mesh, g, plan: dict, wall_faces: dict, inflow: float, top: int = 6) -> dict:
+    """Where flow passes through walls: per wall the signed net (+ into the fluid) of its faces whose cells are inside
+    a rotating zone and outside them; the CAD faces and the places (cubes of ~2 % of the domain) with the largest
+    net, each with its radius from the zone's axis and whether it lies in the zone. S50 (2026.11.03): 1.3 % net, to
+    tell casing faces inside the zone (tongue, screw heads) from vane tips just outside it."""
+    inz = np.zeros(mesh.ncells, bool)
+    for cells in (mesh.zones or {}).values():
+        inz[np.asarray(cells, np.int64)] = True
+    zp = next(iter((plan.get("zones") or {}).values()), None)
+
+    def radius(P):
+        if zp is None:
+            return None
+        a = np.asarray(zp["axis"], float)
+        a = a / np.linalg.norm(a)
+        d = P - np.asarray(zp["center_mm"], float)
+        return float(np.linalg.norm(d - (d @ a) * a))
+    ni = mesh.ninternal
+    scale = max(inflow, 1e-300)
+    by_wall, tags, cubes = {}, [], {}
+    lo = mesh.points.min(axis=0)
+    h = max(float(np.linalg.norm(mesh.points.max(axis=0) - lo)) / 50.0, 1e-9)
+    for nm, (f, phi) in wall_faces.items():
+        q = -phi                                            # + into the fluid
+        z = inz[mesh.owner[f]]
+        by_wall[nm] = {"net_in": _r(float(q.sum())), "inside_zones": _r(float(q[z].sum())),
+                       "outside_zones": _r(float(q[~z].sum()))}
+        tg = mesh.btag[f - ni]
+        for t in np.unique(tg):
+            m = tg == t
+            A = np.linalg.norm(g["Sf"][f[m]], axis=1)
+            C = (g["Cf"][f[m]] * A[:, None]).sum(axis=0) / max(A.sum(), 1e-300)
+            tags.append({"wall": nm, "cad_face": int(t), "net_in": float(q[m].sum()), "at_mm": np.round(C, 1).tolist(),
+                         "r_mm": None if zp is None else round(radius(C), 1), "in_zone": round(float(z[m].mean()), 2)})
+        key = np.floor((g["Cf"][f] - lo) / h).astype(np.int64)
+        for k, qq, c, zz in zip(map(tuple, key), q, g["Cf"][f], z):
+            e = cubes.setdefault((nm, k), [0.0, np.zeros(3), 0.0, 0, 0])
+            e[0] += qq
+            e[1] += np.abs(qq) * c
+            e[2] += abs(qq)
+            e[3] += int(zz)
+            e[4] += 1
+    tags.sort(key=lambda d: -abs(d["net_in"]))
+    for d in tags:
+        d["fraction_of_inflow"] = _r(d["net_in"] / scale, 3)
+        d["net_in"] = _r(d["net_in"])
+    places = []
+    for (nm, _), (net, cw, w, nz, n) in sorted(cubes.items(), key=lambda kv: -abs(kv[1][0]))[:top]:
+        C = cw / max(w, 1e-300)
+        places.append({"wall": nm, "net_in": _r(net), "fraction_of_inflow": _r(net / scale, 3),
+                       "at_mm": np.round(C, 1).tolist(), "r_mm": None if zp is None else round(radius(C), 1),
+                       "in_zone": round(nz / n, 2), "faces": n})
+    return {"by_wall": by_wall, "cad_faces": tags[:top], "places": places,
+            "zone_radius_mm": None if zp is None else zp.get("radius_mm")}
+
+
 def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     rho, nu = plan["rho"], plan["nu"]
     ref = study.get("reference", {})
@@ -95,6 +151,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     net_phi, inflow = 0.0, 0.0
     wall_faces = []          # (face indices, F per face) of every wall patch
     wall_flux = {}           # flow through walls (should be none): {wall: (net, gross)} m3/s
+    wall_phi = {}            # {wall: (faces, flux per face)}: where flow passes through walls
     visc_cmp = [0.0, 0.0]
     yplus = {}
     probes_X, probes_V = [], []
@@ -160,6 +217,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                 ut, inv = np.unique(tg, return_inverse=True)
                 judged = float(np.abs(np.bincount(inv, phi, len(ut))).sum())
             wall_flux[nm] = (judged, float(np.abs(phi).sum()))
+            wall_phi[nm] = (f, np.asarray(phi, float))
         At = float(A.sum())
         if en:
             mdot = -float(phi.sum())
@@ -520,14 +578,20 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         checks["wall_flux"] = {"net": _r(net_w), "fraction_of_inflow": _r(net_w / inflow),
                                "gross": _r(gross_w), "gross_fraction": _r(gross_w / inflow),
                                "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0},
+                               "rule": "face by face, surfaces of revolution left out" if mesh.info.get("revolution_tags")
+                               else "net per CAD face (no surfaces-of-revolution information)",
+                               "where": wall_flux_where(mesh, g, plan, wall_phi, inflow),
                                "note": "net (judged): |flux| through each wall's faces, leaving out CAD faces that "
                                        "are surfaces of revolution about a rotation axis (whose snapped faces carry "
                                        "fluxes of both signs that cancel); without that information, |sum| per CAD "
-                                       "face. gross: |flux| added over every face"}
+                                       "face. gross: |flux| added over every face. where: signed sums (+ into the "
+                                       "fluid) per wall inside/outside the rotating zones, per CAD face and per "
+                                       "place, largest first"}
         if net_w > 5e-3 * inflow:
             warns.append(f"fluid flows through walls: net {net_w:.3g} {'kg/s' if en else 'm3/s'} ({net_w / inflow:.1%} of "
                          f"the inflow), most through {worst!r}. With rotation: a stationary wall inside a rotating zone, "
-                         "or a rotating wall outside it, that is not a surface of revolution about the axis")
+                         "or a rotating wall outside it, that is not a surface of revolution about the axis "
+                         "(checks.wall_flux.where: the CAD faces and places, inside or outside the zone)")
     if por:
         # the balance above already holds the porous source: inflow - outflow of momentum = wall and boundary forces +
         # the media's reactions. Say which reactions the part's forces hold, and flag those left out

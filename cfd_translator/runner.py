@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.03.6
+Version: 2026.11.03.7
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -622,7 +622,10 @@ def upgrade_plan(plan: dict, study: dict) -> list[str]:
     from .format import bc_names
     done = []
     bcs = [(n, b) for n, b in zip(bc_names(study), study.get("bcs") or []) if n in (plan.get("patches") or {})]
+    radii = {z.get("name"): z.get("radius") for z in study.get("rotating") or [] if isinstance(z, dict)}
     for zn, zp in (plan.get("zones") or {}).items():
+        if "radius_mm" not in zp and radii.get(zn) is not None:
+            zp["radius_mm"] = float(radii[zn])
         if "rotating_walls" not in zp:
             continue
         zp.setdefault("monitor_walls", list(zp["rotating_walls"]))
