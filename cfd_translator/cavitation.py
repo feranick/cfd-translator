@@ -1,5 +1,5 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel.
-Version: 2026.11.03.4
+Version: 2026.11.04.4
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -33,7 +33,7 @@ import numpy as np
 SCALE = 1e-3
 G0 = 9.80665
 MODELS = ("SchnerrSauer", "Kunz", "Merkle")
-KEYS = {"npsh", "temperature", "p_vapour", "vapour", "model", "iterations", "ramp", "head_drop", "sigma"}
+KEYS = {"npsh", "temperature", "p_vapour", "vapour", "model", "iterations", "ramp", "head_drop", "sigma", "max_co"}
 M_WATER = 0.01801528
 R_GAS = 8.314462618
 
@@ -93,6 +93,8 @@ def errors(st: dict) -> list[str]:
                  "(default 0.3; the last quarter is averaged)")
     if "head_drop" in cv and (not _num(cv["head_drop"]) or not 0 < cv["head_drop"] < 0.5):
         e.append("cavitation.head_drop: the head drop that defines the NPSH curve's critical point (0.03: NPSH3)")
+    if "max_co" in cv and (not _num(cv["max_co"]) or not 0.2 <= cv["max_co"] <= 20):
+        e.append("cavitation.max_co: the local time step's Courant number, 0.2-20 (default 2)")
     if "sigma" in cv and (not _num(cv["sigma"]) or cv["sigma"] < 0):
         e.append("cavitation.sigma: surface tension (N/m, default 0.07)")
     # what the solver path supports
@@ -135,7 +137,7 @@ def settings(study: dict, rho_l: float, mu_l: float) -> dict:
             "rho_v": rho_v, "nu_v": mu_v / rho_v, "npsh_m": npsh, "p0_Pa": pv + float(rho_l) * G0 * npsh,
             "model": cv.get("model", "SchnerrSauer"), "iterations": int(cv.get("iterations", 4000)),
             "ramp": float(cv.get("ramp", 0.3)), "head_drop": float(cv.get("head_drop", 0.03)),
-            "sigma": float(cv.get("sigma", 0.07)),
+            "sigma": float(cv.get("sigma", 0.07)), "max_co": float(cv.get("max_co", 2.0)),
             "p_vapour_from": "given" if "p_vapour" in cv else f"water at {T:g} C (Antoine)"}
 
 
@@ -185,7 +187,13 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     # the outlet's flow rises from 5 % (not 0: flowRateOutletVelocity divides its estimate by the flow rate,
     # estimatedFlowRate/flowRate, a 0/0 that stopped the first S50 run on carbonio with SIGFPE, 2026.11.03)
     q_tab = _table([(0, 0.05 * Q), (n_flow, Q), (10 * iters + 1e6, Q)])
-    plan["vof"] = {**cv, "p_ref_Pa": cv["p0_Pa"], "p_start_Pa": p_start, "inlet": inlet, "outlet": outlet, "Q": Q,
+    # the local time step in the rotating zones: Courant numbers see the relative flow only, so in slow corners of
+    # an MRF zone the pseudo-time step grew to maxDeltaT 1 s while the frame's rotation (Omega x U) turned the
+    # velocity by Omega dt ~ 300 rad per step: S50 at NPSH 15 m (2026.11.03) never settled (torque -47..+2 N m
+    # around -7.6, head 14 +- 25 m) where the steady single-phase run held 3 %. Now at most 0.2 rad per step
+    w_max = max((abs(zp["omega_rad_s"]) for zp in plan["zones"].values()), default=0.0)
+    dt_max = min(1.0, 0.2 / w_max) if w_max > 0 else 1.0
+    plan["vof"] = {**cv, "p_ref_Pa": cv["p0_Pa"], "max_delta_t": dt_max, "p_start_Pa": p_start, "inlet": inlet, "outlet": outlet, "Q": Q,
                    "ramp_iterations": n_ramp, "flow_ramp_iterations": n_flow, "u_tip": u_tip}
     plan["fixed_pressure"] = True
     # fields
@@ -304,9 +312,9 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
           f"    \"({fields}).*\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-7;\n        relTol          0.1;\n        minIter         1;\n    }\n}\n\n"
           "PIMPLE\n{\n    momentumPredictor yes;\n    nOuterCorrectors 1;\n    nCorrectors     2;\n"
-          f"    nNonOrthogonalCorrectors {nonorth};\n\n    maxCo           5;\n    maxAlphaCo      2;\n"
+          f"    nNonOrthogonalCorrectors {nonorth};\n\n    maxCo           {cv['max_co']:g};\n    maxAlphaCo      1;\n"
           "    rDeltaTSmoothingCoeff 0.05;\n    rDeltaTDampingCoeff 0.5;\n    nAlphaSpreadIter 0;\n"
-          "    nAlphaSweepIter 0;\n    maxDeltaT       1;\n}\n\n"
+          f"    nAlphaSweepIter 0;\n    maxDeltaT       {dt_max:.6g};\n}}\n\n"
           f"relaxationFactors\n{{\n    equations\n    {{\n        U               {rU:g};\n        \".*\"            1;\n    }}\n}}")
     (sy / "fvSolution").write_text(_dict("fvSolution", "system", fv))
     for f in ("fvConstraints",):

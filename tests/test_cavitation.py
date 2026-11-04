@@ -162,3 +162,21 @@ def test_estimate_counts_the_vof_work():
     a = estimate_minutes(DUCT, "foam", cells=1e6, procs=10)
     b = estimate_minutes({k: v for k, v in DUCT.items() if k != "cavitation"}, "foam", cells=1e6, procs=10)
     assert a > b
+
+
+def test_pseudo_time_step_is_limited_by_the_rotation(tmp_path):
+    """S50 at NPSH 15 m (spark2, 2026.11.03): with maxDeltaT 1 s the local time step in slow corners of the MRF zone
+    let the frame's rotation turn the flow by ~300 rad per step: torque -47..+2 N m around -7.6, never settled."""
+    st = dict(DUCT, rotating=[{"name": "rot", "axis": [1, 0, 0], "center": [0, 0, 10], "rpm": 2900, "radius": 5,
+                               "span": [-20, 20]}])
+    assert validate_study(st)["ok"], validate_study(st)
+    mesh, patches, sel, plan, w = prepare(st, tmp_path)
+    fv = (tmp_path / "case" / "system" / "fvSolution").read_text()
+    w_ = 2900 * 2 * np.pi / 60
+    assert f"maxDeltaT       {0.2 / w_:.6g};" in fv and "maxCo           2;" in fv
+    assert plan["vof"]["max_delta_t"] == pytest.approx(0.2 / w_)
+    st2 = dict(DUCT, cavitation={"npsh": 5, "max_co": 0.8})
+    mesh, patches, sel, plan, w = prepare(st2, tmp_path / "b")
+    fv = (tmp_path / "b" / "case" / "system" / "fvSolution").read_text()
+    assert "maxCo           0.8;" in fv and "maxDeltaT       1;" in fv
+    assert any("max_co" in e for e in validate_study(dict(DUCT, cavitation={"npsh": 5, "max_co": 50}))["errors"])

@@ -118,6 +118,10 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    forces function objects with `rho rho;` and p in Pa (absolute, pRef = target total pressure), LTS stability
    (maxCo 5, maxAlphaCo 2), the ramp's start level (p0 + rho max(U_tip, 3 U_ref)^2). Then the sweep
    (`cavitation.npsh: [...]`) and `variants.<name>.npsh_curve` / `npsh3_m`. No wall shear or y+ in VoF runs yet.
+   Cavitation NPSH 15 m completed on .03.4 (6b0313, spark2): no vapour to speak of, but head/torque never settled
+   (torque -47..+2 N m): LTS let the pseudo-time step reach 1 s in slow parts of the MRF zone (Omega dt ~ 300).
+   11.04.4: maxDeltaT = 0.2/Omega, maxCo 2 (cavitation.max_co). Rerun the 15 m point; the 3 m point (on the old
+   settings) will likely oscillate the same way.
 2. **Sliding mesh, first full run** (2026.11.03.2): S180 (13.3 M cells, 18 ranks, spark2) built the couple in
    serial, then decomposePar never finished (O(N^2) over the couple's faces). Now: decompose the conformal case,
    build the couple with `-parallel`, keep the case decomposed, read results from processor* (cfdt_addressing);
