@@ -134,7 +134,10 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    OpenFOAM's projected volume fraction grew 0.31 -> 1.06 in 0.26 deg: a size mismatch across the interface (the
    0.2 mm band straddled the zone's end but was only 1.1 mm thick; elsewhere on the rim/back end not checked). 11.04.1: smaller-cell side as NCC neighbour,
    interface size/skewness report, skewness places. Rerun ec3392 (spark1, .04.1): one 0.25 mm band z -47.5..-45.0 matching the tongue boxes and back-gap cylinder;
-   the user sends interface_cells / worst_skewness if it still flags.
+   the user sends interface_cells / worst_skewness if it still flags. Another suspect (pump chat): 18 boxes of 0.25 mm
+   at the vane tips at fixed angles; their cells pass 1.25 mm stator cells as the rotor turns. 11.04.2 checks
+   ring-wise size ratios and warns on non-round refine regions at the interface; if ec3392 diverges the same
+   way, the user replaces the tip boxes with refinement all the way round the rim.
 3. **S50 meshing**: layered meshes failing checkMesh now rebuilt without layers (.11.03.3; restored if that fails
    too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
    closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %

@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.04.1
+Version: 2026.11.04.2
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -77,7 +77,73 @@ def _places(Cf, w, n=3) -> str:
     return ", ".join(str(np.round(Cf[i], 1).tolist()) for i in k)
 
 
-def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
+def ring_ratio(Cf, Lin, Lout, a, o, h: float) -> dict:
+    """The worst cell-size ratio a rotor cell meets as it turns: interface faces grouped in rings about the axis
+    (axial position and radius in bins of the fine cell size h); in each ring every zone-side cell passes every
+    other-side cell over a revolution. S50 (2026.11.04): 0.25 mm boxes at the vane tips at fixed angles in 1.25 mm
+    cells looked fine facing each other at t = 0."""
+    d = Cf - o
+    sx = d @ a
+    rr = np.linalg.norm(d - np.outer(sx, a), axis=1)
+    h = max(h, 1e-9)
+    key = np.floor(sx / h).astype(np.int64) * 1_000_003 + np.floor(rr / h).astype(np.int64)
+    uk, inv = np.unique(key, return_inverse=True)
+    n = len(uk)
+    in_max, in_min = np.full(n, 0.0), np.full(n, np.inf)
+    out_max, out_min = np.full(n, 0.0), np.full(n, np.inf)
+    np.maximum.at(in_max, inv, Lin)
+    np.minimum.at(in_min, inv, Lin)
+    np.maximum.at(out_max, inv, Lout)
+    np.minimum.at(out_min, inv, Lout)
+    rg = np.maximum(in_max / np.maximum(out_min, 1e-300), out_max / np.maximum(in_min, 1e-300))
+    face_r = rg[inv]
+    k = int(np.argmax(face_r))
+    return {"max": round(float(rg.max()), 2), "at_mm": np.round(Cf[k], 1).tolist(),
+            "axial_mm": round(float(sx[k]), 2), "radius_mm": round(float(rr[k]), 2),
+            "faces_over_2": round(float((face_r > 2).mean()), 4)}
+
+
+def not_round_regions(refine: list, Cf, a, o) -> list:
+    """Refinement regions (mesh.refine) that reach the interface's faces Cf and are not round about the axis
+    (boxes; cylinders or spheres off the axis or tilted). Distance bands follow the walls and are left out."""
+    out = []
+    for i, r in enumerate(refine):
+        if not isinstance(r, dict) or "distance" in r:
+            continue
+        size = float(r.get("size", 0))
+        m = 2 * size
+        if "box" in r:
+            b = np.asarray(r["box"], float)
+            inside = np.all((Cf >= b[:3] - m) & (Cf <= b[3:] + m), axis=1)
+            shape, round_ = "box", False
+        elif "cylinder" in r:
+            c = r["cylinder"]
+            ca = np.asarray(c["axis"], float)
+            ca = ca / np.linalg.norm(ca)
+            cc = np.asarray(c.get("center", [0, 0, 0]), float)
+            dd = Cf - cc
+            ax = dd @ ca
+            rad = np.linalg.norm(dd - np.outer(ax, ca), axis=1)
+            s0, s1 = c.get("span", [-1e9, 1e9])
+            inside = (rad <= float(c["radius"]) + m) & (ax >= s0 - m) & (ax <= s1 + m)
+            off = cc - o
+            round_ = bool(abs(ca @ a) > 1 - 1e-6 and
+                          np.linalg.norm(off - (off @ a) * a) < 1e-3 * max(float(c["radius"]), 1.0))
+            shape = "cylinder"
+        elif "at" in r:
+            cc = np.asarray(r["at"], float)
+            inside = np.linalg.norm(Cf - cc, axis=1) <= float(r["r"]) + m
+            off = cc - o
+            round_ = bool(np.linalg.norm(off - (off @ a) * a) < 1e-3 * max(float(r["r"]), 1.0))
+            shape = "sphere"
+        else:
+            continue
+        if inside.any() and not round_:
+            out.append({"index": i, "shape": shape, "size": size, "faces": int(inside.sum())})
+    return out
+
+
+def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = None) -> None:
     """Can this zone slide? Raises SlidingError with what to change; small deviations become plan notes.
     Records plan['sliding'] (names, interface size, moving walls)."""
     from .case import _same_rotation, rotation_key
@@ -127,8 +193,10 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
         V = np.abs(g["V"])
         vin = np.where(inz[mesh.owner[f]], V[mesh.owner[f]], V[mesh.neighbour[f]])          # zone side
         vout = np.where(inz[mesh.owner[f]], V[mesh.neighbour[f]], V[mesh.owner[f]])
-        ratio = np.maximum(vin, vout) / np.maximum(np.minimum(vin, vout), 1e-300)
+        Lin, Lout = np.cbrt(vin), np.cbrt(vout)
+        ratio = np.maximum(Lin, Lout) / np.maximum(np.minimum(Lin, Lout), 1e-300)    # cell size, facing now
         r = int(np.argmax(ratio))
+        ring = ring_ratio(g["Cf"][f], Lin, Lout, a, o, float(np.median(np.minimum(Lin, Lout))))
         q_if = {"faces": int(len(f)), "max_non_ortho": round(float(no[k]), 1), "non_ortho_at": np.round(g["Cf"][fi[k]], 1).tolist(),
                 "over_70": int((no > 70).sum()), "max_skewness": round(float(sk[j]), 2),
                 "skewness_at": np.round(g["Cf"][fi[j]], 1).tolist(),
@@ -136,24 +204,36 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
                 "size_ratio_at": np.round(g["Cf"][f[r]], 1).tolist(),
                 "mean_cell_mm": {"zone_side": round(float(np.cbrt(vin.mean())), 3),
                                  "other_side": round(float(np.cbrt(vout.mean())), 3)}}
-        frac_big = float((ratio > 3.0).mean())
-        q_if["size_ratio_over_3"] = round(frac_big, 4)
+        frac_big = float((ratio > 2.0).mean())
+        q_if["size_ratio_over_2"] = round(frac_big, 4)
+        q_if["ring"] = ring
         plan["sliding_quality"] = q_if
         notes.append(f"sliding interface cells: worst non-orthogonality {q_if['max_non_ortho']} deg, skewness "
-                     f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell volumes across the interface differ "
-                     f"up to {q_if['size_ratio_max']}x (95 % within {q_if['size_ratio_p95']}x)")
+                     f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell sizes across the interface differ up to "
+                     f"{q_if['size_ratio_max']}x facing each other (95 % within {q_if['size_ratio_p95']}x) and up to "
+                     f"{ring['max']}x anywhere around a ring as the rotor turns")
         if q_if["max_non_ortho"] > 70 or q_if["max_skewness"] > 4:
             notes.append(f"cells at the sliding interface are poor ({q_if['over_70']} faces above 70 degrees, worst "
                          f"{q_if['max_non_ortho']} at {q_if['non_ortho_at']} mm; skewness {q_if['max_skewness']} at "
                          f"{q_if['skewness_at']} mm). The interface's mesh-flux correction works on these cells: refine "
                          "there evenly on both sides of the zone's boundary, or move the boundary into regular cells")
-        if q_if["size_ratio_p95"] > 3 or frac_big > 0.01:
+        if q_if["size_ratio_p95"] > 2 or frac_big > 0.01:
             notes.append(f"cells on the two sides of the sliding interface differ in size ({frac_big:.1%} of its faces "
-                         f"more than 3x in volume, up to {q_if['size_ratio_max']}x at {q_if['size_ratio_at']} mm): as the "
-                         "rotor turns, the mismatch puts large volume errors on the smaller cells (OpenFOAM's "
-                         "'projected volume fraction'), which can blow up at once (S50: NaN after 0.26 degrees). Make a "
-                         "refinement region cover both sides of the zone's boundary (a cylinder or box centred on it, "
-                         "not one ending on it)")
+                         f"more than 2x, up to {q_if['size_ratio_max']}x at {q_if['size_ratio_at']} mm): the mismatch "
+                         "puts large volume errors on the smaller cells (OpenFOAM's 'projected volume fraction'), "
+                         "which can blow up at once (S50: NaN after 0.26 degrees). Refine both sides of the zone's "
+                         "boundary alike")
+        if ring["max"] > 2 and ring["faces_over_2"] > 0.01:
+            notes.append(f"as the rotor turns, its cells at the interface pass stator cells of other sizes: up to "
+                         f"{ring['max']}x around the ring at {ring['at_mm']} mm (axial {ring['axial_mm']} mm, radius "
+                         f"{ring['radius_mm']} mm; {ring['faces_over_2']:.1%} of the interface in rings over 2x). "
+                         "Refinement near the interface must be round about the axis (a cylinder on the axis, all "
+                         "the way round), not boxes or spheres at fixed angles")
+    for w in not_round_regions(refine or [], g["Cf"][f], a, o):
+        notes.append(f"mesh.refine[{w['index']}] ({w['shape']}, {w['size']} mm) touches the sliding interface "
+                     f"({w['faces']} of its faces) but is not round about the axis: as the rotor turns, the cells it "
+                     "refines on one side move past coarser cells on the other. Use a cylinder on the zone's axis "
+                     "(all the way round) there instead")
     plan.setdefault("zones", {}).setdefault(zn, {})
     # 2. the walls: rotating ones inside, stationary ones outside (or surfaces of revolution)
     rev = set((mesh.info.get("revolution_tags") or {}).get(rotation_key(zone["axis"], zone.get("center")), []))

@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.03.7
+Version: 2026.11.04.2
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -726,7 +726,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
     slide = [z for z in zones.values() if z.get("motion") == "sliding"]
     if slide:
         from .sliding import check as _sliding_check
-        _sliding_check(mesh, g, slide[0], plan, patches)
+        _sliding_check(mesh, g, slide[0], plan, patches, (study.get("mesh") or {}).get("refine"))
         try:                               # the steady start runs with MRF: leaks there only spoil its start
             _mrf_wall_leaks(mesh, g, zones, plan, patches)
         except MeshError as exc:

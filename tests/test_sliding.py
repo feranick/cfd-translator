@@ -482,8 +482,8 @@ def test_cell_size_mismatch_across_the_interface_is_reported(monkeypatch):
     plan = plan_for(11.95)
     check(m, m.geometry(), dict(ZONE, radius=11.95), plan, pts)
     ic = plan["sliding"]["interface_cells"]
-    assert ic["size_ratio_max"] > 20 and ic["size_ratio_over_3"] == 1.0
-    assert any("differ in size" in n and "centred on it" in n for n in plan["notes"])
+    assert ic["size_ratio_max"] > 3 and ic["size_ratio_over_2"] == 1.0
+    assert any("differ in size" in n and "Refine both sides" in n for n in plan["notes"])
 
 
 def test_skewness_like_checkmesh():
@@ -498,3 +498,27 @@ def test_skewness_like_checkmesh():
     m._geo = None
     q = m.quality()
     assert q["max_skewness"] > 0.05
+
+
+def test_rings_and_refinement_that_is_not_round():
+    """S50 (2026.11.04): 18 boxes of 0.25 mm cells at the vane tips, at fixed angles, inside 1.25 mm cells: both
+    sides match facing each other at t = 0, but as the rotor turns its fine cells pass coarse stator cells."""
+    from cfd_translator.sliding import not_round_regions, ring_ratio
+    th = np.linspace(0, 2 * np.pi, 360, endpoint=False)
+    R = 59.7
+    Cf = np.column_stack([R * np.cos(th), R * np.sin(th), np.full(360, -60.0)])
+    tips = (np.round(np.degrees(th)).astype(int) % 20) < 2                  # 18 boxes, 2 degrees each
+    L = np.where(tips, 0.25, 1.25)
+    a, o = np.array([0, 0, 1.0]), np.zeros(3)
+    facing = np.maximum(L, L) / np.minimum(L, L)
+    assert facing.max() == 1.0
+    rg = ring_ratio(Cf, L, L, a, o, 0.25)
+    assert rg["max"] == pytest.approx(5.0) and rg["faces_over_2"] == 1.0 and rg["radius_mm"] == pytest.approx(R, abs=0.1)
+    assert ring_ratio(Cf, np.full(360, 0.5), np.full(360, 0.25), a, o, 0.25)["max"] == pytest.approx(2.0)
+    refine = [{"box": [57, -1, -70, 62, 1, -50], "size": 0.25},
+              {"cylinder": {"center": [0, 0, -77.1], "axis": [0, 0, 1], "radius": 61, "span": [0, 30]}, "size": 0.25},
+              {"cylinder": {"center": [5, 0, -77.1], "axis": [0, 0, 1], "radius": 61, "span": [0, 30]}, "size": 0.25},
+              {"at": [59.7, 0, -60], "r": 2, "size": 0.25}, {"distance": 2, "size": 0.5},
+              {"box": [-5, -5, 0, 5, 5, 10], "size": 1}]
+    bad = not_round_regions(refine, Cf, a, o)
+    assert [(w["index"], w["shape"]) for w in bad] == [(0, "box"), (2, "cylinder"), (3, "sphere")]
