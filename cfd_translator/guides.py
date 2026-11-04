@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.03.5
+Version: 2026.11.04.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -32,6 +32,10 @@ GUIDES = {
             "else: such a wall gets the rotating-wall velocity everywhere and its friction counts in the torque. "
             "Give them a wall bc of their own (rotation: the zone's name, or {axis, rpm} at the zone's speed); a bc "
             "that also holds blades must lie inside the zone.",
+            "Sliding: the cells on the two sides of the zone's boundary must match in size. A refinement region "
+            "must cover both sides (centred on the boundary), never end on it: 0.2 mm cells against 0.5 mm ones "
+            "blew up within a degree of rotation (S50). solve.sliding.interface_cells reports the size ratio, "
+            "skewness and non-orthogonality there; the warnings say it before the run.",
             "The cells along the zone's boundary matter: the interface's mesh-flux correction works on them "
             "(solve.sliding.interface_cells). If OpenFOAM crashes there, cfdt runs again with "
             "solve.transient.correct_mesh_phi false (some pressure noise at the interface).",

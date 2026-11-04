@@ -130,6 +130,10 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    correctMeshPhi off and reports the interface cells' quality; round rotor walls outside the zone now spin
    (rotatingWallVelocity); own-rotation walls count in the zone's torque. Open: whether the crash is the mesh
    (poor cells at the interface) or OpenFOAM's stitcher; a small sliding benchmark would tell.
+   S50 sliding rerun (spark1, 2026.11.04, no layers, skewness 8.12): NaN in pcorr at the 8th step (t 1.5e-5 s);
+   OpenFOAM's projected volume fraction grew 0.31 -> 1.06 in 0.26 deg: the 0.2 mm front-gap refinement ended on
+   the zone's end (cells ~16x different across the interface). 11.04.1: smaller-cell side as NCC neighbour,
+   interface size/skewness report, skewness places. Next: refinement centred on the zone's boundary, rerun.
 3. **S50 meshing**: layered meshes failing checkMesh now rebuilt without layers (.11.03.3; restored if that fails
    too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
    closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %

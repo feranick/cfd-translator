@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.11.02.3
+Version: 2026.11.04.1
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -166,19 +166,19 @@ class PolyMesh:
         bvec = g["Cf"][ni:] - g["C"][self.owner[ni:]]
         outward = bool(np.all(np.einsum("ij,ij->i", bvec, Sf[ni:]) > 0))
         bad = np.nonzero(nonorth > 70.0)[0] if ni else np.zeros(0, int)
-        worst = []
-        if len(bad):                               # a few places, worst first and apart from each other
-            top = bad[np.argsort(-nonorth[bad])][:5000]
-            Cf = g["Cf"][top]
-            sep = 0.03 * float(np.linalg.norm(self.points.max(axis=0) - self.points.min(axis=0)))
-            for k in range(len(top)):
-                if all(np.linalg.norm(Cf[k] - np.asarray(w["at"])) > sep for w in worst):
-                    worst.append({"at": [round(float(v), 1) for v in Cf[k]], "deg": round(float(nonorth[top[k]]), 1)})
-                    if len(worst) >= 12:                # every bad region in one report (S50: one per attempt)
-                        break
+        sep = 0.03 * float(np.linalg.norm(self.points.max(axis=0) - self.points.min(axis=0)))
+        worst = _places(g["Cf"], bad, nonorth, sep, "deg")
+        # skewness as OpenFOAM's checkMesh computes it (meshCheck::faceSkewness): the distance from the face centre
+        # to where the line between the cell centres crosses the face, over that line's length (boundary faces: over
+        # twice the distance to the wall). S50 (2026.11.04): checkMesh failed on 8.1 with no place given
+        skew = face_skewness(g["Cf"], Sf, g["C"], self.owner, self.neighbour, ni)
+        sbad = np.nonzero(skew > 4.0)[0]
+        worst_skew = _places(g["Cf"], sbad, skew, sep, "skewness")
         return {"cells": int(nc), "faces": int(self.nfaces), "internal_faces": int(ni), "points": int(len(self.points)),
                 "non_ortho_over_70": int(len(bad)), "folded_faces": int((nonorth >= 89.0).sum()) if ni else 0,
                 **({"worst_non_ortho": worst} if worst else {}),
+                "max_skewness": float(skew.max()) if len(skew) else 0.0, "skewness_over_4": int(len(sbad)),
+                **({"worst_skewness": worst_skew} if worst_skew else {}),
                 "volume_mm3": float(V.sum()), "min_volume_mm3": float(V.min()) if nc else 0.0,
                 "max_open_cell": open_rel, "max_non_orthogonality": float(nonorth.max()) if ni else 0.0,
                 "mean_non_orthogonality": float(nonorth.mean()) if ni else 0.0,
@@ -283,6 +283,41 @@ class PolyMesh:
             zf.write_text("\n".join(z))
         elif zf.exists():
             zf.unlink()
+
+
+def face_skewness(Cf, Sf, C, owner, neighbour, ni: int) -> np.ndarray:
+    """OpenFOAM's face skewness (meshCheck::faceSkewness and boundaryFaceSkewness), every face."""
+    out = np.zeros(len(Cf))
+    if ni:
+        Co, Cn = C[owner[:ni]], C[neighbour]
+        S = Sf[:ni]
+        dO = np.abs(np.einsum("ij,ij->i", S, Cf[:ni] - Co))
+        dN = np.abs(np.einsum("ij,ij->i", S, Cn - Cf[:ni]))
+        w = np.maximum(dO + dN, 1e-300)
+        X = Co * (dN / w)[:, None] + Cn * (dO / w)[:, None]
+        out[:ni] = np.linalg.norm(Cf[:ni] - X, axis=1) / (np.linalg.norm(Cn - Co, axis=1) + 1e-300)
+    if len(Cf) > ni:
+        n = Sf[ni:] / np.maximum(np.linalg.norm(Sf[ni:], axis=1), 1e-300)[:, None]
+        Cp = Cf[ni:] - C[owner[ni:]]
+        dW = n * np.einsum("ij,ij->i", n, Cp)[:, None]
+        X = C[owner[ni:]] + dW
+        out[ni:] = np.linalg.norm(Cf[ni:] - X, axis=1) / (2 * np.linalg.norm(dW, axis=1) + 1e-300)
+    return out
+
+
+def _places(Cf, bad, val, sep: float, key: str, n: int = 12) -> list:
+    """Up to n places of the worst faces, worst first and apart from each other."""
+    out = []
+    if not len(bad):
+        return out
+    top = bad[np.argsort(-val[bad])][:5000]
+    P = Cf[top]
+    for k in range(len(top)):
+        if all(np.linalg.norm(P[k] - np.asarray(w["at"])) > sep for w in out):
+            out.append({"at": [round(float(v), 1) for v in P[k]], key: round(float(val[top[k]]), 2 if key != "deg" else 1)})
+            if len(out) >= n:                # every bad region in one report (S50: one per attempt)
+                break
+    return out
 
 
 def header(cls: str, obj: str, location: str, note: str | None = None) -> str:

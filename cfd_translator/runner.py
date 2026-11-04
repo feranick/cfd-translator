@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.03.7
+Version: 2026.11.04.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -98,6 +98,11 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                          + " mm. The pressure solver crawls on such cells (three correctors, lower relaxation)"
                          + (f"; the narrow gaps found are at {', '.join(str(g['at']) for g in gaps[:3])}" if gaps else "")
                          + ". Refine or widen the gap there, or leave layers out of it (mesh.layers.on)")
+        if q.get("max_skewness", 0) > 4 and q.get("worst_skewness"):
+            warns.append(f"{q['skewness_over_4']} faces have skewness above 4 (worst {q['max_skewness']:.3g}, as "
+                         "checkMesh computes it): " + "; ".join(f"{w['skewness']} at {w['at']}" for w in q["worst_skewness"][:4])
+                         + " mm. Usually a refinement-level jump or a snapped cell squeezed against a wall: move the "
+                         "refinement region's edge away from there, or refine around it")
         out["case"] = {"inlets": plan["inlets"], "schemes": plan["schemes"], "iterations": plan["iterations"],
                        "residual": plan["residual"], "relax": plan["relax"]}
         if solver == "ref":

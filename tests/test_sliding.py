@@ -206,7 +206,13 @@ def test_case_files_and_the_topology_steps(tmp_path):
     assert (case / "0.steady" / "total(p)").exists() and (case / "0.steady" / "phi").exists()
     assert "class       faceZoneList;" in (case / "constant" / "polyMesh" / "faceZones").read_text()
     assert "class       cellZoneList;" in (case / "constant" / "polyMesh" / "cellZones").read_text()
-    assert calls == ["createBaffles", "splitBaffles", "createNonConformalCouples -fields rotor_rotor rotor_stator"]
+    # the zone's cells (r 5-12 mm, 1.5-2 mm apart) are smaller than the stator's: the stator side is the owner
+    mc = plan["sliding"]["interface_cells"]["mean_cell_mm"]
+    assert mc["zone_side"] < mc["other_side"] and plan["sliding"]["ncc_owner"] == "rotor_stator"
+    assert calls == ["createBaffles", "splitBaffles", "createNonConformalCouples -fields rotor_stator rotor_rotor"]
+    ic = plan["sliding"]["interface_cells"]
+    assert ic["faces"] == len(f) and ic["max_skewness"] < 1 and ic["size_ratio_max"] >= 1
+    assert any(n.startswith("sliding interface cells:") for n in plan["notes"])
     assert not (case / "constant" / "MRFProperties").exists()
     dyn = (case / "constant" / "dynamicMeshDict").read_text()
     assert "solidBody" in dyn and "cellZone        rotor;" in dyn and "1500 [rpm]" in dyn and "axis            (0 0 1)" in dyn
@@ -347,7 +353,7 @@ def test_parallel_topology_steps_and_the_decomposed_reader(tmp_path, monkeypatch
                 b.write_text(t[:i] + extra + t[i:])
     notes = to_sliding(case, plan, m, run_step, 2, "mpirun")
     assert calls == ["decomposePar -force", "mpirun -np 2 createBaffles -parallel", "mpirun -np 2 splitBaffles -parallel",
-                     "mpirun -np 2 createNonConformalCouples -parallel -fields rotor_rotor rotor_stator"]
+                     "mpirun -np 2 createNonConformalCouples -parallel -fields rotor_stator rotor_rotor"]
     assert foam.decomposed(case)["procs"] == 2 and "stays decomposed" in notes[0]
     assert (case / "processor1" / "cfdt_addressing" / "faceProcAddressing").is_file()
     assert "numberOfSubdomains 2;" in (case / "system" / "decomposeParDict").read_text()
@@ -464,3 +470,31 @@ def test_spinning_wall_bc_and_mesh_phi_retry(tmp_path, monkeypatch):
     from cfd_translator.format import validate_study
     assert validate_study(_study(correct_mesh_phi=False))["ok"]
     assert any("correct_mesh_phi" in e for e in validate_study(_study(correct_mesh_phi="no"))["errors"])
+
+
+def test_cell_size_mismatch_across_the_interface_is_reported(monkeypatch):
+    """S50 (spark1, 2026.11.04): 0.2 mm cells on one side of the zone's end, 0.5 mm on the other; OpenFOAM's
+    projected volume fraction grew to 1.06 in 0.26 degrees and the run gave NaN."""
+    monkeypatch.setitem(pump_mesh.__globals__, "RADII", [5, 6.5, 8, 10, 11, 11.5, 11.8, 12, 18, 20])
+    m = pump_mesh(vane=None)
+    pts = patches_for(m)
+    m.zones = {"rotor": zone_of(m, 11.95)}
+    plan = plan_for(11.95)
+    check(m, m.geometry(), dict(ZONE, radius=11.95), plan, pts)
+    ic = plan["sliding"]["interface_cells"]
+    assert ic["size_ratio_max"] > 20 and ic["size_ratio_over_3"] == 1.0
+    assert any("differ in size" in n and "centred on it" in n for n in plan["notes"])
+
+
+def test_skewness_like_checkmesh():
+    from cfd_translator.polymesh import box_mesh
+    m = box_mesh(10, 10, 10, 2, 1, 1)
+    q = m.quality()
+    assert q["max_skewness"] < 1e-9 and q["skewness_over_4"] == 0
+    # move the middle face's points off centre along y: its centre leaves the line between the cell centres
+    mid = np.isclose(m.points[:, 0], 0.0)
+    m.points = m.points.copy()
+    m.points[mid & (m.points[:, 1] > 0), 0] += 3.0
+    m._geo = None
+    q = m.quality()
+    assert q["max_skewness"] > 0.05

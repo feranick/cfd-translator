@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.03.5
+Version: 2026.11.04.1
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -106,26 +106,54 @@ def check(mesh, g, zone: dict, plan: dict, patches: list) -> None:
             "fluid, clear of walls (snappyHexMesh snaps its faces to the cylinder only there); check center, "
             "radius and span against the casing, and refine where it passes through narrow gaps")
     # the cells on both sides of the couple: the stitcher intersects their faces and corrects the mesh fluxes in
-    # them (S50 on spark2, 2026.11.03: a segfault there on a mesh failing checkMesh); report how bad they are
+    # them. S50 on spark1 (2026.11.04): 0.2 mm cells on one side of the zone's end, 0.5 mm on the other; OpenFOAM
+    # warned 'maximum projected volume fraction ... may cause instability', the fraction grew from 0.3 to 1.06 in
+    # 0.26 degrees of rotation and the flux correction (pcorr) gave NaN. Report their quality and size match
+    from .polymesh import face_skewness
     side = np.unique(np.concatenate([mesh.owner[f], mesh.neighbour[f]]))
     near = np.zeros(mesh.ncells, bool)
     near[side] = True
     ni = mesh.ninternal
     fi = np.nonzero(near[mesh.owner[:ni]] | near[mesh.neighbour])[0]
+    q_if = {}
     if len(fi):
         d = g["C"][mesh.neighbour[fi]] - g["C"][mesh.owner[fi]]
         S = g["Sf"][fi]
         cosang = np.einsum("ij,ij->i", d, S) / np.maximum(np.linalg.norm(d, axis=1) * np.linalg.norm(S, axis=1), 1e-300)
         no = np.degrees(np.arccos(np.clip(cosang, -1, 1)))
         k = int(np.argmax(no))
-        q_if = {"max_non_ortho": round(float(no[k]), 1), "at": np.round(g["Cf"][fi[k]], 1).tolist(),
-                "over_70": int((no > 70).sum())}
-        plan.setdefault("sliding_quality", q_if)
-        if q_if["max_non_ortho"] > 70:
-            notes.append(f"cells at the sliding interface are poor: {q_if['over_70']} faces above 70 degrees "
-                         f"non-orthogonality, worst {q_if['max_non_ortho']} at {q_if['at']} mm. The interface's mesh-flux "
-                         "correction works on these cells; refine there (a mesh.refine cylinder along the zone's "
-                         "boundary) or move the zone's boundary into more regular cells")
+        sk = face_skewness(g["Cf"][fi], S, g["C"], mesh.owner[fi], mesh.neighbour[fi], len(fi))
+        j = int(np.argmax(sk))
+        V = np.abs(g["V"])
+        vin = np.where(inz[mesh.owner[f]], V[mesh.owner[f]], V[mesh.neighbour[f]])          # zone side
+        vout = np.where(inz[mesh.owner[f]], V[mesh.neighbour[f]], V[mesh.owner[f]])
+        ratio = np.maximum(vin, vout) / np.maximum(np.minimum(vin, vout), 1e-300)
+        r = int(np.argmax(ratio))
+        q_if = {"faces": int(len(f)), "max_non_ortho": round(float(no[k]), 1), "non_ortho_at": np.round(g["Cf"][fi[k]], 1).tolist(),
+                "over_70": int((no > 70).sum()), "max_skewness": round(float(sk[j]), 2),
+                "skewness_at": np.round(g["Cf"][fi[j]], 1).tolist(),
+                "size_ratio_max": round(float(ratio[r]), 2), "size_ratio_p95": round(float(np.percentile(ratio, 95)), 2),
+                "size_ratio_at": np.round(g["Cf"][f[r]], 1).tolist(),
+                "mean_cell_mm": {"zone_side": round(float(np.cbrt(vin.mean())), 3),
+                                 "other_side": round(float(np.cbrt(vout.mean())), 3)}}
+        frac_big = float((ratio > 3.0).mean())
+        q_if["size_ratio_over_3"] = round(frac_big, 4)
+        plan["sliding_quality"] = q_if
+        notes.append(f"sliding interface cells: worst non-orthogonality {q_if['max_non_ortho']} deg, skewness "
+                     f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell volumes across the interface differ "
+                     f"up to {q_if['size_ratio_max']}x (95 % within {q_if['size_ratio_p95']}x)")
+        if q_if["max_non_ortho"] > 70 or q_if["max_skewness"] > 4:
+            notes.append(f"cells at the sliding interface are poor ({q_if['over_70']} faces above 70 degrees, worst "
+                         f"{q_if['max_non_ortho']} at {q_if['non_ortho_at']} mm; skewness {q_if['max_skewness']} at "
+                         f"{q_if['skewness_at']} mm). The interface's mesh-flux correction works on these cells: refine "
+                         "there evenly on both sides of the zone's boundary, or move the boundary into regular cells")
+        if q_if["size_ratio_p95"] > 3 or frac_big > 0.01:
+            notes.append(f"cells on the two sides of the sliding interface differ in size ({frac_big:.1%} of its faces "
+                         f"more than 3x in volume, up to {q_if['size_ratio_max']}x at {q_if['size_ratio_at']} mm): as the "
+                         "rotor turns, the mismatch puts large volume errors on the smaller cells (OpenFOAM's "
+                         "'projected volume fraction'), which can blow up at once (S50: NaN after 0.26 degrees). Make a "
+                         "refinement region cover both sides of the zone's boundary (a cylinder or box centred on it, "
+                         "not one ending on it)")
     plan.setdefault("zones", {}).setdefault(zn, {})
     # 2. the walls: rotating ones inside, stationary ones outside (or surfaces of revolution)
     rev = set((mesh.info.get("revolution_tags") or {}).get(rotation_key(zone["axis"], zone.get("center")), []))
@@ -346,8 +374,14 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
         par = f"{mpirun or 'mpirun'} -np {procs} "
     run_step(f"{par}createBaffles" + (" -parallel" if par else ""), "log.createBaffles")
     run_step(f"{par}splitBaffles" + (" -parallel" if par else ""), "log.splitBaffles")
+    # the side with the smaller cells second (the neighbour): OpenFOAM's stitcher puts the volume error of the
+    # couple on the owner side ('Volumetric distortion can be minimised by making the side of the interface with
+    # smaller or more finely layered cells the neighbour', fvMeshStitcher.C; S50, 2026.11.04)
+    mc = (sl.get("interface_cells") or {}).get("mean_cell_mm") or {}
+    pair = (sl["stator"], sl["rotor"]) if mc and mc.get("zone_side", 1) < mc.get("other_side", 1) else (sl["rotor"], sl["stator"])
+    sl["ncc_owner"] = pair[0]
     run_step(f"{par}createNonConformalCouples" + (" -parallel" if par else "") +
-             f" -fields {sl['rotor']} {sl['stator']}", "log.createNonConformalCouples")
+             f" -fields {pair[0]} {pair[1]}", "log.createNonConformalCouples")
     # the patches the results read must be the same faces in the same order (createBaffles keeps their order)
     if par:
         after = {}
