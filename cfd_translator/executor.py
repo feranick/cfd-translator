@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.03.1
+Version: 2026.11.04.3
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -439,7 +439,8 @@ def _refine_extents(study: dict, refine: list, vol: float, thick: float) -> list
             a = [float(v) for v in c["axis"]]
             na = math.sqrt(sum(v * v for v in a)) or 1.0
             along_z = abs(a[2]) / na > 0.9
-            out.append((math.pi * R * R * ln, math.pi * R * R if along_z else 2 * R * ln))
+            Ri = float(c.get("inner_radius", 0) or 0)
+            out.append((math.pi * (R * R - Ri * Ri) * ln, math.pi * (R * R - Ri * Ri) if along_z else 2 * (R - Ri) * ln))
         elif "distance" in r:
             ps = _part_size(study)
             d = float(r["distance"]) + float(r["size"])
@@ -508,8 +509,8 @@ def snappy_estimate(study: dict) -> float | None:
         if e["shape"] == "box":
             bx = e["box"]
             v = (bx[3] - bx[0]) * (bx[4] - bx[1]) * (bx[5] - bx[2])
-        elif e["shape"] == "cylinder":
-            v = math.pi * e["radius"] ** 2 * float(np.linalg.norm(np.subtract(e["p2"], e["p1"])))
+        elif e["shape"] in ("cylinder", "annulus"):
+            v = math.pi * (e["radius"] ** 2 - e.get("inner_radius", 0.0) ** 2) * float(np.linalg.norm(np.subtract(e["p2"], e["p1"])))
         else:
             v = 4 / 3 * math.pi * e["radius"] ** 3
         n += min(v, vol) / hl ** 3

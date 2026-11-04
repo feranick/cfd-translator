@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.03.3
+Version: 2026.11.04.3
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -157,6 +157,10 @@ def settings(study: dict, external: bool, box: list, part_bb: tuple | None = Non
             ctr = np.asarray(c.get("center", [0, 0, 0]), float)
             e.update(shape="cylinder", p1=(ctr + max(s0, -1e7) * a).tolist(), p2=(ctr + min(s1, 1e7) * a).tolist(),
                      radius=float(c["radius"]))
+            if float(c.get("inner_radius", 0) or 0) > 0:
+                # a hollow cylinder (OpenFOAM 14 has no annulus searchable surface): a closed triangulated annulus
+                # written to constant/geometry, refined inside (S50's sliding interface band, r 58.5-61 mm)
+                e.update(shape="annulus", inner_radius=float(c["inner_radius"]))
         else:
             e.update(shape="sphere", center=list(map(float, r["at"])), radius=float(r["r"]))
         e["name"] = f"refine{k}"
@@ -451,6 +455,53 @@ def write_obj(path: Path, pts: np.ndarray, regions: list) -> None:
             f.write("".join(f"f {a} {b} {c}\n" for a, b, c in t.tolist()))
 
 
+def annulus_tris(p1, p2, r_in: float, r_out: float, cell: float):
+    """A closed, outward-oriented triangulation of a hollow cylinder (mm): outer and inner walls, two flat rings.
+    Segments so the facets stray less than a tenth of a cell from the circles."""
+    p1, p2 = np.asarray(p1, float), np.asarray(p2, float)
+    a = p2 - p1
+    a = a / np.linalg.norm(a)
+    e1 = np.cross(a, [1.0, 0, 0] if abs(a[0]) < 0.9 else [0, 1.0, 0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    n = int(max(96, np.ceil(np.pi * np.sqrt(r_out / max(0.2 * cell, 1e-9)))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    ring = np.outer(np.cos(th), e1) + np.outer(np.sin(th), e2)
+    pts = np.concatenate([p1 + r_out * ring, p2 + r_out * ring, p1 + r_in * ring, p2 + r_in * ring])
+    ob, ot, ib, it = 0, n, 2 * n, 3 * n
+    tris = []
+    for k in range(n):
+        j = (k + 1) % n
+        tris += [(ob + k, ob + j, ot + j), (ob + k, ot + j, ot + k)]          # outer wall
+        tris += [(ib + k, it + j, ib + j), (ib + k, it + k, it + j)]          # inner wall
+        tris += [(ob + k, ib + j, ob + j), (ob + k, ib + k, ib + j)]          # the p1 end
+        tris += [(ot + k, ot + j, it + j), (ot + k, it + j, it + k)]          # the p2 end
+    T = np.asarray(tris, np.int64)
+    # each triangle facing out of the solid ring: away from its centroid's side
+    P = pts[T]
+    c = P.mean(axis=1)
+    nv = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    d = c - p1
+    ax = d @ a
+    rad = d - np.outer(ax, a)
+    rn = np.linalg.norm(rad, axis=1)
+    mid = 0.5 * (r_in + r_out)
+    L = float(np.linalg.norm(p2 - p1))
+    want = np.where((np.abs(ax) < 1e-9 * max(L, 1))[:, None], -a, np.where((np.abs(ax - L) < 1e-9 * max(L, 1))[:, None], a,
+                    np.where((rn > mid)[:, None], rad, -rad)))
+    flip = np.einsum("ij,ij->i", nv, want) < 0
+    T[flip] = T[flip][:, ::-1]
+    return pts, T
+
+
+def annulus_obj(path: Path, e: dict) -> None:
+    pts, T = annulus_tris(e["p1"], e["p2"], e["inner_radius"], e["radius"], e["cell_mm"])
+    with open(path, "w") as f:
+        f.write("# cfd-translator: a hollow cylinder (refinement region)\n")
+        f.write("".join(f"v {x * SCALE:.10g} {y * SCALE:.10g} {z * SCALE:.10g}\n" for x, y, z in pts))
+        f.write("".join(f"f {i + 1} {j + 1} {k + 1}\n" for i, j, k in T.tolist()))
+
+
 def block_mesh_dict(st: dict, box_patches: list, internal: bool) -> str:
     """box_patches: [(patch name, type, [sides])]."""
     x0, y0, z0 = st["lo"]
@@ -490,6 +541,8 @@ def snappy_dict(st: dict, regions: list, inside_point, layer_patches: list, zone
         if e["shape"] == "cylinder":
             return (f"    {name}\n    {{\n        type cylinder;\n        point1 {_v(e['p1'])};\n        point2 {_v(e['p2'])};\n"
                     f"        radius {e['radius'] * SCALE:.10g};\n    }}\n")
+        if e["shape"] == "annulus":
+            return f"    {name}\n    {{\n        type triSurface;\n        file \"{name}.obj\";\n    }}\n"
         return (f"    {name}\n    {{\n        type sphere;\n        centre {_v(e['center'])};\n"
                 f"        radius {e['radius'] * SCALE:.10g};\n    }}\n")
     for e in st["regions"]:
@@ -912,6 +965,9 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
         (sd / d).mkdir(parents=True, exist_ok=True)
     write_obj(sd / "constant" / "geometry" / f"{PART}.obj", pts, [(g, np.concatenate([tri_of[t] for t in tt]))
                                                                   for g, _, _, tt in regions])
+    for e in st["regions"]:
+        if e["shape"] == "annulus":
+            annulus_obj(sd / "constant" / "geometry" / f"{e['name']}.obj", e)
     (sd / "system" / "controlDict").write_text(control_dict())
     (sd / "system" / "blockMeshDict").write_text(block_mesh_dict(st, box_patches, not external))
     (sd / "system" / "surfaceFeaturesDict").write_text(_hdr("surfaceFeaturesDict") +

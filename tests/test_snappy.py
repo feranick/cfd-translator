@@ -659,3 +659,37 @@ def test_a_killed_step_raises_killed(tmp_path):
     with pytest.raises(foam.Killed, match="sh was killed .signal 9., almost certainly because it ran out of memory"):
         foam._step({}, "sh -c 'echo working; exit 137'", "log.x", tmp_path, 30)
     assert foam.was_killed("x\nKilled\n") and not foam.was_killed("all fine", 1)
+
+
+def test_hollow_cylinder_refinement(tmp_path, monkeypatch):
+    """S50 sliding (2026.11.04): a 0.25 mm band r 58.5-61 mm round the rim instead of 18 boxes at the vane tips,
+    without the ~14 M cells of a solid 0.25 mm cylinder. OpenFOAM 14 has no annulus surface: a closed
+    triangulated one is written to constant/geometry."""
+    from cfd_translator.executor import _refine_extents
+    from cfd_translator.format import validate_study
+    from cfd_translator.runner import prepare
+    from cfd_translator.sliding import not_round_regions
+    pts, T = snappy.annulus_tris([0, 0, -77.1], [0, 0, -45.0], 58.5, 61.0, 0.25)
+    e = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+    _, cnt = np.unique(e, axis=0, return_counts=True)
+    assert (cnt == 2).all()                                              # closed
+    P = pts[T]
+    vol = np.einsum("ij,ij->i", P[:, 0], np.cross(P[:, 1], P[:, 2])).sum() / 6
+    assert vol == pytest.approx(np.pi * (61.0 ** 2 - 58.5 ** 2) * 32.1, rel=2e-3)   # outward: positive volume
+    ann = {"cylinder": {"center": [0, 0, -77.1], "axis": [0, 0, 1], "radius": 61, "inner_radius": 58.5,
+                        "span": [0, 32.1]}, "size": 0.25}
+    st = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], refine=[ann]))
+    assert validate_study(st)["ok"], validate_study(st)
+    bad = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], refine=[{**ann, "cylinder": dict(ann["cylinder"], inner_radius=61)}]))
+    assert any("inner_radius" in x for x in validate_study(bad)["errors"])
+    (v_ann, _), = _refine_extents(st, [ann], 1e6, 10)
+    (v_full, _), = _refine_extents(st, [{**ann, "cylinder": {k: v for k, v in ann["cylinder"].items() if k != "inner_radius"}}], 1e6, 10)
+    assert v_ann == pytest.approx(v_full * (61 ** 2 - 58.5 ** 2) / 61 ** 2)
+    calls = _stand_in(monkeypatch, tmp_path, lambda k, txt, case, logname: _good_mesh(case, logname))
+    prepare(st, tmp_path)
+    assert 'refine0\n    {\n        type triSurface;\n        file "refine0.obj";' in calls[0]
+    assert "refine0 { mode inside; level" in calls[0]
+    assert (tmp_path / "snappy" / "constant" / "geometry" / "refine0.obj").is_file()
+    th = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+    Cf = np.column_stack([59.75 * np.cos(th), 59.75 * np.sin(th), np.full(36, -60.0)])
+    assert not_round_regions([ann], Cf, np.array([0, 0, 1.0]), np.zeros(3)) == []

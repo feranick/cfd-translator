@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.04.2
+Version: 2026.11.04.3
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -125,7 +125,8 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
             ax = dd @ ca
             rad = np.linalg.norm(dd - np.outer(ax, ca), axis=1)
             s0, s1 = c.get("span", [-1e9, 1e9])
-            inside = (rad <= float(c["radius"]) + m) & (ax >= s0 - m) & (ax <= s1 + m)
+            inside = (rad <= float(c["radius"]) + m) & (rad >= float(c.get("inner_radius", 0) or 0) - m) & \
+                (ax >= s0 - m) & (ax <= s1 + m)
             off = cc - o
             round_ = bool(abs(ca @ a) > 1 - 1e-6 and
                           np.linalg.norm(off - (off @ a) * a) < 1e-3 * max(float(c["radius"]), 1.0))

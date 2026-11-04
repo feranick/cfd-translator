@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.03.5
+Version: 2026.11.04.3
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -96,7 +96,7 @@ CONVENTIONS = [
     "surface mm on the part ([finest, coarsest], size/8), features (sharp edges), gap (extra levels in narrow gaps, 1), "
     "layers on the part's walls (or layers.on, e.g. a ground) with coverage and y+ estimate in mesh.layers; zones "
     "snapped; part faces on a domain side (half model) are cut there. refine: "
-    "[{size, and at + r | box | cylinder {center, axis, radius, span} | distance (mm from the part)}].",
+    "[{size, and at + r | box | cylinder {center, axis, radius, inner_radius, span} | distance (mm from the part)}].",
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
     "Results: flow.<bc>.Q (m3/s, + into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total (flow-weighted); "
     "pressure_drop (inlet - outlet static), total_pressure_drop, head_loss_m (use it for losses); "
@@ -693,14 +693,17 @@ def validate_study(st: dict) -> dict:
             elif "cylinder" in x:
                 c = x["cylinder"]
                 good &= isinstance(c, dict) and _vec(c.get("axis")) and _num(c.get("radius")) and c["radius"] > 0 \
-                    and ("center" not in c or _vec(c["center"])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1]))
+                    and ("center" not in c or _vec(c["center"])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1])) \
+                    and ("inner_radius" not in c or (_num(c["inner_radius"]) and 0 <= c["inner_radius"] < c["radius"])) \
+                    and not (set(c) - {"center", "axis", "radius", "inner_radius", "span"})
             elif "distance" in x:
                 good &= _num(x["distance"]) and x["distance"] > 0
             else:
                 good &= _vec(x.get("at")) and _num(x.get("r")) and x["r"] > 0
         if not good:
             errs.append("mesh.refine: [{size (mm), and at: [x, y, z] + r (sphere) | box: [x0, y0, z0, x1, y1, z1] | "
-                        "cylinder: {center, axis, radius, span: [s0, s1]} | distance: mm from the part}]")
+                        "cylinder: {center, axis, radius, inner_radius (a hollow cylinder; 0 <= inner < radius), span: [s0, s1]} | "
+                        "distance: mm from the part}]")
     # solve
     s = st.get("solve", {})
     if not isinstance(s, dict):

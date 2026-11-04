@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.04.2
+Version: 2026.11.04.3
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -33,7 +33,7 @@ GUIDES = {
             "Give them a wall bc of their own (rotation: the zone's name, or {axis, rpm} at the zone's speed); a bc "
             "that also holds blades must lie inside the zone.",
             "Sliding: the cells on the two sides of the zone's boundary must match in size, all the way round: "
-            "refinement there must be round about the axis (cylinders on the axis), since the rotor's cells pass "
+            "refinement there must be round about the axis (cylinders on the axis; a band: inner_radius), since the rotor's cells pass "
             "every stator cell of their ring as it turns (boxes at the vane tips do not work). S50 blew up within a "
             "degree of rotation. solve.sliding.interface_cells reports the size ratio facing and around each ring, "
             "skewness and non-orthogonality; the warnings say it before the run.",

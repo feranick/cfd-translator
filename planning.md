@@ -137,7 +137,8 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    the user sends interface_cells / worst_skewness if it still flags. Another suspect (pump chat): 18 boxes of 0.25 mm
    at the vane tips at fixed angles; their cells pass 1.25 mm stator cells as the rotor turns. 11.04.2 checks
    ring-wise size ratios and warns on non-round refine regions at the interface; if ec3392 diverges the same
-   way, the user replaces the tip boxes with refinement all the way round the rim.
+   way, the user replaces the tip boxes with refinement all the way round the rim: 11.04.3 adds hollow refine
+   cylinders (inner_radius; a triangulated annulus for snappy) for a 0.25 mm band r 58.5-61, z -77.1..-45.0.
 3. **S50 meshing**: layered meshes failing checkMesh now rebuilt without layers (.11.03.3; restored if that fails
    too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
    closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %

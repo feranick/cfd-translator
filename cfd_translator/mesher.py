@@ -1,6 +1,6 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, Gmsh (tetrahedra, or a swept 2D mesh), or
 snappyHexMesh (mesh.mesher "snappy": snappy.py).
-Version: 2026.11.02.2
+Version: 2026.11.04.3
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -149,9 +149,13 @@ def _sizes(gmsh, study: dict, h: float, fields_too: bool = True, info: dict | No
             s0, s1 = c.get("span", [-1e6, 1e6])
             ctr = np.asarray(c.get("center", [0, 0, 0]), float) + 0.5 * (s0 + s1) * a
             ha = 0.5 * (s1 - s0) * a                     # Gmsh: the axis vector is the half-length
-            fields.append(_field(gmsh, "Cylinder", {"VIn": sz, "VOut": h, "XCenter": ctr[0], "YCenter": ctr[1],
-                                                    "ZCenter": ctr[2], "XAxis": ha[0], "YAxis": ha[1], "ZAxis": ha[2],
-                                                    "Radius": float(c["radius"])}))
+            cyl = {"XCenter": ctr[0], "YCenter": ctr[1], "ZCenter": ctr[2], "XAxis": ha[0], "YAxis": ha[1], "ZAxis": ha[2]}
+            fo = _field(gmsh, "Cylinder", {"VIn": sz, "VOut": h, **cyl, "Radius": float(c["radius"])})
+            ri = float(c.get("inner_radius", 0) or 0)
+            if ri > 0:                                   # hollow: coarse again inside the inner radius
+                fi = _field(gmsh, "Cylinder", {"VIn": h, "VOut": sz, **cyl, "Radius": ri})
+                fo = _field(gmsh, "Max", {"FieldsList": [fo, fi]})
+            fields.append(fo)
         elif "distance" in r:
             surfs = [int(t) for t, i in (info or {}).items() if i.get("on") == "part"]
             fd = _field(gmsh, "Distance", {("SurfacesList", "FacesList"): surfs, "Sampling": 40})
