@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.03.5
+Version: 2026.11.03.6
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -173,13 +173,19 @@ def _same_rotation(spec: dict, zp: dict) -> bool:
     a /= np.linalg.norm(a)
     b = np.asarray(zp["axis"], float)
     b /= np.linalg.norm(b)
-    if "rpm" not in spec or a @ b < 1 - 1e-9:
+    if "rpm" not in spec or abs(a @ b) < 1 - 1e-9:
         return False
-    w = float(spec["rpm"]) * 2 * np.pi / 60
+    w = float(spec["rpm"]) * 2 * np.pi / 60 * (1.0 if a @ b > 0 else -1.0)     # -axis at -rpm is the same turn
     if abs(w - zp["omega_rad_s"]) > 1e-9 * max(abs(w), 1.0):
         return False
     d = np.asarray(zp["center_mm"], float) - np.asarray(spec.get("center", [0, 0, 0]), float)
     return float(np.linalg.norm(d - (d @ a) * a)) < 1e-6
+
+
+def same_speed_walls(named_bcs: list, zp: dict) -> list:
+    """Wall bcs with their own rotation {axis, center, rpm} turning exactly with zone zp (plan entry)."""
+    return [n for n, b in named_bcs if isinstance(b, dict) and b.get("kind", "wall") == "wall"
+            and isinstance(b.get("rotation"), dict) and _same_rotation(b["rotation"], zp)]
 
 
 def rotation_key(axis, center) -> str:
@@ -490,9 +496,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
                                "motion": z.get("motion", "mrf")}
         # walls with their own rotation at the zone's axis and speed (an impeller's back shroud, hub, shaft): their
         # torque is the rotor's too (disk friction), so they count in rotating.<zone>.torque_Nm and power
-        plan["zones"][name]["rotating_walls"] += [
-            p["name"] for p in patches if p["kind"] == "wall" and isinstance(p["bc"].get("rotation"), dict)
-            and _same_rotation(p["bc"]["rotation"], plan["zones"][name])]
+        plan["zones"][name]["rotating_walls"] += same_speed_walls([(p["name"], p["bc"]) for p in patches],
+                                                                  plan["zones"][name])
+        plan["zones"][name]["monitor_walls"] = list(plan["zones"][name]["rotating_walls"])   # the torque monitor's
     from .porous import build_zones as _porous_zones
     _porous_zones(study, mesh, plan)                    # porous cellZones (after the rotating ones)
     # inlets first (they set the turbulence reference)

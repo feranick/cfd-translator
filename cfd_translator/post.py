@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.02.1
+Version: 2026.11.03.6
 
     results(study, mesh, plan, fields) -> dict
 
@@ -463,14 +463,17 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         ang += msrc.sum(axis=0)
         gross_a += np.abs(msrc).sum(axis=0)
         c0 = np.asarray(zp["center_mm"], float) * SCALE
-        torque = 0.0
+        torque, by_wall = 0.0, {}
         for wn in zp["rotating_walls"]:
             f, F = face_forces[wn]
-            torque += float(np.cross(g["Cf"][f] * SCALE - c0, F).sum(axis=0) @ a)
+            tw = float(np.cross(g["Cf"][f] * SCALE - c0, F).sum(axis=0) @ a)
+            by_wall[wn] = _r(tw)
+            torque += tw
         power = -torque * zp["omega_rad_s"]
         out.setdefault("rotating", {})[zn] = {"torque_Nm": _r(torque), "power_W": _r(power),
                                               "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
-                                              "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf")}
+                                              "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf"),
+                                              "torque_by_wall_Nm": by_wall}
         if not zp["rotating_walls"]:
             warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
     # porous zones: their resistance enters the momentum balance like the MRF source (porous.py)

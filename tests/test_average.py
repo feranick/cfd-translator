@@ -223,3 +223,30 @@ def test_turbulent_external_flow_averages_by_default():
            "reference": {"velocity": 30, "area": 1e4}}
     assert settings(ext) is not None and settings(dict(ext, model="laminar")) is None
     assert settings(dict(ext, solve={"average": False})) is None
+
+
+def test_walls_missing_from_an_old_torque_monitor_are_added(tmp_path):
+    """S50 MRF runs before 2026.11.03.5: the torque monitor held 'imp' only; reprocess now counts 'back' (own
+    rotation at the zone's speed) from the final fields, as a constant on the monitored history."""
+    res, it, T, rise = _case(tmp_path)
+    plan = _plan()
+    plan["zones"]["rot"].update(rotating_walls=["imp", "back"], monitor_walls=["imp"])
+    res["rotating"]["rot"]["torque_by_wall_Nm"] = {"imp": float(T[-1]), "back": -4.0}
+    res["rotating"]["rot"]["torque_Nm"] = float(T[-1]) - 4.0
+    res["rotating"]["rot"]["power_W"] = -(float(T[-1]) - 4.0) * OMEGA
+    res["pump"]["power_W"] = res["rotating"]["rot"]["power_W"]
+    avg, w = average_results(tmp_path, plan, res)
+    assert any("back (-4 N m, final fields) is added" in x for x in w)
+    assert avg["quantities"]["torque_Nm.rot"]["mean"] == pytest.approx(T[-1000:].mean() - 4.0, rel=1e-5)
+
+
+def test_reprocess_upgrades_an_old_plan():
+    from cfd_translator.runner import upgrade_plan
+    study = {"bcs": [{"kind": "inlet", "name": "inlet"}, {"kind": "wall", "name": "imp", "rotation": "rot"},
+                     {"kind": "wall", "name": "back", "rotation": {"axis": [1, 0, 0], "center": [0, 0, 0], "rpm": -1450}},
+                     {"kind": "wall", "name": "other", "rotation": {"axis": [1, 0, 0], "rpm": 900}}]}
+    plan = _plan()
+    plan["patches"].update(back={"kind": "wall"}, other={"kind": "wall"})
+    done = upgrade_plan(plan, study)        # axis +X at -1450 rpm turns as the zone's -X at +1450 rpm
+    assert plan["zones"]["rot"]["rotating_walls"] == ["imp", "back"] and "back" in done[0]
+    assert upgrade_plan(plan, study) == []                               # once only

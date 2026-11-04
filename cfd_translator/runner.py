@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.03.5
+Version: 2026.11.03.6
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -285,6 +285,7 @@ def reprocess_study(folder: Path, name: str) -> dict:
             source = "the case" + (" (mean fields)" if fields.get("averaged") else "")
         except Exception as exc:  # noqa: BLE001
             source = f"the saved state (the case could not be read: {exc})"
+    upgraded = upgrade_plan(plan, study)
     res, w = results(study, mesh, plan, fields)
     if plan.get("vof"):
         if fields.get("alpha") is not None:
@@ -327,6 +328,17 @@ def reprocess_study(folder: Path, name: str) -> dict:
         a_, b_ = (old["results"].get("forces") or {}).get(k), (res.get("forces") or {}).get(k)
         if a_ and b_ and any(a_.get(c) != b_.get(c) for c in ("fx", "fy", "fz")):
             changes[f"forces.{k}"] = [[a_.get(c) for c in ("fx", "fy", "fz")], [b_.get(c) for c in ("fx", "fy", "fz")]]
+    for zn, z in (res.get("rotating") or {}).items():
+        oz = (old["results"].get("rotating") or {}).get(zn) or {}
+        for k in ("torque_Nm", "power_W"):
+            if oz.get(k) != z.get(k):
+                changes[f"rotating.{zn}.{k}"] = [oz.get(k), z.get(k)]
+    for k in ("head_m", "power_W", "efficiency"):
+        a_, b_ = (old["results"].get("pump") or {}).get(k), (res.get("pump") or {}).get(k)
+        if a_ != b_:
+            changes[f"pump.{k}"] = [a_, b_]
+    if upgraded:
+        changes["plan"] = upgraded
     out["reprocessed"] = {"by": __version__, "at": datetime.now().isoformat(timespec="seconds"),
                           "from": old.get("reprocessed", {}).get("by") or old.get("translator"), "fields": source,
                           "changes": changes}
@@ -600,6 +612,25 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         fm = foam.find_foam()
         foam._step(fm, "reconstructPar -latestTime", "log.reconstructPar", case, 3600)
     return info
+
+
+def upgrade_plan(plan: dict, study: dict) -> list[str]:
+    """A saved plan brought up to the current case writer's rules, for reprocess: walls with their own rotation at a
+    zone's axis and speed count in the zone's torque (2026.11.03.5). The torque monitor of such an older run held
+    the zone's named walls only (monitor_walls). Returns what changed."""
+    from .case import same_speed_walls
+    from .format import bc_names
+    done = []
+    bcs = [(n, b) for n, b in zip(bc_names(study), study.get("bcs") or []) if n in (plan.get("patches") or {})]
+    for zn, zp in (plan.get("zones") or {}).items():
+        if "rotating_walls" not in zp:
+            continue
+        zp.setdefault("monitor_walls", list(zp["rotating_walls"]))
+        add = [n for n in same_speed_walls(bcs, zp) if n not in zp["rotating_walls"]]
+        if add:
+            zp["rotating_walls"] = list(zp["rotating_walls"]) + add
+            done.append(f"zone {zn}: {', '.join(add)} (own rotation at the zone's speed) now count in its torque")
+    return done
 
 
 def mesh_phi_crash(case: Path) -> bool:

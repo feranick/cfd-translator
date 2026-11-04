@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.03.1
+Version: 2026.11.03.6
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -418,9 +418,19 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
             warns.append(f"averaging: no moment history from {fo} (postProcessing/{fo}); final-iteration values kept")
             continue
         its, M = got
-        a = np.asarray(plan["zones"][zn]["axis"], float)
+        zp = plan["zones"][zn]
+        a = np.asarray(zp["axis"], float)
         T = M @ a
         ref = (res.get("rotating") or {}).get(zn, {}).get("torque_Nm")
+        # walls the monitor did not hold (runs before 2026.11.03.5: own-rotation walls at the zone's speed, such
+        # as an impeller's back shroud): their torque from the final fields, added as a constant
+        by_wall = (res.get("rotating") or {}).get(zn, {}).get("torque_by_wall_Nm") or {}
+        extra = [w for w in zp.get("rotating_walls", []) if w not in zp.get("monitor_walls", zp.get("rotating_walls", []))]
+        if extra and all(w in by_wall for w in extra):
+            T = T + sum(float(by_wall[w]) for w in extra)
+            warns.append(f"averaging: zone {zn}: the torque monitor held {', '.join(zp.get('monitor_walls', []))} only; "
+                         f"the torque of {', '.join(extra)} ({sum(float(by_wall[w]) for w in extra):.4g} N m, final "
+                         "fields) is added to its history as a constant")
         s = cal(its, T, ref)
         if s is None:
             warns.append(f"averaging: zone {zn}: the monitored torque at the last iteration ({T[-1]:.6g}) does not "
