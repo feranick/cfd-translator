@@ -136,7 +136,11 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    of the inflow at 11.01.5): the zone or the geometry must change, for MRF and sliding alike (`guide('pumps')`).
 3b. **Wall-flux warning after reprocess** (2026.11.03): 1.3 % of the inflow through walls on the S50 15 % and 35 %
    runs; every S50 run (2 Nov baseline too) has 0.3-0.9 % more outflow than inflow, so it was always there.
-   11.03.7 adds `checks.wall_flux.where` (inside/outside the zone, CAD faces, places) to find it. Earlier note:
+   11.03.7 adds `checks.wall_flux.where` (inside/outside the zone, CAD faces, places) to find it. Found (pump chat):
+   the wear plate (z -46.0, zone end at -46.25, 0.5 mm cells: its cells rotate) 0.70 %, hub face just outside the
+   zone 0.23 %, tongue nothing; same in every volute variant (comparisons unbiased); absolute head/torque ~ +1 %.
+   Fix: 0.2 mm front-gap refinement (+4 M cells); the user may run one 40 m3/h baseline with it on spark2.
+   11.03.8: revolution faces count by their net per CAD face in the judged wall flux (they were left out). Earlier note:
    the reprocessed S50 15 % run (11.03.6) warns that 1.3 % of the flow passes through walls. The user compares
    it with the baseline rerun and looks at where it happens (`checks.wall_flux.by_wall`) before relying on it.
    Suspect to rule out first: the saved state (render.save_state) keeps only scalar/list `mesh.info`, so

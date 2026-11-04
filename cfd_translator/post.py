@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.03.7
+Version: 2026.11.03.8
 
     results(study, mesh, plan, fields) -> dict
 
@@ -211,8 +211,15 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             tg = mesh.btag[f - ni]
             rv = mesh.info.get("revolution_tags")
             if rv:
+                # surfaces of revolution by their net per CAD face (their snapped faces' fluxes of both signs cancel
+                # next to each other, but a net that is left over is real: S50's wear plate inside the zone, 0.56 %
+                # of the inflow, 2026.11.03), the rest face by face
                 rev = set().union(*[set(v) for v in rv.values()])
-                judged = float(np.abs(phi[~np.isin(tg, list(rev))]).sum())
+                on_rev = np.isin(tg, list(rev))
+                judged = float(np.abs(phi[~on_rev]).sum())
+                if on_rev.any():
+                    ut, inv = np.unique(tg[on_rev], return_inverse=True)
+                    judged += float(np.abs(np.bincount(inv, phi[on_rev], len(ut))).sum())
             else:
                 ut, inv = np.unique(tg, return_inverse=True)
                 judged = float(np.abs(np.bincount(inv, phi, len(ut))).sum())
@@ -578,13 +585,13 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         checks["wall_flux"] = {"net": _r(net_w), "fraction_of_inflow": _r(net_w / inflow),
                                "gross": _r(gross_w), "gross_fraction": _r(gross_w / inflow),
                                "by_wall": {n: {"net": _r(a), "gross": _r(b_)} for n, (a, b_) in wall_flux.items() if b_ > 0},
-                               "rule": "face by face, surfaces of revolution left out" if mesh.info.get("revolution_tags")
+                               "rule": "face by face; surfaces of revolution by their net per CAD face" if mesh.info.get("revolution_tags")
                                else "net per CAD face (no surfaces-of-revolution information)",
                                "where": wall_flux_where(mesh, g, plan, wall_phi, inflow),
-                               "note": "net (judged): |flux| through each wall's faces, leaving out CAD faces that "
-                                       "are surfaces of revolution about a rotation axis (whose snapped faces carry "
-                                       "fluxes of both signs that cancel); without that information, |sum| per CAD "
-                                       "face. gross: |flux| added over every face. where: signed sums (+ into the "
+                               "note": "net (judged): |flux| through each wall's faces, except CAD faces that are "
+                                       "surfaces of revolution about a rotation axis (whose snapped faces carry "
+                                       "fluxes of both signs that cancel), which count by |sum| per CAD face; "
+                                       "without that information, |sum| per CAD face. gross: |flux| added over every face. where: signed sums (+ into the "
                                        "fluid) per wall inside/outside the rotating zones, per CAD face and per "
                                        "place, largest first"}
         if net_w > 5e-3 * inflow:
