@@ -1,98 +1,193 @@
 # cfd-translator: context for a new session
 
-Session context for Claude (the project documentation is README.md). Start a chat with: "Read planning.md and start."
+Session context for Claude (the project documentation is README.md: format, results, checks, benchmarks and a
+version table with the reason for every change). Start a chat with: "Read planning.md and start."
 
 ## What this is
 
-A deterministic **translator + checker** for LLMs: the LLM writes a structured spec (the flexible part), the translator computes everything else (no model, no guessing), an independent checker confirms the result, and errors go back to the LLM as fixable messages. Same design as:
+A deterministic **translator + checker** for LLMs: the LLM writes a structured study (the flexible part), the
+translator computes everything else (no model, no guessing), checks confirm the result, and errors go back to the
+LLM as fixable messages. Same design as the other translators bundled by **llm-translators** (llmt):
+build123d-translator (b3dt, CAD), fea-translator (feat, CalculiX FEA), lammps-translator (lmpt),
+openmodelica-translator (omct), print3d-translator (p3dt).
 
-- **build123d-translator** (`b3dt`; `~/Desktop/build123d-translator`; github.com/feranick/build123d-translator): goal (ordered CAD features) → build123d solid, STEP, standalone script. Checker: IoU vs FreeCAD (6,761/6,762 DeepCAD goals), exact volumes.
-- **fea-translator** (`feat`; `~/Desktop/fea-translator`; github.com/feranick/fea-translator): study (part, material, analysis, BCs on faces) → Gmsh mesh, CalculiX deck, results. Checker: 11 closed-form benchmarks, equilibrium/heat balance every run, `expect`, convergence; reference solver checks decks without CalculiX.
+**This tool** (repo github.com/feranick/cfd-translator; CLI `cfdt`, MCP `cfdt-mcp`; local checkout
+`~/Software/cfd-translator`):
 
-**This tool:**
-
-- Name / CLI / MCP: `cfd-translator` / `cfdt` / `cfdt-mcp`; repo github.com/feranick/cfd-translator
-- Domain: steady incompressible CFD; target: **OpenFOAM .org 14** (`foamRun`, `solver incompressibleFluid`; works from 11), meshing with Gmsh or our own structured boxes; the polyMesh is written by our code (no `gmshToFoam`, no `blockMesh`); runs on carbonio.
-- Typical requests:
-  - "Pressure drop through this manifold (b3dt goal) at 2 L/min water."
-  - "Drag and lift on this bracket in 10 m/s air."
-  - "Velocity profile and flow split between the two outlets of this tee."
-  - "Wall pressures on this plate in 30 m/s air, then stresses with feat."
-- Spec contents (first idea; challenge it):
-  - `geometry`: `{"goal": <b3dt goal>}` or `{"step": path}`. Set `domain: internal` (the part is the fluid) or `external` (a box around the part, with sizes in body lengths, minus the part).
-  - `fluid`: preset (`air`, `water`) or `rho` [kg/m3], `mu` [Pa·s].
-  - `analysis`: `steady`; `model: laminar | kOmegaSST`; iterations; residual target.
-  - `bcs`: `inlet` (`velocity` [m/s] or `flow_rate` [m3/s or L/min], turbulence intensity), `outlet` (`pressure` [Pa]), `wall` (no-slip), `slip`, `symmetry`. Faces use feat selectors.
-  - `mesh`: `size`, `boundary_layers` (n, first height, growth), `refine` near selected faces; `blockMesh` for box/channel cases.
-  - `outputs`: Δp between patches, flow per patch, forces/moments and Cd/Cl (reference area/velocity), max velocity, probes (points, lines), wall shear, y⁺.
-  - `expect`: as in feat (dotted result paths, value, tolerance).
-  - Units: mm for geometry (converted to m for OpenFOAM), m/s, Pa, N, kg/m3.
-- Independent checks:
-  - Every run: mass balance (Σ patch flux ≈ 0), control-volume momentum balance (wall forces vs. inlet/outlet momentum flux + pressure), residual drop, `checkMesh` quality, y⁺ and convergence warnings.
-  - Closed-form benchmarks: Hagen–Poiseuille pipe (Δp, centreline velocity), plane Poiseuille, Couette, developing-flow entrance length (loose).
-  - Reference data: lid-driven cavity vs. Ghia et al. 1982 (Re 100/400/1000), Schäfer–Turek cylinder 2D-1 (Cd ≈ 5.58, Cl ≈ 0.0106, Δp ≈ 0.1175), creeping-flow sphere (Stokes drag, with wall-effect correction), turbulent pipe friction factor vs. Blasius/Colebrook (loose, kOmegaSST).
-  - Reference implementation: a small numpy finite-volume solver (2D channel/cavity, laminar) to check case translation and results without OpenFOAM.
-- First version scope: steady incompressible, laminar + kOmegaSST, internal and external flow, Gmsh + blockMesh meshes, Δp/flow/force/probe outputs, the benchmarks above, b3dt goals inline, wall pressures exported to feat.
+- Target: **OpenFOAM .org 14** (`foamRun`; modules `incompressibleFluid`, `fluid`, `incompressibleVoF`).
+- Meshes: our own polyMesh writer (structured boxes, Gmsh tets and swept 2D meshes with layers) or
+  **snappyHexMesh** (`mesh.mesher: "snappy"`: Gmsh triangulates the STEP/goal surface, bcs chosen on it).
+- Physics now: steady incompressible (laminar, kOmegaSST), **transient** (URANS, kOmegaSSTDES, laminar; averages,
+  continues across SLURM jobs), **energy** (perfect-gas air, water; buoyancy), **tracers and mean age**,
+  **porous zones**, **rotating zones** (MRF frozen rotor; **sliding mesh** with OpenFOAM's non-conformal coupling),
+  **cavitation** (water + vapour VoF, MRF, pseudo-steady, NPSH sweeps with NPSH3).
+- Results: flows, pressures, head loss, forces/coefficients, torque/power/pump head and efficiency, probes,
+  y+, images (Matplotlib, optional VTK), `feat_loads` / `feat_thermal` for fea-translator; every run judged
+  (`reliable` + `unreliable_because`).
+- Pump work in other chats drives most recent changes: **S180** (large, 1450 rpm, snappy 6-13 M cells) and **S50**
+  (self-priming, 2900 rpm, STEP `fluid_s50_df.step`); also vehicle aero (Ahmed body, Nissan Rogue DES on mochi).
 
 ## Interconnection
 
-Works **together** with b3dt and feat:
-
-- Accept b3dt specs inline, as feat accepts `{"part": {"goal": <b3dt goal>}}` or `{"step": path}`. Import b3dt optionally (warning in validation, tests skipped when missing).
-- **CFD → feat:** export wall pressures (and optionally shear) on the part's faces as feat surface loads (`pressure` per face set, or mapped nodal loads). Same geometry, same selectors. Chain benchmark: b3dt plate goal → cfdt flat plate in uniform flow → feat static; check that feat's reaction equals cfdt's force.
-- Same conventions: mm, N, MPa, °C; Z up, base on z = 0 centred in X/Y; face selectors `nx/ny/nz` (+ `at`), `pts`, `cyl_r`, `all`, lists = union; JSON in/out; dotted result paths.
-- Result fields another tool reads are an interface: keep them stable and list them in the README.
-- One environment on carbonio: shared venv `~/Software/build123d-translator/.venv` (alias `cad`), `pip install -e ~/Software/cfd-translator[mcp,test]`.
-- At least one chain benchmark (b3dt goal → cfdt → feat), skipped when a piece is missing.
-- MCP servers may sit on different machines (b3dt on the Mac, feat and cfdt on carbonio): pass specs between tools, not local paths; `get_file` returns files as base64.
+- Geometry from b3dt goals inline or STEP files; `add_geometry` / `geometry.ref` register one once per machine.
+- CFD → feat: wall pressures per CAD face as feat loads (`feat_loads`), wall heat as feat thermal bcs.
+- Same conventions as feat/b3dt: mm, N, Pa (results), m/s, m3/s; Z up; face selectors `nx/ny/nz` (+ `at`), `pts`,
+  `cyl_r`, `all`; JSON in/out; dotted result paths. Result fields other tools read are an interface (README).
+- Execution follows llm-translators' docs/EXECUTION.md and SHARED.md (SLURM jobs, run record `execution`,
+  estimates in validation, stale servers after `llmt deploy`, `run: {timeout_s, mem, procs, queue, host}`).
+- MCP: Claude reaches cfdt through the **llmt router**, which places work on carbonio, mochi, spark1 or spark2
+  (`machines()`, `run.host`) and stages local files (`staged`, `~/.llmt/uploads/<sha>/`).
+- **Do not edit, commit or push llm-translators** (or its submodules): the user syncs all tools and updates llmt
+  at the end. Changes for other tools go to the user as prompts or doc lines.
 
 ## Conventions
 
-- Versions `YYYY.MM.DD.x` in every module docstring, `__init__.py`, `pyproject.toml`, and the README's version table; update the README with every change.
-- Author: Nicola Ferralis <ferralis@generalflash.com>. I commit and push from the Mac; carbonio clones in `~/Software/`.
-- Keep answers concise; give commands ready to paste.
-- Python ≥ 3.10; `pyproject.toml` extras `[mcp, test]` (+ `gmsh`); entry points `cfdt`, `cfdt-mcp`.
+- Versions `YYYY.MM.DD.x` (x increments within a day) in every changed module's docstring, `__init__.py`,
+  `pyproject.toml`, and a README "Versions" row saying what happened and why (the run that showed it).
+- Author: Nicola Ferralis <ferralis@generalflash.com>. The user commits from the Mac; give only the cfdt command:
+  `cd ~/Software/cfd-translator && rm -f .git/index.lock && git add -A && git commit -m "..." && git push`
+- Tests in the sandbox: `export TMPDIR=/tmp; python3 -m pytest -q -p no:cacheprovider --basetemp=/tmp/ptb`
+  (the sandbox has no OpenFOAM or Gmsh: stand-ins and synthetic fields; say what is unverified on OpenFOAM).
+- `study_format` must stay under 12,000 characters (test; local models): it is at **11,954** (2026.11.03). New
+  keywords get one short line there; the how-to goes into `guides.py` (`guide('vehicle_aero')`, `guide('pumps')`).
+- Before writing any OpenFOAM keyword, read it in the v14 source or tutorials (github.com/OpenFOAM/OpenFOAM-14,
+  cpp.openfoam.org/v14): bad keys are fatal at startup.
 
 ## Architecture
 
-- `format.py`: study format (`study_format`) and static `validate()` with precise messages.
-- `polymesh.py`: cells -> OpenFOAM polyMesh (faces, owner, neighbour, patches; OpenFOAM's geometry formulas); structured box; extrusion of 2D meshes.
-- `mesher.py`: Gmsh (OCC geometry, external cut, tets or swept 2D mesh with boundary layers); `select.py`: face groups, selectors, bc -> patch assignment.
-- `case.py`: the OpenFOAM case (all values computed here); `foam.py`: the only module running OpenFOAM; `foamio.py`: tolerant readers (fields, logs, checkMesh, polyMesh).
-- `post.py`: results and invariants from the final fields; `refsolver.py`: 2D MAC solver that reads the written case.
-- `runner.py`, `bench.py`, `api.py`, `cli.py` (`status|format|validate|run|case|bench`), `mcp_server.py` (`study_format`, `validate_studies`, `run_studies`, `study_status`, `get_case`, `run_benchmarks`, `get_file`).
+```
+format.py     study format, validation           case.py       the OpenFOAM case (wall_velocity, write_mrf)
+polymesh.py   polyMesh writer, box, extrusion     foam.py       runs OpenFOAM, reads fields (also decomposed cases)
+mesher.py     Gmsh (generate(): surface retries)  foamio.py     tolerant readers (fields, logs, checkMesh, polyMesh)
+snappy.py     snappyHexMesh (surface, layers, retries, pockets, revolution tags)
+sliding.py    sliding mesh (checks, faceZone, createBaffles/splitBaffles/createNonConformalCouples, parallel)
+cavitation.py incompressibleVoF + VoFCavitation case, results, NPSH curve
+select.py     selectors, bc -> patches            post.py       results and invariants (balances, wall_flux)
+average.py    monitors, window/time averages      transient.py  URANS/DES, steady start, stop and continue
+scalars.py    tracers, mean age                   porous.py     porous zones, reactions on the part
+variants.py   geometry refs, variants, mesh_scales, NPSH sweeps (compare)
+executor.py   SLURM: submit, run-study, states, estimates, caps   cpushare.py  other processes on our CPUs, reap
+render.py / render_vtk.py   images                refsolver.py  2D MAC reference solver
+runner.py     one study end to end, verdict       bench.py      benchmarks
+api.py, cli.py, mcp_server.py, guides.py
+```
 
-## Lessons from b3dt and feat
+MCP tools: study_format, validate_studies, run_studies, study_status, get_case, guide, add_geometry, list_geometry,
+run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess, get_file.
 
-1. Research the target program first (manual, output formats), then the spec, then code. List unverified assumptions in the README, each with a benchmark that would catch it (feat: CalculiX's RF includes applied loads; caught by `gravity_block`). Likely CFD examples: kinematic vs. static pressure (OpenFOAM's incompressible `p` is p/ρ), the sign of the `forces` output, units after `gmshToFoam` (mm → m scaling), and flux sign conventions.
-2. Never rely on the program's internal numbering or ordering; recompute from geometry or data.
-3. Exact checks where possible (1e-6), loose only where physics says so, with the reason. For CFD: laminar closed-form ≤ 1–2 % on converged meshes; turbulent correlations ±10 %.
-4. Every run checks itself (conservation, validity), not only the benchmarks.
-5. Validate before running; an LLM must fix every error from its message alone.
-6. Compute derived quantities the way the target does (feat's flat-triangle loads were 0.1 % off on curved faces until isoparametric). For CFD: integrate forces/fluxes on the same faces and the same way as OpenFOAM's function objects.
-7. Keep `study_format` compact (local LLMs need ≥ 16k context for it).
-8. If the sandbox cannot run the target (ARM Linux, no apt/conda/Homebrew), say so up front, test the rest, give exact carbonio commands, iterate on my output.
+## Lessons (b3dt, feat, and this tool)
+
+1. Research the target program first (source, tutorials), then the spec, then code; list what is unverified.
+2. Never rely on the program's internal numbering; recompute from geometry (CAD-face tags survive meshing).
+3. Exact checks where possible, loose only where physics says so, with the reason.
+4. Every run checks itself (mass, momentum, angular momentum, energy, scalars, wall flux, alpha bounds), and the
+   verdict says why a result must not be reported.
+5. Validate before running; an LLM must fix every error from its message alone (where, what, which key).
+6. Compute derived quantities the way the target does (forces, fluxes on the same faces).
+7. Keep `study_format` compact; long guidance in guides.
+8. OpenFOAM traps: MRF subtracts Ω×r on every face of a zone cell, walls included (stationary walls inside a zone
+   leak); snapped faces of a surface of revolution are jagged (judge by CAD face, not by facet); aarch64 cannot
+   trap FPEs (NaN runs crawl: watch the log); decomposePar loops over every face pair of a non-conformal couple
+   (decompose first); `createBaffles fields true` needs a bc for every field in 0/; `flowRateOutletVelocity`
+   divides by the set flow (never 0); Gmsh can leave a surface empty without raising (check, retry).
+9. Failures must say what happened: killed (memory) vs mesh error, cancelled, diverged, timed out.
 
 ## Environment
 
-- Mac (Apple Silicon): development, Claude desktop, LM Studio. No Homebrew; MacPorts gfortran fails for Fortran builds.
-- carbonio (Ubuntu, Python 3.14): heavy programs (CalculiX, Gmsh, OpenFOAM .org via apt), shared venv `cad`. OpenFOAM needs its `etc/bashrc` sourced; the backend must do this in each subprocess.
-- MCP servers on carbonio, in `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-"cfdt": {"command": "/usr/bin/ssh",
-         "args": ["-T", "-o", "BatchMode=yes", "nicola@carbonio",
-                  "/home/nicola/Software/build123d-translator/.venv/bin/cfdt-mcp"]}
-```
+- Mac (Apple Silicon): development, Claude desktop. The sandbox mounts the repo; no OpenFOAM/Gmsh there.
+- Machines (OpenFOAM 14, SLURM, cfdt from llmt's shared install), as of 2026.11.03:
+  - **carbonio**: 12 CPUs / 6 cores, default 2 ranks (cap 6), `--mem=8G` default (snappy layer addition was
+    killed there for memory: use run.mem), 190 min time limit.
+  - **mochi**: 40 CPUs / 20 cores, default 9 ranks (cap 20), 510 min limit; busy with Rogue DES runs.
+  - **spark1 / spark2** (aarch64, 20 cores each, own nodes spark-5da5 / spark-0808): default 10 ranks (cap 18),
+    mem cap 96G, 190 min; `CFDT_SLURM_NODE=local`. No FPE trapping on aarch64.
+- Transient and long runs continue in dependent SLURM jobs (max_jobs); results are collected with study_status.
 
 ## How to start
 
-1. Read README.md (format, checker, unverified assumptions) and the State below.
-2. Ask me for the carbonio output of `pytest -q` and `cfdt bench` (and the slow benchmarks) if I have not pasted it; fix from it, one assumption at a time.
-3. Keep README (versions table, checker results) and State up to date; give carbonio commands ready to paste.
-4. End with an end-to-end test prompt using cfdt with b3dt and feat.
+1. Read README.md (format, checks, versions) and "Open work" below.
+2. Ask the user for the latest run results (request paths, machine) if not given; `jobs()`, `study_status` and
+   `get_file` reach run folders on any machine through the router.
+3. Fix from real output, one cause at a time; README row + versions + the commit command each time.
 
-## Plan: tracers (mixing, residence time) and porous zones
+## Open work (2026.11.03, in order)
+
+1. **Cavitation, first run** (2026.11.03.4): S50 at 20 m3/h, NPSH 15 m on carbonio stopped at once on SIGFPE
+   (outlet flow ramp from 0; fixed in .4). Rerun that point: expect almost no vapour and the MRF head within a few %.
+   Watch: VoF writes `p` (else p_rgh is read), `uniformTotalPressure` on p_rgh with the mixture's rho, pressure and
+   forces function objects with `rho rho;` and p in Pa (absolute, pRef = target total pressure), LTS stability
+   (maxCo 5, maxAlphaCo 2), the ramp's start level (p0 + rho max(U_tip, 3 U_ref)^2). Then the sweep
+   (`cavitation.npsh: [...]`) and `variants.<name>.npsh_curve` / `npsh3_m`. No wall shear or y+ in VoF runs yet.
+2. **Sliding mesh, first full run** (2026.11.03.2): S180 (13.3 M cells, 18 ranks, spark2) built the couple in
+   serial, then decomposePar never finished (O(N^2) over the couple's faces). Now: decompose the conformal case,
+   build the couple with `-parallel`, keep the case decomposed, read results from processor* (cfdt_addressing);
+   no reconstructPar. Rerun as a new request. Watch: parallel createBaffles with faceZone faces on processor
+   boundaries, the MRF steady start then `movingWallVelocity`, foamRun with the mover and NCC, time per
+   revolution (1 deg steps, maxCo 2), results read from processors, averages over whole revolutions. The case
+   archive (.tgz) has no results for decomposed cases.
+3. **S50 meshing**: layered meshes failing checkMesh now rebuilt without layers (.11.03.3; restored if that fails
+   too); Gmsh surfaces left empty retried with other algorithms (.11.02.2; face 121); a 2.8e-7 mm gap the user
+   closes in CAD. The S50 MRF zone had wall leaks (impeller faces outside the zone, casing faces inside, 22-44 %
+   of the inflow at 11.01.5): the zone or the geometry must change, for MRF and sliding alike (`guide('pumps')`).
+4. **S180 MRF**: wall-leak and own-rotation fixes through 11.01.6; s180_base_Q250_v6 timed out on spark2 (job 322):
+   check its state with the user.
+5. **#25 transient / #26 Ahmed and Rogue DES**: cylinder benchmarks pass (10.22.5); Rogue spatial DES runs
+   (spatA/C/D/E) were running/queued on mochi on 2026.11.02.
+6. Benchmarks still missing: a sliding-mesh one (e.g. Taylor-Couette with a sliding inner zone vs the analytic
+   torque, then a rotor-stator case), cavitation ones (cavitating orifice/venturi vs Nurick's discharge
+   coefficient; a non-cavitating VoF point equal to the single-phase result).
+7. Other tools (other chats): feat S50 inspection-cover joint (contact chatter in the preload step: prompt sent
+   2026.11.02).
+
+Future (agreed, not started):
+- **Sliding-mesh cavitation**: the cavitation case on the sliding zone (incompressibleVoF supports the NCC mover,
+  as its propeller tutorial: correctPhi, correctMeshPhi, movingWallVelocity / movingWallSlipVelocity, alpha
+  zeroGradient on the couple's patches); averages over whole revolutions; cavity shedding and pressure
+  pulsations. Needs to_sliding to set alpha.water / p_rgh patchFields and a transient VoF controlDict.
+- One mesh shared by all points of a sweep (NPSH, flow points): each point meshes again now (S50 ~20 min).
+- Free-surface VoF (tanks, priming, sloshing, air entrainment); multi-region CHT (dual-fluid heat exchangers);
+  Euler-Euler and particles (larger efforts, see the 2026.11.03 discussion).
+- Energy with MRF; supersonic; radiation.
+
+## Reference: cavitation (incompressibleVoF + VoFCavitation), implemented 2026.11.03.1
+
+User's choices (2026.11.03): MRF pseudo-steady first; a built-in NPSH sweep; sliding-mesh cavitation later.
+
+OpenFOAM 14 facts (tutorials incompressibleVoF/propeller and DTCHull, sources read on GitHub):
+- solver incompressibleVoF; constant/phaseProperties `phases (water vapour); pSat; sigma;`;
+  physicalProperties.water / .vapour `viscosityModel constant; nu; rho;`; constant/g (0 0 0) for a pump.
+- constant/fvModels `VoFCavitation { type VoFCavitation; model SchnerrSauer; SchnerrSauer { pSat; liquid water;
+  n 1.6e13; dNuc 2e-6; Cc 1; Cv 1; } }` (Kunz, Merkle: UInf, tInf, Cc, Cv).
+- Fields alpha.water, U, p_rgh (Pa, absolute; = p with g = 0), k/omega/nut. BCs: walls fixedFluxPressure (p_rgh),
+  zeroGradient (alpha); inlet `uniformTotalPressure` (p0 a Function1 of time: the ramp) with
+  pressureInletOutletVelocity; outlet `flowRateOutletVelocity` (volumetricFlowRate Function1; it divides by the
+  set flow: the ramp starts at 5 %).
+- VoFSolver has MRFZones and LTS (ddt localEuler; PIMPLE maxCo, maxAlphaCo, rDeltaTSmoothingCoeff,
+  rDeltaTDampingCoeff, maxDeltaT). Schemes: div(phi,alpha) Gauss noInterfaceCompression vanLeer, div(rhoPhi,U),
+  div(((rho*nuEff)*dev2(T(grad(U))))). Solvers "alpha.water.*" (MULES, MULESCorr), p_rgh, p_rghFinal, "pcorr.*".
+- Function objects with p in Pa: `pressure` needs `rho rho;` (it looks rho up as a field); `forces` with
+  `rho rho;` and `pRef` (the target total pressure).
+
+Design: `cavitation: {npsh: m | [m, ...], temperature | p_vapour, vapour {rho, mu}, model, iterations (4000),
+ramp (0.3), head_drop (0.03), sigma}`; one inlet (its flow rate moves to the outlet) and one outlet; inlet total
+pressure p_v + rho g NPSH, ramped down from a vapour-free level; the last quarter averaged; an npsh list expands
+into `<name>_npsh<value>` studies and compare() gives the NPSH curve and NPSH3. Reader: p (Pa, absolute) ->
+kinematic gauge (p - p_ref) / rho_l; alpha.water -> `vapour` scalar for images. Not with transient, sliding,
+energy, tracers, porous zones.
+
+## Reference: sliding mesh (OpenFOAM 14 NCC), implemented 2026.11.02.1-11.03.2
+
+- propeller tutorial: createBaffles (faceZone -> two patches, `fields true` with patchFields), splitBaffles,
+  createNonConformalCouples `-fields` p1 p2 (overwrite by default in v14; `-noOverwrite`); dynamicMeshDict
+  `mover { type solidBody; libs ("libpointMeshMovers.so"); cellZone; solidBodyMotionFunction { type
+  rotatingMotion; origin; axis; omega N [rpm]; } }`; U `movingWallVelocity` on rotor walls,
+  `movingWallSlipVelocity` on the couple's patches; `#includeEtc "caseDicts/setConstraintTypes"`; PIMPLE
+  correctPhi, correctMeshPhi, MeshPhi and "pcorr.*" solvers.
+- Zone files: classes `cellZoneList` / `faceZoneList`.
+- decomposePar on a coupled mesh loops over every pair of the couple's faces (domainDecompositionDecompose.C,
+  processInterCyclics): decompose the conformal case first, build the couple in parallel, never reconstruct.
+
+## Reference: tracers and porous zones (done 2026.10.19, benchmarks pass on mochi)
 
 For gas and liquid reactors: what mixes, how long the fluid stays, and how packed beds, catalyst monoliths and filters
 resist and distribute the flow. Steady, single-phase, no reactions. Tracers first (low risk), then porous zones.
@@ -159,56 +254,59 @@ in a function object or fvModel is fatal at startup.
   - `monolith_straightening`: angled inflow into an anisotropic block: the outflow leaves along e1 (angle < 1°).
 - **Limits.** No solid-phase energy, no reactions on the surface, no particle-resolved beds.
 
-### Order and size
+## Reference: snappyHexMesh in OpenFOAM 14 (implemented 2026.10.21, snappy.py)
 
-Tracers (format, case, results, checks, 4 benchmarks, tests with synthetic fields): about one session; porous
-zones about one more. Each: keywords checked in the v14 source first, sandbox tests, then the benchmarks on mochi
-with local runs (as for the venturi). README: format, results, the new checks, versions.
+OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
+- snappyHexMesh overwrites constant/polyMesh by default (-noOverwrite to keep times). No fvSchemes/fvSolution needed;
+  controlDict: writeFormat ascii needs mergeTolerance >= 10^-writePrecision (1e-6 with 6 digits is fine).
+- Geometry: `type triSurface; file "part.stl";` from constant/geometry; `type box; min; max;`; `type cylinder; point1;
+  point2; radius;`; `type sphere; centre; radius;`. Multi-solid STL surface `part` gives patches `part_<solid>`
+  (single solid: `part`); `regions { <solid> { name <patch>; } }` renames.
+- refinementSurfaces: `part { level (a b); regions { <solid> { level (a b); patchInfo { type wall; } } } }` (level
+  mandatory per region; no patchInfo -> wall). refinementRegions: `mode inside|outside; level N;` or
+  `mode distance; levels ((d1 l1) (d2 l2));` (increasing d, non-increasing level), allowed on the part surface too.
+- castellatedMeshControls mandatory: maxGlobalCells, maxLocalCells, minRefinementCells, resolveFeatureAngle,
+  nCellsBetweenLevels, allowFreeStandingZoneFaces, insidePoint. features ( { file "part.eMesh"; level N; } ) from
+  `surfaceFeatures` (system/surfaceFeaturesDict: surfaces ("part.stl"); includedAngle 150;).
+- snapControls mandatory: nSmoothPatch, tolerance, nSolveIter, nRelaxIter; optional nFeatureSnapIter,
+  explicitFeatureSnap, implicitFeatureSnap.
+- addLayersControls mandatory: relativeSizes, minThickness, featureAngle, nGrow, maxFaceThicknessRatio,
+  nBufferCellsNoExtrude, nLayerIter, layers {"<patch regex>" {nSurfaceLayers N;}}, nSmoothSurfaceNormals,
+  minMedialAxisAngle, nSmoothNormals, maxThicknessToMedialRatio, nSmoothThickness, nRelaxIter; exactly two of
+  firstLayerThickness / finalLayerThickness / thickness / expansionRatio. nRelaxedIter enables meshQualityControls.relaxed.
+- meshQualityControls mandatory: maxNonOrtho, minVol, minTetQuality, maxConcave, maxInternalSkewness,
+  maxBoundarySkewness, minFaceWeight, minVolRatio, minTwist, minDeterminant, errorReduction, nSmoothScale
+  (minFaceFlatness optional; tutorial's minFlatness is ignored). `#includeEtc "caseDicts/mesh/generation/meshQualityDict"`.
+- Log: layer table after "patch faces layers overall thickness" / "[m] [%]" / "----- -----" header: rows
+  `patch faces avgLayers thickness_m percent`; "Layer mesh : cells:N faces:.. points:.."; "Finished meshing ...".
+- Parallel: decomposePar (-force), mpirun snappyHexMesh -parallel, then `reconstructPar -constant` (no times otherwise).
+- blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
-## Plan: cavitation (incompressibleVoF + VoFCavitation), 2026.11.03
+## State (history, newest first)
 
-User's choices (2026.11.03): MRF pseudo-steady first; a built-in NPSH sweep. Sliding-mesh cavitation is a future
-feature (below).
+**2026.11.03.1-.4**: cavitation (incompressibleVoF, MRF, LTS, NPSH sweep, NPSH3); sliding mesh in parallel
+(decompose first, read processor*); layered snappy meshes failing checkMesh rebuilt without layers; killed
+programs reported as `Killed` with a run.mem hint; outlet flow ramp from 5 % (SIGFPE). See README rows.
 
-OpenFOAM 14 facts (tutorials incompressibleVoF/propeller and DTCHull, sources read on GitHub):
-- solver incompressibleVoF; constant/phaseProperties `phases (water vapour); pSat 2300; sigma 0.07;`;
-  physicalProperties.water / .vapour `viscosityModel constant; nu; rho;`; constant/g (0 0 0) for a pump.
-- constant/fvModels `VoFCavitation { type VoFCavitation; model SchnerrSauer; SchnerrSauer { pSat; liquid water;
-  n 1.6e13; dNuc 2e-6; Cc 1; Cv 1; } }` (Kunz, Merkle: UInf, tInf, Cc, Cv).
-- Fields alpha.water, U, p_rgh (Pa, absolute; p_rgh = p with g = 0), k/omega/nut. BCs: walls fixedFluxPressure
-  (p_rgh), zeroGradient (alpha); total-pressure inlet `uniformTotalPressure` (p0 a Function1 of time: a ramp);
-  outlet `flowRateOutletVelocity` (volumetricFlowRate, a Function1).
-- VoFSolver has MRFZones, and LTS (ddt localEuler; PIMPLE maxCo, maxAlphaCo, rDeltaTSmoothingCoeff,
-  rDeltaTDampingCoeff, maxDeltaT) for pseudo-steady runs. Schemes: div(phi,alpha) Gauss noInterfaceCompression
-  vanLeer (cavitation), div(rhoPhi,U), div(((rho*nuEff)*dev2(T(grad(U))))). Solvers "alpha.water.*" (MULES,
-  MULESCorr), p_rgh, p_rghFinal, "pcorr.*".
+**2026.11.02.1-.3**: sliding mesh (rotating[].motion "sliding"; checks, NCC steps, revolution averages,
+guide('pumps')); Gmsh surfaces left empty are retried and mesh notes kept in failed results; createBaffles fields
+(only solved fields in 0/), zone class names.
 
-Design (cavitation.py):
-- study `cavitation: {npsh: m or [m, ...], temperature C (20) | p_vapour Pa, model SchnerrSauer|Kunz|Merkle,
-  iterations, ramp (0.3), head_drop (0.03)}`; water only for now (vapour properties from the temperature), or
-  p_vapour + vapour {rho, mu} for another liquid. One inlet (its flow_rate moves to the outlet, as
-  flowRateOutletVelocity) and one outlet; the inlet gets total pressure p_v + rho g NPSH (absolute), ramped down from
-  a cavitation-free level over the first `ramp` of the iterations. MRF zones as for the steady pump.
-- An npsh list expands like variants (<name>_npsh<value>); compare() gives head vs NPSH, vapour volume, and NPSH3
-  (head 3 % below the highest-NPSH point, interpolated).
-- Results: per point head, power, efficiency (averaged over the last iterations), vapour volume (m3 and % of the
-  zone/domain), min pressure, where the vapour is; images of alpha.water.
-- Reading: p and p_rgh in Pa absolute -> post's kinematic gauge layout (p - p_ref) / rho_liquid; phi volumetric.
+**2026.11.01.1-.6**: MRF wall leaks (pre-run check per wall against its cell's frame, post `checks.wall_flux`
+with verdict), Gmsh surface retries (MeshAdapt, Delaunay, Frontal-Delaunay), own-rotation walls (full Ω×r in a
+same-speed zone, tangential on CAD surfaces of revolution found by snappy), layer folds remade without layers,
+every bad region reported, `mesh.layers.at_openings`.
 
-Future (not now):
-- **Sliding-mesh cavitation**: the same case on the sliding zone (incompressibleVoF supports the NCC mover, as its
-  propeller tutorial: correctPhi, correctMeshPhi, movingWallVelocity / movingWallSlipVelocity, alpha zeroGradient
-  on the couple's patches); averages over whole revolutions; cavity shedding and pressure pulsations. Needs
-  sliding.to_sliding to set alpha.water / p_rgh patchFields and a transient VoF controlDict (maxCo, maxAlphaCo).
-- One mesh shared by all NPSH points of a sweep (now each point meshes again).
-- Free-surface VoF (tanks, priming, sloshing), air entrainment.
+**2026.10.31.1-.5**: refinement shapes in the estimate, no outsidePoint (region zoning), rotating walls at the
+zone's edge accepted, snappy flatness and mergeFaces retries, pockets cut off from the flow removed (subsetMesh),
+NaN watch on running logs (aarch64), CPU-share watcher, leftover OpenFOAM processes reaped after scancel.
 
-## State
+**2026.10.25.1-10.28.4**: SLURM on mochi and the sparks (node pinning, rank caps, memory auto/size), llmt rules
+(stale servers, ToolError, tools return within wait_s), Ahmed benchmarks, VTK renderer, porous reactions on the
+part (and their checks), study_format trimmed under 12k.
 
-**2026.11.03.1**: cavitation (MRF, pseudo-steady, NPSH sweep) coded per the plan above; unverified on OpenFOAM. First
-run: one S50 point at a high NPSH (no vapour expected: head within a few % of the MRF run), then the sweep. Watch:
-VoF's `p` written (else p_rgh is read), `uniformTotalPressure` on p_rgh with the mixture's rho, the pressure and
-forces function objects with `rho rho` and p in Pa, LTS stability (maxCo 5, maxAlphaCo 2), the ramp's start level.
+**2026.10.22.5-.10**: transient benchmarks pass on mochi (cylinder 2D-2 and its restart), test isolation from
+the machine's config, estimates in validation.
 
 **2026.10.22.4**: #25 transient (transient.py): URANS / kOmegaSSTDES / laminar, steady start, fieldAverage, time averages with frequency/Strouhal, stop (stopAt writeNow) and continue in a dependent SLURM job. Unverified on OpenFOAM: run cylinder_2d2 (quick), cylinder_2d2_restart (job chaining), then ahmed25_des / ahmed35_des. Watch: fieldAverage startTime key (timeControl), stopAt writeNow picked up in parallel (timeStamp check), reconstructPar after the last segment, Courant-limited dt with thin layer cells.
 
@@ -326,37 +424,3 @@ Open ideas:
 - `converge: true`; 3D prism layers; cyclic patches;
 - heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones and tracers (plan above);
 - a pump example (volute + impeller goal) once MRF is confirmed.
-
-## Plan: snappyHexMesh path (#23, in progress — nothing coded yet)
-
-OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
-- snappyHexMesh overwrites constant/polyMesh by default (-noOverwrite to keep times). No fvSchemes/fvSolution needed;
-  controlDict: writeFormat ascii needs mergeTolerance >= 10^-writePrecision (1e-6 with 6 digits is fine).
-- Geometry: `type triSurface; file "part.stl";` from constant/geometry; `type box; min; max;`; `type cylinder; point1;
-  point2; radius;`; `type sphere; centre; radius;`. Multi-solid STL surface `part` gives patches `part_<solid>`
-  (single solid: `part`); `regions { <solid> { name <patch>; } }` renames.
-- refinementSurfaces: `part { level (a b); regions { <solid> { level (a b); patchInfo { type wall; } } } }` (level
-  mandatory per region; no patchInfo -> wall). refinementRegions: `mode inside|outside; level N;` or
-  `mode distance; levels ((d1 l1) (d2 l2));` (increasing d, non-increasing level), allowed on the part surface too.
-- castellatedMeshControls mandatory: maxGlobalCells, maxLocalCells, minRefinementCells, resolveFeatureAngle,
-  nCellsBetweenLevels, allowFreeStandingZoneFaces, insidePoint. features ( { file "part.eMesh"; level N; } ) from
-  `surfaceFeatures` (system/surfaceFeaturesDict: surfaces ("part.stl"); includedAngle 150;).
-- snapControls mandatory: nSmoothPatch, tolerance, nSolveIter, nRelaxIter; optional nFeatureSnapIter,
-  explicitFeatureSnap, implicitFeatureSnap.
-- addLayersControls mandatory: relativeSizes, minThickness, featureAngle, nGrow, maxFaceThicknessRatio,
-  nBufferCellsNoExtrude, nLayerIter, layers {"<patch regex>" {nSurfaceLayers N;}}, nSmoothSurfaceNormals,
-  minMedialAxisAngle, nSmoothNormals, maxThicknessToMedialRatio, nSmoothThickness, nRelaxIter; exactly two of
-  firstLayerThickness / finalLayerThickness / thickness / expansionRatio. nRelaxedIter enables meshQualityControls.relaxed.
-- meshQualityControls mandatory: maxNonOrtho, minVol, minTetQuality, maxConcave, maxInternalSkewness,
-  maxBoundarySkewness, minFaceWeight, minVolRatio, minTwist, minDeterminant, errorReduction, nSmoothScale
-  (minFaceFlatness optional; tutorial's minFlatness is ignored). `#includeEtc "caseDicts/mesh/generation/meshQualityDict"`.
-- Log: layer table after "patch faces layers overall thickness" / "[m] [%]" / "----- -----" header: rows
-  `patch faces avgLayers thickness_m percent`; "Layer mesh : cells:N faces:.. points:.."; "Finished meshing ...".
-- Parallel: decomposePar (-force), mpirun snappyHexMesh -parallel, then `reconstructPar -constant` (no times otherwise).
-- blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
-
-Design (to implement): mesh.mesher "snappy": blockMesh background (mesh.size), STL per bc from Gmsh's surface mesh of
-the STEP (one solid per bc), levels from sizes in mm, regions [{box|cylinder|distance, size}], layers {n, first |
-y_plus, growth, feature_angle}, quality {max_non_ortho...}. Mesh in <study>/snappy/, read polyMesh back (faces of any
-size: PolyMesh faces padded wider, face_geometry grouped by node count), keep boundary face order (no lexsort),
-case writes only boundary + cellZones. Report: layer coverage per patch, predicted first-cell y+, checkMesh.
