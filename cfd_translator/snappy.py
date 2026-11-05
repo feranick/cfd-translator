@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.04.3
+Version: 2026.11.04.7
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -287,6 +287,7 @@ def surface_health(pts: np.ndarray, surf: list, limit: int = 5) -> dict:
     op, nm = c == 1, c > 2
     out = {"open_edges": int((cnt == 1).sum()), "nonmanifold_edges": int((cnt > 2).sum()), "at": [], "faces": []}
     if op.any():
+        out["open_length_mm"] = round(float(np.linalg.norm(pts[e[op, 0]] - pts[e[op, 1]], axis=1).sum()), 4)
         mid = 0.5 * (pts[e[op, 0]] + pts[e[op, 1]])
         # a few places, far apart
         pick = [0]
@@ -842,10 +843,20 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     if unmeshed:
         leak_hint += (f" Gmsh could not triangulate {len(unmeshed)} CAD face(s) of the part (e.g. face {unmeshed[0]['face']} "
                       f"near {unmeshed[0]['at']} mm): the surface has holes there.")
-    if health["open_edges"]:
+    if health["open_edges"] and health.get("open_length_mm", 1e9) < smin and not unmeshed:
+        # a seam where two CAD faces' triangulations do not share their nodes (fluid_s50_df2.step: B-rep closed,
+        # 3 edges between faces 96 and 101): shorter than a surface cell, snappy does not see it
+        leak_hint += (f" A seam of {health['open_edges']} triangle edges ({health['open_length_mm']:.3g} mm in all, "
+                      f"less than a surface cell) between CAD faces {health['faces'][:8]} near "
+                      f"{', '.join(map(str, health['at'][:2]))} mm: the triangulations of two faces do not share "
+                      "their nodes there; harmless unless the fluid leaks.")
+    elif health["open_edges"]:
         leak_hint += (f" The part's surface is not closed: {health['open_edges']} open edges (near "
                       f"{', '.join(map(str, health['at'][:3]))} mm; CAD faces {health['faces'][:8]}).")
-    if leak_hint:
+    seam_only = bool(health["open_edges"]) and health.get("open_length_mm", 1e9) < smin and not unmeshed
+    if leak_hint and seam_only:
+        notes.append(leak_hint.strip())
+    elif leak_hint:
         notes.append(leak_hint.strip() + " snappyHexMesh's fluid region can leak through such holes: fix the geometry "
                      "(fuse the bodies, close the faces) or coarsen mesh.surface there")
     if health["nonmanifold_edges"]:
@@ -972,10 +983,9 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     (sd / "system" / "blockMeshDict").write_text(block_mesh_dict(st, box_patches, not external))
     (sd / "system" / "surfaceFeaturesDict").write_text(_hdr("surfaceFeaturesDict") +
                                                        f"surfaces (\"{PART}.obj\");\n\nincludedAngle   150;\n")
-    procs = max(1, procs_of(study))
-    import os
-    if os.environ.get("SLURM_NTASKS", "").isdigit():
-        procs = max(1, min(procs, int(os.environ["SLURM_NTASKS"])))
+    procs, cap_note = foam.local_procs(procs_of(study))
+    if cap_note:
+        notes.append("snappyHexMesh: " + cap_note)
     if procs > 1:
         (sd / "system" / "decomposeParDict").write_text(
             decompose_dict(procs, np.asarray(st["hi"], float) - np.asarray(st["lo"], float)))

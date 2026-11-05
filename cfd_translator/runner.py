@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.04.1
+Version: 2026.11.04.7
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -116,6 +116,10 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         else:
             from . import foam
             procs = procs_of(study)
+            if not os.environ.get("SLURM_JOB_ID"):          # a local run: this machine's cores (foam.local_procs)
+                procs, cap_note = foam.local_procs(procs)
+                if cap_note:
+                    warns.append(cap_note)
             per = int(os.environ.get("CFDT_CELLS_PER_RANK", "5000"))
             use = max(1, min(procs, mesh.ncells // max(per, 1)))
             if use < procs:

@@ -693,3 +693,28 @@ def test_hollow_cylinder_refinement(tmp_path, monkeypatch):
     th = np.linspace(0, 2 * np.pi, 36, endpoint=False)
     Cf = np.column_stack([59.75 * np.cos(th), 59.75 * np.sin(th), np.full(36, -60.0)])
     assert not_round_regions([ann], Cf, np.array([0, 0, 1.0]), np.zeros(3)) == []
+
+
+def test_local_ranks_are_capped_to_the_machine(monkeypatch):
+    """get_case of an 18-rank S50 study on carbonio (6 cores): OpenMPI 5 stopped snappyHexMesh with
+    'prte-rmaps-base:alloc-error'."""
+    from cfd_translator import foam
+    monkeypatch.delenv("SLURM_NTASKS", raising=False)
+    monkeypatch.setattr(foam, "physical_cores", lambda: 6)
+    n, note = foam.local_procs(18)
+    assert n == 6 and "18 MPI ranks asked" in note and "allow 6" in note
+    assert foam.local_procs(4) == (4, None)
+    monkeypatch.setenv("SLURM_NTASKS", "10")
+    n, note = foam.local_procs(18)
+    assert n == 10 and "SLURM job's tasks" in note
+
+
+def test_a_short_seam_is_told_apart_from_a_hole():
+    """fluid_s50_df2.step: the B-rep is closed, but 3 triangle edges between faces 96 and 101 are open (the two
+    faces' triangulations do not share their nodes): shorter than a surface cell."""
+    pts, surf = _cube([0, 0, 0], [10, 10, 10])
+    h = snappy.surface_health(pts, surf)
+    assert h["open_edges"] == 0 and "open_length_mm" not in h
+    cut = [(t, tri[1:]) if k == 0 else (t, tri) for k, (t, tri) in enumerate(surf)]
+    h = snappy.surface_health(pts, cut)
+    assert h["open_edges"] > 0 and h["open_length_mm"] > 0

@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.03.3
+Version: 2026.11.04.7
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -391,6 +391,23 @@ def decomposed(case: Path) -> dict | None:
         return json.loads(f.read_text())
     except (OSError, ValueError):
         return None
+
+
+def local_procs(procs: int) -> tuple[int, str | None]:
+    """The MPI ranks this process may start: a SLURM job's tasks, else this machine's physical cores (OpenMPI 5
+    refuses more ranks than slots: 'prte-rmaps-base:alloc-error', get_case of an 18-rank study on carbonio's 6
+    cores, 2026.11.04). Returns (ranks, note when fewer than asked)."""
+    procs = max(1, int(procs))
+    nt = os.environ.get("SLURM_NTASKS", "")
+    if nt.isdigit():
+        cap, where = int(nt), "this SLURM job's tasks"
+    else:
+        cap, where = physical_cores(), "this machine's cores (outside SLURM)"
+    if procs <= cap:
+        return procs, None
+    import socket
+    return max(1, cap), (f"{procs} MPI ranks asked, but {where} on {socket.gethostname()} allow {cap}: ran on {cap}. "
+                         "A SLURM job gets its own allocation (run_studies); get_case and local runs use this machine")
 
 
 def hwthreads() -> int:
