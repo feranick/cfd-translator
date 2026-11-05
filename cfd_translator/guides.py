@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.04.3
+Version: 2026.11.05.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -54,7 +54,9 @@ GUIDES = {
             "value (<name>_npsh<value>), liquid and vapour (OpenFOAM incompressibleVoF with Schnerr-Sauer mass "
             "transfer), MRF frozen rotor, pseudo-steady (local time step), iterations 4000 by default.",
             "The study keeps its inlet flow_rate and outlet: the inlet then holds the absolute total pressure p_vapour "
-            "+ rho g NPSH, the outlet draws the flow rate (the outlet's pressure is not used). temperature (20 C) sets "
+            "+ rho g NPSH, the outlet draws the flow rate as a mass flow, so the liquid flow stays the study's while "
+            "vapour forms (the outlet's pressure is not used). Points whose inlet liquid flow is more than 1 % off "
+            "are left out of NPSH3 (cavitation.flows.liquid_flow_error). temperature (20 C) sets "
             "water's vapour pressure; another liquid needs p_vapour and vapour {rho, mu}.",
             "The highest NPSH must be free of vapour (its head is the reference); space the points closer where the "
             "head starts to fall. 'variants' in study_status gives npsh_curve: head and vapour volume per point and "

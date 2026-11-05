@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.03.8
+Version: 2026.11.05.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -622,10 +622,12 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         # volumetric: with energy, phi is a mass flux (kg/s) and the flow entry already divides by rho
         got = float(out["flow"][n]["Q"]) if en and n in out.get("flow", {}) else \
             -float(np.asarray(fields["patches"][n]["phi"], float).sum())
-        if abs(got - pl["Q"]) > 1e-3 * abs(pl["Q"]):
+        if plan.get("vof"):
+            pass        # cavitation: the inlet holds a total pressure; cavitation.results judges its liquid flow
+        elif abs(got - pl["Q"]) > 1e-3 * abs(pl["Q"]):
             warns.append(f"inlet {n}: flow {got:.6g} m3/s, but the case prescribes {pl['Q']:.6g}")
         checks.setdefault("inlet_flow_error", {})[n] = _r((got - pl["Q"]) / pl["Q"])
-    if mass_err > 1e-3:
+    if mass_err > 1e-3 and not plan.get("vof"):       # cavitation: judged by mass in cavitation.results
         warns.append(f"mass balance off by {mass_err:.2%} of the inflow (not converged?)")
     if fields.get("source") == "reference solver":
         checks["momentum_balance"]["note"] = ("indicative only: the MAC solver's boundary values (wall pressure = "

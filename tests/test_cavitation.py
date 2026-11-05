@@ -69,8 +69,10 @@ def test_vof_case_files(tmp_path):
     prgh = (c / "0" / "p_rgh").read_text()
     assert "uniformTotalPressure" in prgh and f"(1200 {vf['p0_Pa']:.10g})" in prgh and "fixedFluxPressure" in prgh
     u = (c / "0" / "U").read_text()
-    assert "flowRateOutletVelocity" in u and "(400 0.002)" in u and "pressureInletOutletVelocity" in u
-    assert "table ((0 0.0001)" in u            # never 0: flowRateOutletVelocity divides by it (SIGFPE, carbonio)
+    # the liquid flow held as a mass flow (S50 at NPSH 3 m: a held volume flow let the inlet's fall 12 %)
+    assert "flowRateOutletVelocity" in u and "massFlowRate" in u and "(400 1.9964)" in u and "rhoOutlet       998.2;" in u
+    assert "pressureInletOutletVelocity" in u and "volumetricFlowRate" not in u
+    assert "table ((0 0.09982)" in u            # never 0: flowRateOutletVelocity divides by it (SIGFPE, carbonio)
     assert (c / "0" / "alpha.water").exists() and not (c / "0" / "p").exists()
     ctl = foamio.read_foam(cd.split("functions")[0] + "\n")
     assert ctl["solver"] == "incompressibleVoF"
@@ -180,3 +182,32 @@ def test_pseudo_time_step_is_limited_by_the_rotation(tmp_path):
     fv = (tmp_path / "b" / "case" / "system" / "fvSolution").read_text()
     assert "maxCo           0.8;" in fv and "maxDeltaT       1;" in fv
     assert any("max_co" in e for e in validate_study(dict(DUCT, cavitation={"npsh": 5, "max_co": 50}))["errors"])
+
+
+def test_mass_balance_and_vapour_formed(tmp_path):
+    """S50 at NPSH 3 m (2026.11.05): outlet 5.5556e-3 m3/s, inlet 4.885e-3 (-12 %); counted as volume at the
+    liquid's density this looked like a 12 % mass error. It is vapour forming: ~11 mg/s makes 0.67 L/s."""
+    from cfd_translator.cavitation import npsh_curve
+    mesh, patches, sel, plan, w = prepare(DUCT, tmp_path)
+    vf = plan["vof"]
+    n_in, n_out = vf["inlet"], vf["outlet"]
+    nf = {P["name"]: P["n"] for P in mesh.patches}
+    q_in, q_out = 4.885e-3, 5.5556e-3
+    fields = {"patches": {n_in: {"phi": np.full(nf[n_in], -q_in / nf[n_in]), "alpha": np.ones(nf[n_in])},
+                          n_out: {"phi": np.full(nf[n_out], q_out / nf[n_out]), "alpha": np.ones(nf[n_out])}},
+              "alpha": np.ones(mesh.ncells), "p_abs": np.full(mesh.ncells, 1e5)}
+    res = {"pressure": {}, "checks": {}}
+    cav, warns = results(DUCT, mesh, plan, fields, res)
+    fl = cav["flows"]
+    assert fl["liquid_flow_error"] == pytest.approx(q_in / 0.002 - 1, rel=1e-3)
+    evap = (q_out - q_in) / (1 / vf["rho_v"] - 1 / 998.2)
+    assert fl["net_evaporation_kg_s"] == pytest.approx(evap, rel=1e-3) and 5e-6 < evap < 2e-5
+    assert res["checks"]["mass_balance"]["error"] == pytest.approx(abs(q_out - q_in) / q_in, rel=1e-3)
+    assert any("vapour volume is still changing" in x for x in warns)
+    assert any("at another flow" in x for x in warns)
+    # the NPSH curve leaves out points off the flow
+    pts = [{"name": "a", "npsh": 15, "head": 16.73, "reliable": True, "flow_error": -0.016},
+           {"name": "b", "npsh": 10, "head": 16.75, "reliable": True, "flow_error": 0.002},
+           {"name": "c", "npsh": 3, "head": 17.42, "reliable": True, "flow_error": -0.121}]
+    out = npsh_curve(pts)
+    assert [p["name"] for p in out["left_out"]] == ["a", "c"] and any("left out of NPSH3" in x for x in out["warnings"])

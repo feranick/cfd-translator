@@ -131,6 +131,10 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    gap 0.55 mm = 2.2 cells of 0.25 mm): snappy cannot snap the faceZone there. 11.04.6 measures distance/angle to
    the ideal cylinder and stops before the solve. Options: refine the gap to ~0.1 mm (hollow cylinder r 59.3-60.1;
    costly: one cell of motion per ~5e-6 s at 18 m/s tip speed), or frozen rotor (MRF) at several rotor angles.
+   Cavitation NPSH 15/3 m (d01011, .04.7): outlet held a VOLUME flow, the inlet's liquid flow fell 1.6/12 % as
+   vapour formed; head rose at 3 m (lower flow). 11.05.1: mass-flow outlet, cavitation.flows (mass, volume source,
+   net evaporation), mass-based balance, NPSH3 leaves out points off the flow by > 1 %. Rerun the sweep (20, 10,
+   6, 4, 3.5, 3, 2.5, 2 m) on the fine-front-gap mesh.
 2. **Sliding mesh, first full run** (2026.11.03.2): S180 (13.3 M cells, 18 ranks, spark2) built the couple in
    serial, then decomposePar never finished (O(N^2) over the couple's faces). Now: decompose the conformal case,
    build the couple with `-parallel`, keep the case decomposed, read results from processor* (cfdt_addressing);

@@ -1,5 +1,5 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel.
-Version: 2026.11.04.4
+Version: 2026.11.05.1
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -186,7 +186,10 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     p0_tab = _table([(0, p_start), (n_ramp, cv["p0_Pa"]), (10 * iters + 1e6, cv["p0_Pa"])])
     # the outlet's flow rises from 5 % (not 0: flowRateOutletVelocity divides its estimate by the flow rate,
     # estimatedFlowRate/flowRate, a 0/0 that stopped the first S50 run on carbonio with SIGFPE, 2026.11.03)
-    q_tab = _table([(0, 0.05 * Q), (n_flow, Q), (10 * iters + 1e6, Q)])
+    # held as a MASS flow (the mixture's rho): with vapour forming, the volume flow is not conserved, and a held
+    # volume flow let the liquid flow at the inlet fall (S50 at NPSH 3 m: inlet 12 % below the outlet's 20 m3/h,
+    # 2026.11.05), so the NPSH curve compared points at different flows
+    m_tab = _table([(0, 0.05 * Q * rho_l), (n_flow, Q * rho_l), (10 * iters + 1e6, Q * rho_l)])
     # the local time step in the rotating zones: Courant numbers see the relative flow only, so in slow corners of
     # an MRF zone the pseudo-time step grew to maxDeltaT 1 s while the frame's rotation (Omega x U) turned the
     # velocity by Omega dt ~ 300 rad per step: S50 at NPSH 15 m (2026.11.03) never settled (torque -47..+2 N m
@@ -213,7 +216,8 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
             wb[nm] = {"type": "fixedValue", "value": _uniform(om)}
             nb[nm] = {"type": "calculated", "value": _uniform(0)}
         elif kind == "outlet":
-            Ub[nm] = {"type": "flowRateOutletVelocity", "volumetricFlowRate": q_tab, "value": _uniform([0, 0, 0])}
+            Ub[nm] = {"type": "flowRateOutletVelocity", "massFlowRate": m_tab, "rho": "rho",
+                      "rhoOutlet": _fmt(rho_l), "value": _uniform([0, 0, 0])}
             pb[nm] = {"type": "fixedFluxPressure", "value": _uniform(p_start)}
             ab[nm] = {"type": "inletOutlet", "inletValue": _uniform(1), "value": _uniform(1)}
             kb[nm] = {"type": "inletOutlet", "inletValue": _uniform(k0), "value": _uniform(k0)}
@@ -325,6 +329,10 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
 
 
 # ---- results -----------------------------------------------------------------------------------
+def _round(x: float) -> float:
+    return float(f"{float(x):.6g}")
+
+
 def to_kinematic(field: dict | None, p_ref: float, rho: float) -> dict | None:
     """A p (or p_rgh) field in Pa, absolute, as the kinematic gauge field post.results reads: (p - p_ref) / rho
     in the cells and in every boundary value written."""
@@ -400,6 +408,37 @@ def results(study: dict, mesh, plan: dict, fields: dict, res: dict) -> tuple[dic
     if out.get("npsh_inlet_m") is not None and abs(out["npsh_inlet_m"] - vf["npsh_m"]) > 0.05 * max(vf["npsh_m"], 1.0):
         warns.append(f"NPSH at the inlet {out['npsh_inlet_m']} m (flow-weighted total pressure) against "
                      f"{vf['npsh_m']} m asked: the inlet's velocity is not uniform; report npsh_inlet_m")
+    # mass and volume through the inlet and the outlet (mixture density from the faces' liquid fraction): the mass
+    # balances in a settled run; the volume does not while vapour forms or collapses, by (1/rho_v - 1/rho_l) per kg
+    ends = {}
+    for nm in (vf["inlet"], vf["outlet"]):
+        rec = (fields.get("patches") or {}).get(nm) or {}
+        phi = np.asarray(rec.get("phi") if rec.get("phi") is not None else [], float)
+        al = rec.get("alpha")
+        al = np.clip(np.asarray(al, float), 0, 1) if al is not None and np.size(al) == phi.size else np.ones(phi.size)
+        rho_f = al * rho_l + (1 - al) * vf["rho_v"]
+        ends[nm] = {"Q": float(phi.sum()), "mdot": float((rho_f * phi).sum())}
+    if all(e["Q"] != 0 for e in ends.values()):
+        mi, mo = -ends[vf["inlet"]]["mdot"], ends[vf["outlet"]]["mdot"]
+        qi, qo = -ends[vf["inlet"]]["Q"], ends[vf["outlet"]]["Q"]
+        dvol = qo - qi
+        evap = dvol / (1.0 / vf["rho_v"] - 1.0 / rho_l)
+        out["flows"] = {"inlet_m3s": float(f"{qi:.6g}"), "outlet_m3s": float(f"{qo:.6g}"),
+                        "inlet_kg_s": float(f"{mi:.6g}"), "outlet_kg_s": float(f"{mo:.6g}"),
+                        "liquid_flow_error": float(f"{(qi - vf['Q']) / vf['Q']:.4g}"),
+                        "volume_source_m3s": float(f"{dvol:.4g}"), "net_evaporation_kg_s": float(f"{evap:.4g}")}
+        res.setdefault("checks", {})["mass_balance"] = {
+            "inflow_kg_s": _round(mi), "net_kg_s": _round(mo - mi), "error": _round(abs(mo - mi) / max(abs(mi), 1e-300)),
+            "note": "mixture mass (liquid fraction at the faces); the volume flow differs by the vapour formed: "
+                    "cavitation.flows.volume_source_m3s"}
+        if abs(dvol) > 0.005 * vf["Q"]:
+            warns.append(f"the vapour volume is still changing: {dvol:+.3g} m3/s more volume leaves than enters "
+                         f"({dvol / vf['Q']:+.1%} of the flow), net evaporation {evap * 1e6:+.3g} mg/s: the cavity has "
+                         "not settled (more iterations; at low NPSH the cavity may not be steady at all)")
+        if abs(qi - vf["Q"]) > 0.01 * vf["Q"]:
+            warns.append(f"the liquid flow at the inlet is {qi:.5g} m3/s, {(qi - vf['Q']) / vf['Q']:+.1%} off the "
+                         f"study's {vf['Q']:.5g}: this point is at another flow (its head is not comparable on the "
+                         "NPSH curve)")
     if out["cavitating"] and res.get("checks", {}).get("momentum_balance"):
         res["checks"]["momentum_balance"]["note"] = ("vapour in the domain: the balance uses the liquid's density, "
                                                      "so it is not judged")
@@ -414,8 +453,15 @@ def npsh_curve(points: list, head_drop: float = 0.03) -> dict:
     """points: [{name, npsh, head, reliable, vapour_mm3}] (any order). Head against NPSH from the highest NPSH
     down; the reference head is the highest-NPSH point's; NPSH<drop> where the head first falls head_drop below
     it, interpolated linearly between the two points around it."""
-    pts = sorted([p for p in points if p.get("head") is not None], key=lambda p: -p["npsh"])
-    out = {"points": pts, "head_drop": head_drop}
+    allp = sorted([p for p in points if p.get("head") is not None], key=lambda p: -p["npsh"])
+    off = [p for p in allp if p.get("flow_error") is not None and abs(p["flow_error"]) > 0.01]
+    pts = [p for p in allp if p not in off]
+    out = {"points": allp, "head_drop": head_drop}
+    if off:
+        out["left_out"] = [{"name": p["name"], "flow_error": p["flow_error"]} for p in off]
+        out.setdefault("warnings", []).append(
+            "left out of NPSH3: " + ", ".join(f"{p['name']} (liquid flow {p['flow_error']:+.1%})" for p in off) +
+            ": their head belongs to another flow")
     if len(pts) < 2:
         out["note"] = "fewer than two finished points"
         return out

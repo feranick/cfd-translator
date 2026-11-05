@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.03.1
+Version: 2026.11.05.1
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -288,9 +288,10 @@ def compare(results: dict, group: dict) -> dict:
         for n, v in zip(group["names"], group["npsh"]):
             r = rows.get(n) or {}
             if "cells" in r:
+                fl = ((results.get(n) or {}).get("results") or {}).get("cavitation", {}).get("flows") or {}
                 pts.append({"name": n, "npsh": v, "head": r.get("pump.head_m"), "reliable": r.get("reliable"),
                             "vapour_mm3": r.get("cavitation.vapour_volume_mm3"),
-                            "npsh_inlet": r.get("cavitation.npsh_inlet_m")})
+                            "npsh_inlet": r.get("cavitation.npsh_inlet_m"), "flow_error": fl.get("liquid_flow_error")})
         out["npsh_curve"] = npsh_curve(pts, group.get("head_drop", 0.03))
         if len(pts) < len(group["names"]):
             out["npsh_curve"]["pending"] = [n for n in group["names"] if "cells" not in (rows.get(n) or {})]
