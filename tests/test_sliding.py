@@ -524,22 +524,42 @@ def test_rings_and_refinement_that_is_not_round():
     assert [(w["index"], w["shape"]) for w in bad] == [(0, "box"), (2, "cylinder"), (3, "sphere")]
 
 
-def test_interface_roundness_and_lean_are_reported():
-    """S50 6th try (2026.11.04): the stitcher's projected volume fraction reached 1 once the rotor had turned one
-    0.25 mm cell, coupled faces met at up to 117 degrees: where the snapped interface is not round."""
+def test_interface_off_its_cylinder_is_found_and_stops_the_run():
+    """S50 (2026.11.04): the snapped zone boundary was stepped by the vane tips (faces 87 degrees off the cylinder,
+    r 59.66 against the zone's 59.7, tips 59.45, bore 60.0); the 6th try diverged at the 28th step."""
+    from cfd_translator.sliding import off_surface
     m = pump_mesh(vane=None)
     pts = patches_for(m)
     m.zones = {"rotor": zone_of(m, 11.5)}
     plan = plan_for(11.5)
-    check(m, m.geometry(), ZONE, plan, pts)
-    ic = plan["sliding"]["interface_cells"]
-    assert ic["roundness"]["max"] < 0.05 and ic["lean"]["places"] == []
-    # a rim of 0.25 mm faces round r 59.7 with one bump of 0.15 mm (0.6 of a cell)
-    from cfd_translator.sliding import roundness
+    check(m, m.geometry(), dict(ZONE, radius=12.0), plan, pts)
+    off = plan["sliding"]["interface_cells"]["off_surface"]
+    assert off["max_cells"] < 0.05 and off["max_deg"] < 6 and off["places"] == []
+    # a rim of 0.25 mm faces round r 59.7, z -82.25..-46.25, with one step: a face turned along the axis, 0.2 mm out
+    a, o = np.array([0, 0, 1.0]), np.zeros(3)
     th = np.linspace(0, 2 * np.pi, 1500, endpoint=False)
-    r = np.full(1500, 59.7)
-    r[700] += 0.15
-    Cf = np.column_stack([r * np.cos(th), r * np.sin(th), np.full(1500, -60.0)])
+    Cf = np.column_stack([59.7 * np.cos(th), 59.7 * np.sin(th), np.full(1500, -60.0)])
     Sf = np.column_stack([np.cos(th), np.sin(th), np.zeros(1500)]) * 0.0625
-    rd = roundness(Cf, Sf, np.full(1500, 0.25), np.array([0, 0, 1.0]), np.zeros(3))
-    assert rd["max"] == pytest.approx(0.6, abs=0.01) and rd["kind"] == "rim" and rd["at_mm"][2] == -60.0
+    Cf[700, :2] *= 59.9 / 59.7
+    Sf[700] = [0, 0, 0.0625]
+    off = off_surface(Cf, Sf, np.full(1500, 0.25), a, o, 59.7, -82.25, -46.25)
+    assert off["max_cells"] == pytest.approx(0.8, abs=0.01) and off["max_deg"] == pytest.approx(90.0)
+    assert off["places"][0]["part"] == "rim" and off["places"][0]["at"][2] == -60.0
+    # end faces are judged against their own plane
+    Ce = np.column_stack([np.linspace(0, 50, 50), np.zeros(50), np.full(50, -46.25)])
+    off = off_surface(Ce, np.tile([0, 0, 0.0625], (50, 1)), np.full(50, 0.25), a, o, 59.7, -82.25, -46.25)
+    assert off["max_cells"] < 1e-9 and off["max_deg"] < 1e-6
+    # a stepped boundary stops before the solve (here a stand-in report: the test mesh is too coarse for a step
+    # that passes the surface-of-revolution gate)
+    import cfd_translator.sliding as sl_mod
+    rep = {"max_cells": 400.0, "max_deg": 87.2, "share_over_half_cell": 0.02, "share_over_30_deg": 0.01,
+           "places": [{"at": [-11.2, 58.6, -71.1], "cells": 0.9, "deg": 87.2, "part": "rim", "radius_mm": 59.66,
+                       "axial_mm": 11.2}]}
+    orig = sl_mod.off_surface
+    sl_mod.off_surface = lambda *a_, **k_: rep
+    try:
+        with pytest.raises(SlidingError, match="did not snap the zone's boundary") as ei:
+            check(m, m.geometry(), dict(ZONE, radius=12.0), plan_for(11.5), pts)
+        assert "[-11.2, 58.6, -71.1] mm" in str(ei.value) and "4 or more cells" in str(ei.value)
+    finally:
+        sl_mod.off_surface = orig

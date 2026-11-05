@@ -127,6 +127,10 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    interface is not round at the zone's circular edges / next to walls. 11.04.5 reports roundness and lean places.
    Possible next fix: give snappy the zone cylinder's circular edges as features (an .eMesh), since only the part's
    edges are feature-snapped now (implicitFeatureSnap false).
+   get_case on .04.5: the zone boundary is stepped next to the vane tips (r 59.66, 87 deg; tips 59.45, bore 60.0,
+   gap 0.55 mm = 2.2 cells of 0.25 mm): snappy cannot snap the faceZone there. 11.04.6 measures distance/angle to
+   the ideal cylinder and stops before the solve. Options: refine the gap to ~0.1 mm (hollow cylinder r 59.3-60.1;
+   costly: one cell of motion per ~5e-6 s at 18 m/s tip speed), or frozen rotor (MRF) at several rotor angles.
 2. **Sliding mesh, first full run** (2026.11.03.2): S180 (13.3 M cells, 18 ranks, spark2) built the couple in
    serial, then decomposePar never finished (O(N^2) over the couple's faces). Now: decompose the conformal case,
    build the couple with `-parallel`, keep the case decomposed, read results from processor* (cfdt_addressing);
