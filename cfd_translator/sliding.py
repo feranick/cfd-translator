@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.04.3
+Version: 2026.11.04.5
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -101,6 +101,47 @@ def ring_ratio(Cf, Lin, Lout, a, o, h: float) -> dict:
     return {"max": round(float(rg.max()), 2), "at_mm": np.round(Cf[k], 1).tolist(),
             "axial_mm": round(float(sx[k]), 2), "radius_mm": round(float(rr[k]), 2),
             "faces_over_2": round(float((face_r > 2).mean()), 4)}
+
+
+def roundness(Cf, Sf, h, a, o) -> dict:
+    """How far interface faces stray from their ring, in cells: rim faces (normal across the axis) grouped by axial
+    position, their radius against the group's median; end faces (normal along the axis) grouped by radius, their
+    axial position against the group's median. h: the smaller cell size at each face."""
+    n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
+    d = Cf - o
+    sx = d @ a
+    rr = np.linalg.norm(d - np.outer(sx, a), axis=1)
+    end = np.abs(n @ a) > 0.7
+    hb = max(float(np.median(h)), 1e-9)
+    dev = np.zeros(len(Cf))
+    for sel, key, val in ((~end, sx, rr), (end, rr, sx)):
+        idx = np.nonzero(sel)[0]
+        if not len(idx):
+            continue
+        b = np.floor(key[idx] / hb).astype(np.int64)
+        ub, inv = np.unique(b, return_inverse=True)
+        med = np.zeros(len(ub))
+        for j in range(len(ub)):
+            med[j] = np.median(val[idx][inv == j])
+        dev[idx] = np.abs(val[idx] - med[inv]) / np.maximum(h[idx], 1e-12)
+    k = int(np.argmax(dev))
+    return {"max": round(float(dev[k]), 2), "at_mm": np.round(Cf[k], 1).tolist(), "kind": "end face" if end[k] else "rim",
+            "faces_over_0.3": round(float((dev > 0.3).mean()), 4)}
+
+
+def _lean_places(Cf, sn, h, top: int = 5) -> list:
+    """Up to top places where the interface leans most from the surface of revolution, apart from each other."""
+    order = np.argsort(-sn)[:2000]
+    out = []
+    sep = 10 * float(np.median(h))
+    for k in order:
+        if sn[k] < np.sin(np.radians(20)):
+            break
+        if all(np.linalg.norm(Cf[k] - np.asarray(p["at"])) > sep for p in out):
+            out.append({"at": np.round(Cf[k], 1).tolist(), "deg": round(float(np.degrees(np.arcsin(min(float(sn[k]), 1.0)))), 1)})
+            if len(out) >= top:
+                break
+    return out
 
 
 def not_round_regions(refine: list, Cf, a, o) -> list:
@@ -208,6 +249,16 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         frac_big = float((ratio > 2.0).mean())
         q_if["size_ratio_over_2"] = round(frac_big, 4)
         q_if["ring"] = ring
+        # how round the interface is, and where it leans (S50 6th try, 2026.11.04: the projected volume fraction
+        # rose with the rotation until the rotor had turned one 0.25 mm cell, then k went negative and pcorr NaN;
+        # the stitcher reported coupled faces at up to 117 degrees to each other: the two sides stop matching
+        # where the snapped surface is not a surface of revolution)
+        rd = roundness(g["Cf"][f], g["Sf"][f], np.minimum(Lin, Lout), a, o)
+        q_if["roundness"] = rd
+        k2 = int(np.argmax(sn))
+        q_if["lean"] = {"max_deg": round(float(np.degrees(np.arcsin(min(float(sn[k2]), 1.0)))), 1),
+                        "at": np.round(Cf[k2], 1).tolist(), "over_20_deg": round(steep_frac, 4),
+                        "places": _lean_places(Cf, sn, np.minimum(Lin, Lout))}
         plan["sliding_quality"] = q_if
         notes.append(f"sliding interface cells: worst non-orthogonality {q_if['max_non_ortho']} deg, skewness "
                      f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell sizes across the interface differ up to "
@@ -224,6 +275,14 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                          "puts large volume errors on the smaller cells (OpenFOAM's 'projected volume fraction'), "
                          "which can blow up at once (S50: NaN after 0.26 degrees). Refine both sides of the zone's "
                          "boundary alike")
+        if rd["max"] > 0.3 or q_if["lean"]["max_deg"] > 30:
+            notes.append(f"the sliding interface is not quite round: its faces stray up to {rd['max']} of a cell from "
+                         f"their ring ({rd['kind']} at {rd['at_mm']} mm; {rd['faces_over_0.3']:.1%} of the faces over "
+                         f"0.3 of a cell) and lean up to {q_if['lean']['max_deg']} degrees from the surface of "
+                         f"revolution (at {q_if['lean']['at']} mm; {q_if['lean']['over_20_deg']:.2%} of its area over "
+                         "20 degrees). As the rotor turns one cell, such faces no longer match the other side (OpenFOAM's "
+                         "'projected volume fraction' near 1). Usually the zone's circular edges (rim to end faces) or "
+                         "snapping next to walls: keep the zone's edges away from walls and refinement jumps")
         if ring["max"] > 2 and ring["faces_over_2"] > 0.01:
             notes.append(f"as the rotor turns, its cells at the interface pass stator cells of other sizes: up to "
                          f"{ring['max']}x around the ring at {ring['at_mm']} mm (axial {ring['axial_mm']} mm, radius "

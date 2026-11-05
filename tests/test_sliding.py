@@ -522,3 +522,24 @@ def test_rings_and_refinement_that_is_not_round():
               {"box": [-5, -5, 0, 5, 5, 10], "size": 1}]
     bad = not_round_regions(refine, Cf, a, o)
     assert [(w["index"], w["shape"]) for w in bad] == [(0, "box"), (2, "cylinder"), (3, "sphere")]
+
+
+def test_interface_roundness_and_lean_are_reported():
+    """S50 6th try (2026.11.04): the stitcher's projected volume fraction reached 1 once the rotor had turned one
+    0.25 mm cell, coupled faces met at up to 117 degrees: where the snapped interface is not round."""
+    m = pump_mesh(vane=None)
+    pts = patches_for(m)
+    m.zones = {"rotor": zone_of(m, 11.5)}
+    plan = plan_for(11.5)
+    check(m, m.geometry(), ZONE, plan, pts)
+    ic = plan["sliding"]["interface_cells"]
+    assert ic["roundness"]["max"] < 0.05 and ic["lean"]["places"] == []
+    # a rim of 0.25 mm faces round r 59.7 with one bump of 0.15 mm (0.6 of a cell)
+    from cfd_translator.sliding import roundness
+    th = np.linspace(0, 2 * np.pi, 1500, endpoint=False)
+    r = np.full(1500, 59.7)
+    r[700] += 0.15
+    Cf = np.column_stack([r * np.cos(th), r * np.sin(th), np.full(1500, -60.0)])
+    Sf = np.column_stack([np.cos(th), np.sin(th), np.zeros(1500)]) * 0.0625
+    rd = roundness(Cf, Sf, np.full(1500, 0.25), np.array([0, 0, 1.0]), np.zeros(3))
+    assert rd["max"] == pytest.approx(0.6, abs=0.01) and rd["kind"] == "rim" and rd["at_mm"][2] == -60.0

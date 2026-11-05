@@ -122,6 +122,11 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    (torque -47..+2 N m): LTS let the pseudo-time step reach 1 s in slow parts of the MRF zone (Omega dt ~ 300).
    11.04.4: maxDeltaT = 0.2/Omega, maxCo 2 (cavitation.max_co). Rerun the 15 m point; the 3 m point (on the old
    settings) will likely oscillate the same way.
+   S50 sliding 6th try (a30e06, .04.4): NaN at 1.44e-4 s; projected volume fraction tracks the rotation up to one
+   cell then ~1; k negative from step 7, pcorr NaN at 28; coupled faces up to 117 deg apart. Suspect: the snapped
+   interface is not round at the zone's circular edges / next to walls. 11.04.5 reports roundness and lean places.
+   Possible next fix: give snappy the zone cylinder's circular edges as features (an .eMesh), since only the part's
+   edges are feature-snapped now (implicitFeatureSnap false).
 2. **Sliding mesh, first full run** (2026.11.03.2): S180 (13.3 M cells, 18 ranks, spark2) built the couple in
    serial, then decomposePar never finished (O(N^2) over the couple's faces). Now: decompose the conformal case,
    build the couple with `-parallel`, keep the case decomposed, read results from processor* (cfdt_addressing);
