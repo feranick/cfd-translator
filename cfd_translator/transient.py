@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.03.5
+Version: 2026.11.06.1
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -70,10 +70,13 @@ def settings(study: dict, mesh=None) -> dict | None:
             h = float(np.cbrt(max(float(np.min(V)), 1e-30)))       # mm
         dt = min(0.2 * h * SCALE / U, W / 20)
     out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)), "max_co": float(tr.get("max_co", 1.0)),
-           "write_interval": W, "init": int(tr.get("init", 0 if model == "laminar" else 500)),
+           "write_interval": W,
+           # a run started from another run's fields (init_from) needs no steady start
+           "init": int(tr.get("init", 0 if (model == "laminar" or tr.get("init_from")) else 500)),
            "max_jobs": int(tr.get("max_jobs", 10)), "dt": float(f"{dt:.4g}"), "model": model, "velocity": U,
            "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
-           "max_dt": float(f"{min(W / 10, T / 500):.4g}")}
+           "max_dt": float(f"{min(W / 10, T / 500):.4g}"),
+           **({"init_from": tr["init_from"], "init_fields": tr.get("init_fields", "last")} if tr.get("init_from") else {})}
     sl = sliding_zone(study)
     if sl:
         # a sliding mesh: at most degrees_per_step of rotation per time step, Courant 2 (OpenFOAM's propeller
@@ -266,6 +269,71 @@ def continue_problems(study: dict) -> list[str]:
     if float(tr["end_time"]) <= t * (1 + 1e-9):
         return [f"solve.transient.continue: end_time must be after the run's latest time ({t:g} s)"]
     return []
+
+
+INIT_FIELDS = ("U", "p", "k", "omega", "nut", "nuTilda")
+
+
+def init_problems(study: dict) -> list[str]:
+    """Why solve.transient.init_from cannot be used here ([] when it can): the folder must hold a finished run of
+    this machine whose case has a written time in the case directory itself (reconstructed)."""
+    tr = (study.get("solve") or {}).get("transient") or {}
+    ref = tr.get("init_from")
+    if not ref:
+        return []
+    src = source_folder(ref)
+    case = src / "case"
+    if not case.is_dir():
+        return [f"solve.transient.init_from: no case in {src} on this machine"]
+    t = [x for x in _times(case) if x[0] > 0]
+    if not t:
+        return [f"solve.transient.init_from: {src}/case has no reconstructed time directory after 0 (a sliding-mesh run "
+                "stays decomposed and cannot be mapped yet)"]
+    if tr.get("init_fields", "last") == "mean" and not (t[-1][1] / "UMean").is_file():
+        return [f"solve.transient.init_from: {src}'s latest time ({t[-1][0]:g} s) has no mean fields (UMean); use "
+                "init_fields 'last'"]
+    if tr.get("continue"):
+        return ["solve.transient: init_from and continue do not go together (continue carries on the same mesh)"]
+    return []
+
+
+def map_from(case: Path, ref: str, which: str, run_step) -> list[str]:
+    """solve.transient.init_from: the source run's U, p, k, omega, nut (latest time; 'mean': UMean and pMean for U and
+    p) mapped onto this case's 0/ with mapFields (internal field by cell overlap; every boundary keeps this case's
+    conditions; cells outside the source's mesh keep their uniform start). run_step(cmd, log) runs an OpenFOAM
+    command in case. Returns notes."""
+    case = Path(case)
+    src_case = source_folder(ref) / "case"
+    t, tdir = [x for x in _times(src_case) if x[0] > 0][-1]
+    tmp = case.parent / "init_source"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    (tmp / "1").mkdir(parents=True)
+    os_ = __import__("os")
+    os_.symlink(src_case.resolve() / "constant", tmp / "constant")
+    shutil.copytree(src_case / "system", tmp / "system")
+    took = []
+    for f in INIT_FIELDS:
+        srcf = tdir / f
+        if which == "mean" and f in ("U", "p") and (tdir / f"{f}Mean").is_file():
+            srcf = tdir / f"{f}Mean"
+        if not srcf.is_file() or not (case / "0" / f).is_file():
+            continue
+        txt = srcf.read_text(errors="replace")
+        if srcf.name != f:                          # UMean -> U: the object name in the header
+            txt = re.sub(r"(object\s+)" + re.escape(srcf.name) + r"\s*;", r"\g<1>" + f + ";", txt, count=1)
+        (tmp / "1" / f).write_text(txt)
+        took.append(f + (" (mean)" if srcf.name != f else ""))
+    if not took:
+        raise RuntimeError(f"init_from: none of {INIT_FIELDS} in {tdir}")
+    (case / "system" / "mapFieldsDict").write_text(
+        "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      mapFieldsDict;\n}\n\n"
+        "// internal fields only: every patch keeps this case's boundary conditions\npatchMap ( );\n\n"
+        "cuttingPatches ( );\n")
+    run_step(f"mapFields {tmp} -sourceTime 1", "log.mapFields")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return [f"started from {source_folder(ref)} at t = {t:g} s: {', '.join(took)} mapped onto this mesh (mapFields); "
+            "average_from should leave time for the flow to adjust to this geometry"]
 
 
 def copy_case(src: Path, dst: Path) -> float | None:

@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.04.7
+Version: 2026.11.06.1
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -194,6 +194,9 @@ def stricter(qs: dict) -> dict:
 def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box: list | None):
     """Triangles of the part's surface, oriented out of the solid: (points mm, [(tag, tris)], inside point
     for internal flow or None, part bounding box). Each CAD face keeps its Gmsh tag."""
+    surface_premesh.meta = {}
+    if "stl" in study["geometry"]:
+        return _stl_premesh(study, box)
     try:
         import gmsh
     except ImportError as exc:
@@ -202,10 +205,16 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
     _gmsh_init(gmsh)
     try:
         gmsh.model.add("surface")
-        part = _part(gmsh, study, workdir)
-        vol = part[0][1]
-        bb = np.array(gmsh.model.getBoundingBox(3, vol))
+        part = _part(gmsh, study, workdir, many=box is not None)
+        vols = [v for _, v in part]
+        vol = vols[0]
+        bbs = np.array([gmsh.model.getBoundingBox(3, v) for v in vols])
+        bb = np.r_[bbs[:, :3].min(axis=0), bbs[:, 3:].max(axis=0)]
         diag = float(np.linalg.norm(bb[3:] - bb[:3]))
+        if len(vols) > 1:                            # which body each CAD face is on (forces by solid)
+            for k, v in enumerate(vols):
+                for _, s_ in gmsh.model.getBoundary([(3, v)], combined=False, oriented=False):
+                    surface_premesh.meta[abs(int(s_))] = {"solid": k}
         gmsh.option.setNumber("Mesh.MeshSizeMax", h_max)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h_min)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 48)
@@ -214,13 +223,13 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
         pts, _, surf = _surface_mesh(gmsh)
         meshed = {int(t) for t, tri in surf if len(tri)}
         unmeshed = []
-        for _, s_ in gmsh.model.getBoundary([(3, vol)], oriented=False):
+        for _, s_ in gmsh.model.getBoundary([(3, v) for v in vols], combined=False, oriented=False):
             if abs(int(s_)) not in meshed:
                 bb_ = gmsh.model.getBoundingBox(2, abs(int(s_)))
                 unmeshed.append({"face": abs(int(s_)), "at": [round(0.5 * (bb_[k] + bb_[k + 3]), 3) for k in range(3)]})
 
         def inside(x) -> bool:
-            return bool(gmsh.model.isInside(3, vol, [float(v) for v in x]))
+            return any(bool(gmsh.model.isInside(3, v, [float(c) for c in x])) for v in vols)
         out = []
         for tag, tri in surf:
             if tri.shape[1] != 3:
@@ -236,7 +245,8 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
                 tri = tri[:, ::-1]
             elif ip == im:
                 # thin or ambiguous: the orientation OpenCASCADE gives the face in the solid's boundary
-                sgn = {abs(s): (1 if s > 0 else -1) for _, s in gmsh.model.getBoundary([(3, vol)], oriented=True)}
+                sgn = {abs(s): (1 if s > 0 else -1) for _, s in gmsh.model.getBoundary([(3, v) for v in vols],
+                                                                                         combined=False, oriented=True)}
                 if sgn.get(tag, 1) < 0:
                     tri = tri[:, ::-1]
             out.append((int(tag), np.ascontiguousarray(tri)))
@@ -267,6 +277,63 @@ def surface_premesh(study: dict, workdir: Path, h_max: float, h_min: float, box:
         return pts, out, ipt, (bb[:3], bb[3:])
     finally:
         gmsh.finalize()
+
+
+def _stl_premesh(study: dict, box: list | None):
+    """surface_premesh for a mesh geometry (meshsurf.load): its faces as tags 1.., an inside point (internal flow) or
+    a point of the domain box outside every body."""
+    from .meshsurf import SurfaceError, inside, load
+    g = study["geometry"]
+    try:
+        L = load(g)
+    except SurfaceError as exc:
+        raise MeshError(str(exc)) from exc
+    pts, tris, face = L["points"], L["tris"], L["face"]
+    surface_premesh.notes = []
+    if L["flipped"]:
+        surface_premesh.notes.append(f"mesh geometry: {L['flipped']} triangles turned to point out of their body")
+    multi = L["bodies"] > 1
+    if multi and box is None:
+        raise MeshError(f"the mesh geometry has {L['bodies']} separate bodies; internal flow meshes one fluid body "
+                        "(join them)")
+    order = np.argsort(face, kind="stable")
+    uf, start = np.unique(face[order], return_index=True)
+    bounds = list(start) + [len(order)]
+    out = []
+    for k, f in enumerate(uf):
+        idx = order[bounds[k]:bounds[k + 1]]
+        t = int(f) + 1
+        out.append((t, np.ascontiguousarray(tris[idx])))
+        i0 = idx[0]
+        surface_premesh.meta[t] = {"group": L["names"][int(L["group"][i0])],
+                                   **({"solid": int(L["body"][i0])} if multi else {})}
+    lo_, hi_ = pts.min(axis=0), pts.max(axis=0)
+    h = 1e-3 * float(np.linalg.norm(hi_ - lo_))
+    ipt = None
+    if box is None:
+        g_ = np.linspace(0.13, 0.87, 7)
+        cands = [lo_ + (hi_ - lo_) * np.array([x, y, z]) + h * np.array([0.123, 0.217, 0.311])
+                 for x in g_ for y in g_ for z in g_]
+        for c in cands:
+            if inside(pts, tris, [c, *(c + d for d in h * np.vstack([np.eye(3), -np.eye(3)]))]).all():
+                ipt = c
+                break
+        if ipt is None:
+            raise MeshError("found no point inside the mesh geometry for snappyHexMesh")
+    else:
+        lo, hi = np.asarray(box[:3], float), np.asarray(box[3:], float)
+        for corner in ((0.0137, 0.0219, 0.0313), (0.9863, 0.0219, 0.0313), (0.0137, 0.9781, 0.9687),
+                       (0.9863, 0.9781, 0.9687), (0.5137, 0.9781, 0.9687)):
+            c = lo + (hi - lo) * np.array(corner)
+            if not inside(pts, tris, [c])[0]:
+                ipt = c
+                break
+        if ipt is None:
+            raise MeshError("found no point of the domain box outside the mesh geometry")
+    surface_premesh.unmeshed = []
+    surface_premesh.stl = {"triangles": int(len(tris)), "faces": len(out), "bodies": L["bodies"],
+                           "groups": list(L["names"]), "body_volumes_mm3": [round(v, 3) for v in L["body_volumes_mm3"]]}
+    return pts, out, ipt, (lo_, hi_)
 
 
 def surface_health(pts: np.ndarray, surf: list, limit: int = 5) -> dict:
@@ -819,7 +886,13 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     smin = float(min(sf) if isinstance(sf, list) else sf)
     smax = float(max(sf) if isinstance(sf, list) else sf)
     surface_premesh.unmeshed = []
+    surface_premesh.stl = None
     pts, surf, ipt, pbb = surface_premesh(study, folder, 2 * smax, smin / 4, box)
+    meta = dict(getattr(surface_premesh, "meta", {}) or {})
+    # in_box / in_cyl selectors take exactly the triangles inside: split the faces they cut
+    from .select import split_regions
+    surf, meta_info, split_notes = split_regions(pts, surf, {t: {"on": "part", **meta.get(t, {})} for t, _ in surf}, study)
+    notes += split_notes
     if external:
         st = settings(study, True, box, pbb)
     else:
@@ -874,7 +947,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
             notes.append(f"the part touches the domain side {side} only at an edge or a point: snappyHexMesh pinches "
                          "cells there; let the part cross the side a little (1 mm) or end on it with a flat face")
     # bcs on the part's surface (and the box's sides), as on a Gmsh mesh
-    info = {t: {"on": "part"} for t, _ in surf}
+    info = {t: dict(meta_info.get(t, {"on": "part"})) for t, _ in surf}
     allp, alls = pts, list(surf)
     if external:
         V, bs, binfo = box_triangles(box, len(pts))
@@ -1229,6 +1302,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                    "cells_by_stage": report.get("cells", {}), "seconds": report.get("seconds"),
                    "illegal_faces": report.get("illegal_faces", 0), "gap_cells": report.get("gap_cells", 0),
                    "attempts": attempts, "narrow_gaps": gaps, "procs": procs},
+        **({"mesh_geometry": surface_premesh.stl} if getattr(surface_premesh, "stl", None) else {}),
         "assigned": (out_patches, selection, warns + notes),
         "snapped_zones": snapped, "revolution_tags": rev_tags})
     if lay:

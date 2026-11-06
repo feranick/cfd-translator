@@ -1,5 +1,5 @@
 """select.py — boundary faces grouped by CAD face, and the face selectors (same as fea-translator).
-Version: 2026.10.16.2
+Version: 2026.11.06.1
 
 A group is every boundary face of the mesh with one tag (one CAD face, or one side of the domain box).
 Selectors:  {"nx", "ny", "nz" (+ "at")}  planar face by outward normal
@@ -7,7 +7,14 @@ Selectors:  {"nx", "ny", "nz" (+ "at")}  planar face by outward normal
             {"cyl_r": r (+ "side", "at")} cylindrical faces by radius
             {"all": true}                every face of the part
             {"box": "xmin" | [...]}      sides of the domain box (external flow only)
+            {"group": name | [names]}    a named face group of a mesh geometry (STL solid, OBJ group)
+            {"solid": k | [k, ...]}      every face of the k-th body (0-based) of a part made of several
+            {"in_box": [x0,y0,z0,x1,y1,z1]}                 faces whose centroid lies in the box
+            {"in_cyl": {"axis", "center", "r", "span" | "x"/"y"/"z": [lo, hi], "r_in"}}   ... in the cylinder
             [selector, ...]              union
+in_box / in_cyl on a snappy mesh split the part's faces at the region's boundary first (triangle by triangle:
+split_regions), so they take exactly the surface inside; on a Gmsh mesh they take the whole CAD faces whose area
+lies mostly inside.
 Normals are the part's: for internal flow the part is the fluid (outward = out of the fluid); for
 external flow the part is the solid (outward = into the fluid), exactly as in build123d-translator
 and fea-translator, so one selector names the same face in all three tools.
@@ -83,6 +90,8 @@ class Group:
     Cf: np.ndarray          # (T, 3)
     points: np.ndarray      # mesh points (shared)
     kind: str = "surface"
+    group: str | None = None    # mesh geometry: the face group (STL solid, OBJ group) it belongs to
+    solid: int | None = None    # the body of a part made of several
     radius: float | None = None
     concave: bool | None = None
     arc: float | None = None
@@ -113,6 +122,10 @@ class Group:
              "area_mm2": round(self.total_area, 4), "center": np.round(self.center, 4).tolist()}
         if self.box:
             d["box"] = self.box
+        if self.group is not None:
+            d["group"] = self.group
+        if self.solid is not None:
+            d["solid"] = self.solid
         if self.planar:
             d["normal"] = np.round(self.normal[0], 4).tolist()
         if self.radius:
@@ -149,13 +162,18 @@ class Groups:
         self.external = external
         Sf, Cf = face_geometry(points, rings)
         self.groups: dict[int, Group] = {}
-        for t in np.unique(tags):
+        tags = np.asarray(tags)
+        order = np.argsort(tags, kind="stable")          # one pass, not a mask per tag (thousands of mesh faces)
+        ut, start = np.unique(tags[order], return_index=True)
+        bounds = list(start) + [len(order)]
+        for k, t in enumerate(ut):
             t = int(t)
-            m = tags == t
+            m = order[bounds[k]:bounds[k + 1]]
             info = tag_info.get(t, {"on": "part"})
             on = info.get("on", "part") if external else "part"     # internal: every face is the part's
             s = Sf[m] * (-1.0 if (external and on == "part") else 1.0)
-            g = Group(t, on, info.get("box") if on == "box" else None, rings[m], s, Cf[m], points)
+            g = Group(t, on, info.get("box") if on == "box" else None, rings[m], s, Cf[m], points,
+                      group=info.get("group"), solid=info.get("solid"))
             if not g.planar and on == "part":
                 nodes = np.unique(g.rings[g.rings >= 0])
                 fit = fit_cylinder(points[nodes], g.normal)
@@ -197,6 +215,36 @@ class Groups:
         groups = self.part()
         if sel.get("all") is True:
             return [g.tag for g in groups]
+        if "group" in sel:
+            names = sel["group"] if isinstance(sel["group"], list) else [sel["group"]]
+            known = sorted({g.group for g in groups if g.group is not None})
+            out = []
+            for nm in names:
+                hit = [g.tag for g in groups if g.group == nm]
+                if not hit:
+                    raise MeshError(f"no face group {nm!r}" + (f" (groups: {known})" if known else
+                                    " (only mesh geometries (stl) have groups)"))
+                out += hit
+            return out
+        if "solid" in sel:
+            ks = sel["solid"] if isinstance(sel["solid"], list) else [sel["solid"]]
+            out = []
+            n = len({g.solid for g in groups if g.solid is not None})
+            for k in ks:
+                hit = [g.tag for g in groups if g.solid == int(k)]
+                if not hit:
+                    raise MeshError(f"no solid {k} (the part has {max(n, 1)} solid(s), numbered from 0)")
+                out += hit
+            return out
+        if "in_box" in sel or "in_cyl" in sel:
+            out = []
+            for g in groups:
+                inside = region_mask(sel, g.Cf)
+                if inside.any() and float(g.area[inside].sum()) >= 0.5 * g.total_area:
+                    out.append(g.tag)
+            if not out:
+                raise MeshError(f"no part face has its centroid inside {sel}")
+            return out
         if "pts" in sel:
             tol = max(0.05, 0.02 * self.size)
             out = []
@@ -228,6 +276,66 @@ class Groups:
         else:
             g = max(cands, key=lambda g: (round(g.total_area, 6), float(g.center @ d)))
         return [g.tag]
+
+
+def region_mask(sel: dict, X: np.ndarray) -> np.ndarray:
+    """Which points lie in the selector's region: in_box [x0, y0, z0, x1, y1, z1] or in_cyl {axis, center, r,
+    r_in, span [s0, s1] along the axis from center | x/y/z [lo, hi] coordinate limits}."""
+    X = np.atleast_2d(np.asarray(X, float))
+    if "in_box" in sel:
+        b = np.asarray(sel["in_box"], float)
+        return np.all((X >= b[:3]) & (X <= b[3:]), axis=1)
+    c = sel["in_cyl"]
+    a = np.asarray(c["axis"], float)
+    a /= np.linalg.norm(a)
+    ctr = np.asarray(c.get("center", [0, 0, 0]), float)
+    d = X - ctr
+    s = d @ a
+    r = np.linalg.norm(d - np.outer(s, a), axis=1)
+    m = (r <= float(c["r"])) & (r >= float(c.get("r_in", 0.0)))
+    if "span" in c:
+        m &= (s >= float(c["span"][0])) & (s <= float(c["span"][1]))
+    for k, ax in (("x", 0), ("y", 1), ("z", 2)):
+        if k in c:
+            m &= (X[:, ax] >= float(c[k][0])) & (X[:, ax] <= float(c[k][1]))
+    return m
+
+
+def region_selectors(sel) -> list[dict]:
+    """The in_box / in_cyl selectors inside a bc's faces (a list or one)."""
+    if isinstance(sel, list):
+        return [r for x in sel for r in region_selectors(x)]
+    return [sel] if isinstance(sel, dict) and ("in_box" in sel or "in_cyl" in sel) else []
+
+
+def split_regions(pts: np.ndarray, surf: list, info: dict, study: dict) -> tuple[list, dict, list]:
+    """Part faces (tag, triangles) that straddle an in_box / in_cyl region of a bc are split at its boundary by
+    triangle centroid: the part inside becomes a face of its own (a new tag, same group and solid), so the
+    selector takes exactly the triangles inside. Returns (surf, info, notes)."""
+    regs = [r for b in study.get("bcs") or [] for r in region_selectors(b.get("faces"))]
+    if not regs:
+        return surf, info, []
+    info = dict(info)
+    nxt = max([int(t) for t, _ in surf] + [int(t) for t in info]) + 1
+    split = 0
+    for r in regs:
+        out = []
+        for t, tri in surf:
+            if info.get(t, {}).get("on", "part") != "part" or not len(tri):
+                out.append((t, tri))
+                continue
+            m = region_mask(r, pts[tri].mean(axis=1))
+            if m.all() or not m.any():
+                out.append((t, tri))
+                continue
+            out.append((t, tri[~m]))
+            out.append((nxt, tri[m]))
+            info[nxt] = dict(info.get(t, {"on": "part"}), split_from=int(t))
+            nxt += 1
+            split += 1
+        surf = out
+    notes = [f"in_box / in_cyl: {split} part face(s) split at the regions' boundaries"] if split else []
+    return surf, info, notes
 
 
 def mesh_groups(mesh, external: bool) -> Groups:

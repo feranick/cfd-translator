@@ -94,7 +94,8 @@ def test_queued_then_cancelled(slurm, monkeypatch):
     assert pa["state"] == pb["state"] == "queued" and pa["reason"] == "Resources"
     assert pa["ahead"] == 0 and pb["ahead"] == 1                        # same priority: the older id first
     j = api.jobs()
-    assert j["queue"]["queued"] == 2 and j["machine"] == {"cpus": 8, "cpus_allocated": 2}
+    assert j["queue"]["queued"] == 2 and j["machine"] == {"cpus": 8, "cpus_allocated": 2, "cpus_idle": 6}
+    assert j["starts_now"] is False and j["pending_for_node"] == 2 and "cluster_queue" not in j
     assert j["requests"][0]["studies"]["a"]["state"] == "queued"
     c = api.cancel(req, ["a"])
     assert c["cancelled_jobs"] == ["1001"] and c["states"]["a"] == "cancelled"

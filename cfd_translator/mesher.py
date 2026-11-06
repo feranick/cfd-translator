@@ -1,6 +1,6 @@
 """mesher.py — the fluid domain as a PolyMesh: a structured box, Gmsh (tetrahedra, or a swept 2D mesh), or
 snappyHexMesh (mesh.mesher "snappy": snappy.py).
-Version: 2026.11.04.3
+Version: 2026.11.06.1
 
     mesh_study(study, workdir) -> PolyMesh
 
@@ -47,10 +47,12 @@ def _gmsh_init(gmsh):
     gmsh.option.setNumber("General.Terminal", 0)
 
 
-def _part(gmsh, study: dict, workdir: Path) -> list:
-    """The part as one OpenCASCADE solid: [(3, tag)]."""
+def _part(gmsh, study: dict, workdir: Path, many: bool = False) -> list:
+    """The part as OpenCASCADE solids: [(3, tag)], one unless many (external flow: a car and its wheels)."""
     occ = gmsh.model.occ
     g = study["geometry"]
+    if "stl" in g:
+        raise MeshError("a mesh geometry (stl) is meshed with snappyHexMesh: set mesh.mesher 'snappy'")
     if "box" in g:
         lx, ly, lz = (float(v) for v in g["box"])
         part = [(3, occ.addBox(-lx / 2, -ly / 2, 0, lx, ly, lz))]
@@ -66,20 +68,39 @@ def _part(gmsh, study: dict, workdir: Path) -> list:
     else:
         part = [dt for dt in occ.importShapes(str(geometry_step(study, workdir))) if dt[0] == 3]
     occ.synchronize()
-    if len(part) != 1:
-        raise MeshError(f"the geometry has {len(part)} solids; a study is one solid")
+    if not part:
+        raise MeshError("the geometry has no solid")
+    if len(part) != 1 and not many:
+        raise MeshError(f"the geometry has {len(part)} solids; internal flow meshes one fluid body: fuse them into one "
+                        "solid (build123d-translator 'combine', or a union in CAD) and export again")
     return part
+
+
+def _nearest_solid(gmsh, face: int, solids: list) -> int:
+    """The index of the solid (dim-tag list) a surface lies on: OpenCASCADE distance (Gmsh 4.11+), else the
+    nearest bounding-box centre."""
+    d = []
+    for k, (_, v) in enumerate(solids):
+        try:
+            d.append((float(gmsh.model.occ.getDistance(2, face, 3, v)[0]), k))
+        except Exception:  # noqa: BLE001
+            bf = np.array(gmsh.model.getBoundingBox(2, face))
+            bs = np.array(gmsh.model.getBoundingBox(3, v))
+            d.append((float(np.linalg.norm(0.5 * (bf[:3] + bf[3:]) - 0.5 * (bs[:3] + bs[3:]))), k))
+    return min(d)[1]
 
 
 def _build_geometry(gmsh, study: dict, workdir: Path):
     """The fluid volume tag and {surface tag: {"on", "box"}}."""
     occ = gmsh.model.occ
-    part = _part(gmsh, study, workdir)
     d = study.get("domain", {})
+    part = _part(gmsh, study, workdir, many=d.get("kind") == "external")
     info = {}
     if d.get("kind") == "external":
         x0, y0, z0, x1, y1, z1 = (float(v) for v in d["box"])
         box = occ.addBox(x0, y0, z0, x1 - x0, y1 - y0, z1 - z0)
+        # several bodies: copies of them tell which body each fluid face is on (forces by solid), then go
+        copies = occ.copy(part) if len(part) > 1 else []
         out, _ = occ.cut([(3, box)], part)
         occ.synchronize()
         vols = [t for dim, t in out if dim == 3]
@@ -99,6 +120,12 @@ def _build_geometry(gmsh, study: dict, workdir: Path):
                     elif abs(bb[ax] - hi[ax]) < tol:
                         side = BOX_SIDES[2 * ax + 1]
             info[abs(s)] = {"on": "box", "box": side} if side else {"on": "part"}
+        if copies:
+            for t, v in info.items():
+                if v["on"] == "part":
+                    v["solid"] = _nearest_solid(gmsh, t, copies)
+            occ.remove(copies, recursive=True)
+            occ.synchronize()
         if not any(v["on"] == "part" for v in info.values()):
             raise MeshError("no part faces in the fluid domain (is the part inside the domain box?)")
     else:

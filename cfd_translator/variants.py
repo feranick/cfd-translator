@@ -1,10 +1,11 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.05.1
+Version: 2026.11.06.1
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
 
-    add_geometry(name, goal=... | step=<path on this machine> | step_base64=...)
+    add_geometry(name, goal=... (or a goal JSON file) | step=<path on this machine> | step_base64=... |
+                 stl=<STL/OBJ/PLY path> | stl_base64=...)
     {"geometry": {"ref": "ahmed25"}}                    a registered geometry
     {"geometry": {"ref": "<request>/<study>"}}          the geometry of an earlier study
 
@@ -39,16 +40,53 @@ def geometry_dir() -> Path:
 
 
 # ---- registered geometry --------------------------------------------------------------------------
-def add_geometry(name: str, goal: dict | None = None, step: str | None = None, step_base64: str | None = None) -> dict:
+def _goal_from_text(s: str) -> tuple[dict | None, str | None]:
+    """A goal from a JSON file path on this machine or from JSON text: the goal itself, {"goal": goal}, or one
+    {name: goal} (as build123d-translator's validate_goals takes them)."""
+    t = s.strip()
+    if not t.startswith("{"):
+        p = Path(t).expanduser()
+        if not p.is_file():
+            return None, (f"goal: no file {p} on this machine (a local path is copied to the machine by the router; "
+                          "otherwise give the goal as a dict)")
+        try:
+            t = p.read_text()
+        except OSError as exc:
+            return None, f"goal: cannot read {p}: {exc}"
+    try:
+        g = json.loads(t)
+    except json.JSONDecodeError as exc:
+        return None, f"goal: not JSON ({exc})"
+    if isinstance(g, dict) and "features" not in g:
+        if isinstance(g.get("goal"), dict):
+            g = g["goal"]
+        elif len(g) == 1 and isinstance(next(iter(g.values())), dict):
+            g = next(iter(g.values()))
+    if not isinstance(g, dict) or not isinstance(g.get("features"), list):
+        return None, "goal: the file holds no build123d-translator goal {features: [...]}"
+    return g, None
+
+
+def add_geometry(name: str, goal: dict | str | None = None, step: str | None = None, step_base64: str | None = None,
+                 stl: str | None = None, stl_base64: str | None = None, scale: float = 1.0, groups=None) -> dict:
     """Registers a geometry under name (replacing one of the same name). A goal is checked by building it
-    (volume, area and bounding box are returned); a STEP file is copied here."""
+    (volume, area and bounding box are returned); a STEP file is copied here; a triangle mesh (STL/OBJ/PLY) is
+    copied here and checked closed (bodies, groups, volume)."""
     if not isinstance(name, str) or not NAME.match(name):
         return {"ok": False, "error": "name: letters, digits, _ . - (up to 64)"}
-    given = [k for k, v in (("goal", goal), ("step", step), ("step_base64", step_base64)) if v is not None]
+    given = [k for k, v in (("goal", goal), ("step", step), ("step_base64", step_base64), ("stl", stl),
+                            ("stl_base64", stl_base64)) if v is not None]
     if len(given) != 1:
-        return {"ok": False, "error": "give exactly one of goal, step (a path on this machine) or step_base64"}
+        return {"ok": False, "error": "give exactly one of goal, step (a path on this machine), step_base64, stl (a "
+                                      "path of an STL, OBJ or PLY file on this machine) or stl_base64"}
+    if stl is not None or stl_base64 is not None:
+        return _add_mesh(name, stl, stl_base64, scale, groups)
     d = geometry_dir()
     rec = {"name": name, "added": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if isinstance(goal, str):             # a goal JSON file on this machine (the router stages local paths), or its text
+        goal, err = _goal_from_text(goal)
+        if err:
+            return {"ok": False, "error": err}
     if goal is not None:
         if not isinstance(goal, dict) or not isinstance(goal.get("features"), list):
             return {"ok": False, "error": "goal: a build123d-translator goal {features: [...]}"}
@@ -86,6 +124,61 @@ def add_geometry(name: str, goal: dict | None = None, step: str | None = None, s
     return out
 
 
+def _add_mesh(name: str, stl, stl_base64, scale, groups) -> dict:
+    from .meshsurf import SUFFIXES, SurfaceError, load
+    d = geometry_dir()
+    try:
+        scale = float(scale)
+        assert scale > 0
+    except (TypeError, ValueError, AssertionError):
+        return {"ok": False, "error": "scale: a positive factor to mm (1000 for a model in metres)"}
+    if stl is not None:
+        src = Path(stl).expanduser()
+        if not src.is_file():
+            return {"ok": False, "error": f"no mesh file {src} on this machine (upload it with stl_base64)"}
+        if src.suffix.lower() not in SUFFIXES:
+            return {"ok": False, "error": "stl: an .stl, .obj or .ply file"}
+        dst = d / f"{name}{src.suffix.lower()}"
+        dst.write_bytes(src.read_bytes())
+    else:
+        dst = d / f"{name}.stl"
+        try:
+            dst.write_bytes(base64.b64decode(stl_base64, validate=True))
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "stl_base64: not valid base64"}
+    for old in d.glob(f"{name}.*"):                     # a previous registration in another format
+        if old.suffix.lower() in SUFFIXES and old != dst:
+            old.unlink()
+    geo = {"stl": str(dst), **({"scale": scale} if scale != 1.0 else {})}
+    if groups is not None:
+        if isinstance(groups, str) and Path(groups).expanduser().is_file():
+            gdst = d / f"{name}.groups.json"
+            gdst.write_text(Path(groups).expanduser().read_text())
+            groups = str(gdst)
+        geo["groups"] = groups
+    try:
+        L = load(geo)
+    except SurfaceError as exc:
+        dst.unlink(missing_ok=True)
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        dst.unlink(missing_ok=True)
+        return {"ok": False, "error": f"cannot read {dst.name}: {type(exc).__name__}: {exc}"}
+    ck = L["check"]
+    rec = {"name": name, "added": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": "stl", "geometry": geo,
+           "bytes": dst.stat().st_size, "triangles": ck["triangles"], "bodies": L["bodies"],
+           "body_volumes_mm3": [round(v, 3) for v in L["body_volumes_mm3"]],
+           "volume_mm3": round(float(sum(L["body_volumes_mm3"])), 3), "area_mm2": round(ck["area_mm2"], 3),
+           "bbox_min": ck["bbox_min"], "bbox_max": ck["bbox_max"], "groups": list(L["names"]),
+           "faces": int(L["face"].max() + 1)}
+    (d / f"{name}.json").write_text(json.dumps(rec, indent=1))
+    out = dict(rec, ok=True, use={"geometry": {"ref": name}})
+    if L["bodies"] > 1:
+        out["note"] = (f"{L['bodies']} separate bodies: external flow only; each is a 'solid' (selector {{'solid': k}}) "
+                       "and results give forces_by_solid")
+    return out
+
+
 def list_geometry() -> dict:
     out = []
     for p in sorted(geometry_dir().glob("*.json")):
@@ -114,7 +207,9 @@ def resolve(study: dict) -> tuple[dict, str | None]:
             names = sorted(p.stem for p in geometry_dir().glob("*.json"))
             return study, f"geometry.ref: no geometry {ref!r} (registered: {names}; add_geometry registers one)"
         rec = json.loads(f.read_text())
-        st["geometry"] = {"goal": rec["goal"]} if rec.get("kind") == "goal" else {"step": rec["step"]}
+        kind = rec.get("kind")
+        st["geometry"] = ({"goal": rec["goal"]} if kind == "goal" else copy.deepcopy(rec["geometry"]) if kind == "stl"
+                          else {"step": rec["step"]})
         return st, None
     from .api import out_root
     p = Path(ref).expanduser()

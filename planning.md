@@ -60,10 +60,11 @@ format.py     study format, validation           case.py       the OpenFOAM case
 polymesh.py   polyMesh writer, box, extrusion     foam.py       runs OpenFOAM, reads fields (also decomposed cases)
 mesher.py     Gmsh (generate(): surface retries)  foamio.py     tolerant readers (fields, logs, checkMesh, polyMesh)
 snappy.py     snappyHexMesh (surface, layers, retries, pockets, revolution tags)
+meshsurf.py   STL/OBJ/PLY geometry: read, watertight check, orient, faces by feature angle, groups, inside test
 sliding.py    sliding mesh (checks, faceZone, createBaffles/splitBaffles/createNonConformalCouples, parallel)
 cavitation.py incompressibleVoF + VoFCavitation case, results, NPSH curve
 select.py     selectors, bc -> patches            post.py       results and invariants (balances, wall_flux)
-average.py    monitors, window/time averages      transient.py  URANS/DES, steady start, stop and continue
+average.py    monitors, window/time averages, window_average   transient.py  URANS/DES, start, continue, init_from
 scalars.py    tracers, mean age                   porous.py     porous zones, reactions on the part
 variants.py   geometry refs, variants, mesh_scales, NPSH sweeps (compare)
 executor.py   SLURM: submit, run-study, states, estimates, caps   cpushare.py  other processes on our CPUs, reap
@@ -110,7 +111,7 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    `get_file` reach run folders on any machine through the router.
 3. Fix from real output, one cause at a time; README row + versions + the commit command each time.
 
-## Open work (2026.11.03, in order)
+## Open work (2026.11.06, in order)
 
 1. **Cavitation, first run** (2026.11.03.4): S50 at 20 m3/h, NPSH 15 m on carbonio stopped at once on SIGFPE
    (outlet flow ramp from 0; fixed in .4). Rerun that point: expect almost no vapour and the MRF head within a few %.
@@ -177,6 +178,17 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    check its state with the user.
 5. **#25 transient / #26 Ahmed and Rogue DES**: cylinder benchmarks pass (10.22.5); Rogue spatial DES runs
    (spatA/C/D/E) were running/queued on mochi on 2026.11.02.
+   2026.11.06.1 (cfdt_dev_prompt_router_geometry.md, all 10 items done on the cfdt side; untested on OpenFOAM):
+   stl geometry (meshsurf.py) and group/solid/in_box/in_cyl selectors, several solids for external flow
+   (forces_by_solid), get_case ref, goal files, request_name, eta-based expected_start, progress between segments,
+   study_status(window), init_from (mapFields with an empty patchMap: internal fields only), per-node queue.
+   Verify on a machine: (a) the Rogue as stl with wheel groups through snappy (cut face on ymin dropped, groups in
+   the final patches, forces_by_solid); (b) init_from on a spat variant: mapFields' log, the first steps' Courant
+   number, whether nut needs mapping or recomputes; (c) per-bc force histories (cfdtFp_*) cost nothing visible;
+   (d) Gmsh path with several STEP solids (occ.getDistance exists in Gmsh >= 4.11; else bounding boxes).
+   Router side (llm-translators, the user's): node-filtered queue and sbatch --test-only, starts_now,
+   cluster_queue; pass request_name and return the request path on a time-out; stage local paths for
+   add_geometry(goal=<file>), add_geometry(stl=...) and geometry.stl / geometry.groups.
 6. Benchmarks still missing: a sliding-mesh one (e.g. Taylor-Couette with a sliding inner zone vs the analytic
    torque, then a rotor-stator case), cavitation ones (cavitating orifice/venturi vs Nurick's discharge
    coefficient; a non-cavitating VoF point equal to the single-phase result).
@@ -327,6 +339,9 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.06.1**: mesh geometry (STL/OBJ/PLY, groups), region selectors, several solids, window averages,
+init_from, per-node queue, request_name, eta-based starts, NaN-safe images. See README row.
 
 **2026.11.03.1-.4**: cavitation (incompressibleVoF, MRF, LTS, NPSH sweep, NPSH3); sliding mesh in parallel
 (decompose first, read processor*); layered snappy meshes failing checkMesh rebuilt without layers; killed

@@ -57,7 +57,8 @@ def sbatch(args):
     n.write_text(str(i))
     r = {"name": opts.get("job-name", ""), "script": str(script), "output": opts.get("output", "slurm.out"),
          "ntasks": int(opts.get("ntasks", "1")), "pid": None, "pending": bool(os.environ.get("FAKE_PENDING")),
-         "final": None, "priority": 100}
+         "final": None, "priority": 100, "nodelist": opts.get("nodelist", ""),
+         "node": os.environ.get("FAKE_RUN_NODE", "node1")}
     if not r["pending"]:
         r["pid"] = start(i, r, opts.get("chdir", "."))
     save(i, r)
@@ -93,7 +94,8 @@ def squeue(args):
             continue
         vals = {"%i": str(i), "%T": st, "%r": "Resources" if st == "PENDING" else "None",
                 "%S": "N/A", "%M": "0:07", "%Q": str(r.get("priority", 100)), "%j": r["name"],
-                "%C": str(r["ntasks"])}
+                "%C": str(r["ntasks"]), "%N": r.get("node", "") if st == "RUNNING" else "",
+                "%n": r.get("nodelist", ""), "%u": os.environ.get("USER", "")}
         print("|".join(vals.get(t, "") for t in fmt.split("|")))
     return 0
 

@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.05.1
+Version: 2026.11.06.1
 
     results(study, mesh, plan, fields) -> dict
 
@@ -328,6 +328,16 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         out["forces"][key] = {**_vec3(Fsum), **_vec3(Mt, "m")}
         if inc:
             out["forces"][key].update(walls={**_vec3(Fw), **_vec3(Mw, "m")}, porous_included=inc)
+        # a part made of several bodies (a car and its wheels): the force on each, from its faces' tags
+        solid_of = {int(t): i["solid"] for t, i in mesh.tag_info.items() if i.get("on") == "part" and "solid" in i}
+        if external and len(set(solid_of.values())) > 1 and len(allf):
+            st_ = np.array([solid_of.get(int(t), -1) for t in tags[allf - ni]])
+            out["forces_by_solid"] = {}
+            for k in sorted(set(solid_of.values())):
+                m_ = st_ == k
+                if m_.any():
+                    out["forces_by_solid"][str(k)] = {**_vec3(allF[m_].sum(axis=0)),
+                                                      **_vec3(np.cross(allr[m_], allF[m_]).sum(axis=0), "m")}
         # coefficients
         if ref.get("velocity") and ref.get("area"):
             q = 0.5 * rho * float(ref["velocity"]) ** 2

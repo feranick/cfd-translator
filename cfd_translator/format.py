@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.04.3
+Version: 2026.11.06.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -30,7 +30,7 @@ FLUIDS = {
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
-                  "degrees_per_step", "correct_mesh_phi"}
+                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -74,36 +74,36 @@ SELECTOR_DOC = {
              "with at, only the nearest",
     "all": "true: every face of the part",
     "box": "external flow only: sides of the domain box, 'xmin' ... 'zmax' or a list",
+    "group": "a face group of an stl geometry (STL solid, OBJ group, geometry.groups): name or list",
+    "solid": "every face of body k (0-based) of a part of several bodies",
+    "in_box": "[x0, y0, z0, x1, y1, z1]: part faces with centroid inside (snappy splits faces at the box)",
+    "in_cyl": "{axis, center, r, span [s0, s1] or x/y/z [lo, hi], r_in}: as in_box, a cylinder (wheels)",
 }
 
 CONVENTIONS = [
     "Units: geometry, coordinates, mesh sizes, areas in mm (mm2); velocity m/s; pressure Pa; density kg/m3; "
     "viscosity Pa s; flow rate m3/s (or L/min with flow_rate_lpm); forces N; moments N m.",
-    "The geometry is a build123d-translator goal, a STEP file (mm), a box [lx, ly, lz], a cylinder [r, h] or an "
-    "annulus [r_in, r_out, h] (axis Z), base on z = 0, centred in X/Y.",
+    "Geometry: a build123d-translator goal, STEP (mm), a closed triangle mesh (stl, snappy only), a box [lx, ly, lz], "
+    "cylinder [r, h] or annulus [r_in, r_out, h] (axis Z, base z = 0, centred in X/Y). Several bodies: external flow.",
     "domain internal (default): the geometry is the fluid (a channel, a manifold). external: the fluid is the "
     "domain box [x0, y0, z0, x1, y1, z1] minus the geometry (flow around a part).",
-    "Faces are chosen with the part's own selectors (as in build123d-translator and fea-translator; for external "
-    "flow the normals are the solid part's), plus {'box': 'xmin'} for the sides of the external domain box. "
-    "'faces' may be a list (union). Every face no bc takes becomes a no-slip wall named 'walls'.",
+    "Faces: the part's selectors (as in build123d-translator and fea-translator; external flow: the solid's "
+    "normals), {'box': 'xmin'} for external domain sides; a list is a union. Faces no bc takes: no-slip 'walls'.",
     "2d: true makes a one-cell-thick mesh along Z with 'empty' front and back (OpenFOAM 2D): the domain must be "
     "a prism along Z (one bottom face, one top face, vertical sides). Results are for the modelled thickness.",
     "The flow needs a driver (inlet, opening or moving wall); an inlet needs an outlet or opening. inlet "
     "velocity as a number is normal into the domain; 'parabolic' gives the fully developed laminar profile "
     "with that mean velocity (or flow rate).",
-    "Mesh: box + cells (+ grading, last/first cell): structured hexes. Gmsh: size (mm, default diagonal / 30); "
-    "tetrahedra, or extrude n prisms along Z (2d: 1) with quads and layers. mesher snappy (3D, aero): hexes of size, "
-    "surface mm on the part ([finest, coarsest], size/8), features (sharp edges), gap (extra levels in narrow gaps, 1), "
-    "layers on the part's walls (or layers.on, e.g. a ground) with coverage and y+ estimate in mesh.layers; zones "
-    "snapped; part faces on a domain side (half model) are cut there. refine: "
-    "[{size, and at + r | box | cylinder {center, axis, radius, inner_radius, span} | distance (mm from the part)}].",
+    "Mesh: box + cells (+ grading): structured hexes. Gmsh: size (mm, default diagonal / 30); tetrahedra, or extrude "
+    "n prisms along Z (2d: 1) with quads and layers. mesher snappy (3D, aero): hexes of size, surface mm on the part "
+    "([finest, coarsest], size/8), features, gap (extra levels in narrow gaps, 1), layers on the part's walls (or "
+    "layers.on) with coverage and y+ in mesh.layers; zones snapped; part faces on a domain side (half model) cut. "
+    "refine: [{size, and at + r | box | cylinder {center, axis, radius, inner_radius, span} | distance (mm)}].",
     "kOmegaSST uses wall functions (y+ 30-300 at the first cell is ideal; y_plus is reported).",
-    "Results: flow.<bc>.Q (m3/s, + into the domain), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total (flow-weighted); "
-    "pressure_drop (inlet - outlet static), total_pressure_drop, head_loss_m (use it for losses); "
-    "forces.<wall bc>.fx/fy/fz (N, on the wall) and mx/my/mz about reference.cofr; forces.part (external; porous zones' "
-    "reactions count on the part unless on_part: false: forces.porous, cd_walls_only); "
-    "coefficients.cd/cl (reference.velocity, area); probes; max_velocity; wall_shear; y_plus; feat_loads "
-    "(external: fea-translator bcs per part face); checks.",
+    "Results: flow.<bc>.Q (m3/s, + in), Q_lpm, U_mean; pressure.<bc>.p_mean, p_total; pressure_drop (static), "
+    "total_pressure_drop, head_loss_m (losses); forces.<wall bc>.fx/fy/fz (N) and mx/my/mz about reference.cofr; "
+    "forces.part (external; porous reactions on it unless on_part false); forces_by_solid; coefficients.cd/cl; "
+    "probes; max_velocity; wall_shear; y_plus; feat_loads (external: fea-translator bcs); checks.",
     "energy: true solves temperature (OpenFOAM fluid, to transonic): air a perfect gas, water constant density; "
     "degrees C; pressures gauge to conditions.p (101325). Walls adiabatic unless T, q (W/m2 into the fluid), power (W) "
     "or h + T_inf; gravity adds buoyancy. Results add heat.<wall bc>.Q_W/q_mean/T_mean_C (h, Nu with reference.T, "
@@ -115,8 +115,8 @@ CONVENTIONS = [
     "NPSH curves: cavitation {npsh}; read guide('pumps') first.",
     "Averaging (solve.average; on with a rotating zone, external turbulent flow with a reference, or snappy): "
     "results.averaged: mean, std, drift, scatter of torque, total pressures, cd, cl over the last 25 % (>= 500 "
-    "its); the means replace the results (*_last: the final iteration). settled (drift < 1 %, scatter < 2 %; "
-    "transient: drift < 2 %, standard error < 1 %) counts as converged.",
+    "its); the means replace the results (*_last: last iteration). settled (drift < 1 %, scatter < 2 %; "
+    "transient: drift < 2 %, standard error < 1 %) counts as converged. Other windows: study_status(window).",
     "reliable: false (with reasons) when the solver neither converged nor settled, or a balance is off: do not "
     "report the numbers; rerun with more iterations, lower relax or a better mesh.",
     "expect: [{quantity, value, tol}] turns the run into a check: quantity is a dotted path into the results "
@@ -135,7 +135,8 @@ EXAMPLE = {"pipe_laminar": {
 
 STUDY_KEYS = {
     "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': "
-                "[r_in, r_out, h]} | {'ref': name (add_geometry) or '<request>/<study>'}",
+                "[r_in, r_out, h]} | {'stl': path, 'scale', 'groups'} | "
+                "{'ref': name (add_geometry) or '<request>/<study>'}",
     "domain": "{'kind': 'internal'} (default) | {'kind': 'external', 'box': [x0, y0, z0, x1, y1, z1]}",
     "2d": "true: one cell along Z, empty front/back",
     "fluid": f"one of {sorted(FLUIDS)} or {{rho, mu}}; with energy {{mu, cp, pr (or k), molar_mass (gas) or rho "
@@ -148,7 +149,8 @@ STUDY_KEYS = {
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
              "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs, "
-             "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES}",
+             "continue, init_from ('<request>/<study>': its fields mapped as the start), init_fields (last | mean), "
+             "degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -203,6 +205,55 @@ def _vec(v, n=3) -> bool:
     return isinstance(v, (list, tuple)) and len(v) == n and all(_num(x) for x in v)
 
 
+def _stl_errors(g: dict, st: dict) -> list[str]:
+    """A mesh geometry: a readable closed surface, meshed by snappy; several bodies only for external flow."""
+    errs = []
+    if not isinstance(g["stl"], str) or not g["stl"].lower().endswith((".stl", ".obj", ".ply")):
+        return ["geometry.stl: the path of a closed triangle mesh (.stl, .obj or .ply, mm unless scale)"]
+    if "scale" in g and (not _num(g["scale"]) or g["scale"] <= 0):
+        errs.append("geometry.scale: a positive factor to mm (1000 for a model in metres)")
+    if "groups" in g and not isinstance(g["groups"], (str, dict, list)):
+        errs.append("geometry.groups: {name: [triangle indices]}, a list of names (one per triangle) or a JSON file")
+    if ((st.get("mesh") or {}).get("mesher")) != "snappy":
+        errs.append("geometry.stl: a triangle mesh is meshed with snappyHexMesh: set mesh.mesher 'snappy'")
+    from .meshsurf import surface_stats
+    ss = surface_stats(g["stl"], float(g.get("scale", 1.0)) if _num(g.get("scale", 1.0)) else 1.0)
+    if ss is None:
+        from pathlib import Path
+        p = Path(g["stl"]).expanduser()
+        errs.append(f"geometry.stl: no file {p} on this machine" if not p.is_file() else
+                    f"geometry.stl: {p.name} cannot be read as STL/OBJ/PLY")
+        return errs
+    if ss["open_edges"] or ss["nonmanifold_edges"]:
+        errs.append(f"geometry.stl: not a closed surface ({ss['open_edges']} open edges, {ss['nonmanifold_edges']} edges "
+                    f"shared by 3+ triangles, near {ss.get('at', [])[:3]} mm): snappyHexMesh needs watertight bodies")
+    external = (st.get("domain") or {}).get("kind") == "external"
+    if ss["bodies"] > 1 and not external:
+        errs.append(f"geometry.stl: {ss['bodies']} separate bodies; internal flow needs one fluid body (join them)")
+    return errs
+
+
+def _step_solids(path: str) -> int | None:
+    """Solids in a STEP file by its entities (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS), read in chunks; None when
+    the file is not there."""
+    from pathlib import Path
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return None
+    n, tail = 0, b""
+    keys = (b"MANIFOLD_SOLID_BREP", b"BREP_WITH_VOIDS")
+    with open(p, "rb") as f:
+        while True:
+            chunk = f.read(1 << 22)
+            if not chunk:
+                break
+            buf = tail + chunk
+            # occurrences wholly inside the tail were counted with the previous chunk
+            n += sum(buf.count(k) - tail.count(k) for k in keys)
+            tail = buf[-32:]
+    return n
+
+
 def _selector_errors(sel, where: str, external: bool) -> list[str]:
     if isinstance(sel, list):
         if not sel:
@@ -211,12 +262,45 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
     if not isinstance(sel, dict):
         return [f"{where}: a selector is a dict like {{'nz': 1}}, {{'pts': [[x, y, z]]}}, {{'cyl_r': 5}}, {{'all': true}}"]
     keys = set(sel)
-    known = {"nx", "ny", "nz", "at", "pts", "cyl_r", "side", "all", "box"}
+    known = {"nx", "ny", "nz", "at", "pts", "cyl_r", "side", "all", "box", "group", "solid", "in_box", "in_cyl"}
     errs = [f"{where}: unknown selector key {k!r} (use {sorted(known)})" for k in sorted(keys - known)]
-    kinds = [k for k in ("pts", "cyl_r", "all", "box") if k in keys] + (["normal"] if keys & {"nx", "ny", "nz"} else [])
+    kinds = [k for k in ("pts", "cyl_r", "all", "box", "group", "solid", "in_box", "in_cyl") if k in keys] + \
+        (["normal"] if keys & {"nx", "ny", "nz"} else [])
     if len(kinds) != 1:
-        return errs + [f"{where}: give exactly one of nx/ny/nz, pts, cyl_r, all, box (got {kinds or 'none'})"]
+        return errs + [f"{where}: give exactly one of nx/ny/nz, pts, cyl_r, all, box, group, solid, in_box, in_cyl "
+                       f"(got {kinds or 'none'})"]
     k = kinds[0]
+    if k == "group":
+        g = sel["group"]
+        if not (isinstance(g, str) and g) and not (isinstance(g, list) and g and all(isinstance(x, str) for x in g)):
+            errs.append(f"{where}: group is a face group's name (or a list of names)")
+    elif k == "solid":
+        v = sel["solid"] if isinstance(sel["solid"], list) else [sel["solid"]]
+        if not v or not all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in v):
+            errs.append(f"{where}: solid is a body's index from 0 (or a list of them)")
+    elif k == "in_box":
+        b = sel["in_box"]
+        if not _vec(b, 6) or not all(b[i] < b[i + 3] for i in range(3)):
+            errs.append(f"{where}: in_box is [x0, y0, z0, x1, y1, z1] with x0 < x1, y0 < y1, z0 < z1 (mm)")
+    elif k == "in_cyl":
+        c = sel["in_cyl"]
+        ok_keys = {"axis", "center", "r", "r_in", "span", "x", "y", "z"}
+        if not isinstance(c, dict):
+            errs.append(f"{where}: in_cyl is {{axis: [ax, ay, az], center: [x, y, z], r: mm, span: [s0, s1] or "
+                        "x/y/z: [lo, hi], r_in: mm}")
+        else:
+            errs += [f"{where}.in_cyl: unknown key {x!r} (use {sorted(ok_keys)})" for x in sorted(set(c) - ok_keys)]
+            if not _vec(c.get("axis")) or all(float(x) == 0 for x in c.get("axis") or [0]):
+                errs.append(f"{where}.in_cyl.axis: [ax, ay, az], not zero")
+            if "center" in c and not _vec(c["center"]):
+                errs.append(f"{where}.in_cyl.center: [x, y, z] (mm)")
+            if not _num(c.get("r")) or c.get("r") <= 0:
+                errs.append(f"{where}.in_cyl.r: a positive radius (mm)")
+            if "r_in" in c and (not _num(c["r_in"]) or c["r_in"] < 0 or (_num(c.get("r")) and c["r_in"] >= c["r"])):
+                errs.append(f"{where}.in_cyl.r_in: 0 <= r_in < r (mm)")
+            for kk in ("span", "x", "y", "z"):
+                if kk in c and (not _vec(c[kk], 2) or c[kk][0] >= c[kk][1]):
+                    errs.append(f"{where}.in_cyl.{kk}: [lo, hi] with lo < hi (mm)")
     if k == "normal":
         if not all(_num(sel.get(c, 0)) for c in ("nx", "ny", "nz")) or all(float(sel.get(c, 0)) == 0 for c in ("nx", "ny", "nz")):
             errs.append(f"{where}: nx, ny, nz are numbers, not all zero")
@@ -238,6 +322,8 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
             errs.append(f"{where}: box sides are {list(BOX_SIDES)}, not {bad}")
         if not external:
             errs.append(f"{where}: 'box' selects sides of the external domain box; use nx/ny/nz for internal flow")
+    if "at" in sel and k in ("group", "solid", "in_box", "in_cyl"):
+        errs.append(f"{where}: at goes with nx/ny/nz or cyl_r")
     if "at" in sel and not _vec(sel["at"]):
         errs.append(f"{where}: at is [x, y, z] (mm)")
     if "side" in sel and k != "cyl_r":
@@ -463,9 +549,9 @@ def validate_study(st: dict) -> dict:
     if not isinstance(g, dict):
         errs.append("geometry: {'goal': ...} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': [r_in, r_out, h]}")
     else:
-        kinds = [k for k in ("goal", "step", "box", "cylinder", "annulus") if k in g]
+        kinds = [k for k in ("goal", "step", "box", "cylinder", "annulus", "stl") if k in g]
         if len(kinds) != 1:
-            errs.append(f"geometry: give exactly one of goal, step, box, cylinder, annulus (got {kinds or list(g)})")
+            errs.append(f"geometry: give exactly one of goal, step, stl, box, cylinder, annulus (got {kinds or list(g)})")
         else:
             geo_kind = kinds[0]
             if geo_kind == "box" and (not _vec(g["box"]) or min(g["box"]) <= 0):
@@ -477,6 +563,17 @@ def validate_study(st: dict) -> dict:
                 errs.append("geometry.annulus: [r_in, r_out, h] positive with r_in < r_out (mm), axis Z, base on z = 0")
             if geo_kind == "step" and not isinstance(g["step"], str):
                 errs.append("geometry.step: a path to a STEP file (mm)")
+            elif geo_kind == "step" and (st.get("domain") or {}).get("kind") != "external":
+                ns = _step_solids(g["step"])
+                if ns and ns > 1:
+                    errs.append(f"geometry.step: the file has {ns} solids; internal flow meshes one fluid body: fuse "
+                                "them into one solid (build123d-translator 'combine' / your CAD's union) and export again")
+            extra = set(g) - {"stl", "scale", "groups"} if geo_kind == "stl" else set()
+            if extra:
+                errs.append(f"geometry: unknown key(s) {sorted(extra)} with {geo_kind}" +
+                            (" (stl takes scale and groups)" if geo_kind == "stl" else ""))
+            if geo_kind == "stl":
+                errs += _stl_errors(g, st)
             if geo_kind == "goal" and not isinstance(g["goal"], dict):
                 errs.append("geometry.goal: a build123d-translator goal {'features': [...]}")
             elif geo_kind == "goal":
@@ -752,7 +849,8 @@ def validate_study(st: dict) -> dict:
         if not isinstance(tr, dict) or set(tr) - TRANSIENT_KEYS or not _num(tr.get("end_time")) or tr["end_time"] <= 0:
             errs.append("solve.transient: {end_time (s, required), average_from (s; end_time / 3), max_co (1), "
                         "write_interval (s; end_time / 10), init (steady iterations first; 500 turbulent, 0 laminar), "
-                        "max_jobs (SLURM jobs in a row, 10), dt (first time step, s)}")
+                        "max_jobs (SLURM jobs in a row, 10), dt (first time step, s), continue, init_from, "
+                        "init_fields, degrees_per_step, correct_mesh_phi}")
         else:
             T = float(tr["end_time"])
             if "average_from" in tr and (not _num(tr["average_from"]) or not 0 <= tr["average_from"] < T):
@@ -766,6 +864,15 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
             if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
                 errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
+            if "init_from" in tr and (not isinstance(tr["init_from"], str) or "/" not in tr["init_from"]):
+                errs.append("solve.transient.init_from: '<request>/<study>' of a finished run on this machine (its U, p, "
+                            "k, omega are mapped onto this mesh as the start; no steady init)")
+            if "init_fields" in tr and tr["init_fields"] not in ("last", "mean"):
+                errs.append("solve.transient.init_fields: 'last' (the source's latest fields, default) or 'mean'")
+            if "init_fields" in tr and "init_from" not in tr:
+                errs.append("solve.transient.init_fields goes with init_from")
+            if tr.get("init_from") and tr.get("init"):
+                errs.append("solve.transient: init (steady iterations) and init_from do not go together")
             if "continue" in tr and (not isinstance(tr["continue"], str) or "/" not in tr["continue"]):
                 errs.append("solve.transient.continue: '<request>/<study>' of a finished transient run on this machine "
                             "(its mesh and latest time are reused; end_time must be later)")

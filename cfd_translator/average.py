@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.03.6
+Version: 2026.11.06.1
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -25,6 +25,7 @@ differently from what is assumed here cannot change the results silently.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -147,6 +148,22 @@ patches         ({' '.join(body)});
 pRef            {p_ref:.12g};{chr(10) + "porosity        yes;" if por else ""}
 CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
         mon["forces"] = {"fo": "cfdtF_body", "patches": list(body), "porosity": por}
+        if cfg.get("transient") and len(body) > 1:
+            # the force on each wall bc too, every step: averages per patch over any window (window_average)
+            mon["patch_forces"] = {}
+            for b in body:
+                fo = f"cfdtFp_{b}"
+                funcs.append(_fo(fo, f"""
+type            forces;
+libs            ("libforces.so");
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+patches         ({b});
+{rho_key}
+pRef            {p_ref:.12g};
+CofR            ({c[0]:.12g} {c[1]:.12g} {c[2]:.12g});"""))
+                mon["patch_forces"][b] = fo
     for zn, zp in (plan.get("zones") or {}).items():
         if not zp.get("rotating_walls"):
             continue
@@ -653,3 +670,83 @@ def _apply_means(res: dict, stats: dict, plan: dict) -> None:
                 pump["efficiency"] = _r(rho * G0 * Q * stats["head_m"]["mean"] / stats["power_W"]["mean"])
         pump["note"] = (pump.get("note", "") + "; window means over iterations "
                         f"{pump.get('averaged_over', '')} (see averaged)").lstrip("; ")
+
+
+# ---- averages over any window of a finished transient run ----------------------------------------------------------
+def window_average(folder: Path, name: str, study: dict, t0: float, t1: float | None = None) -> dict:
+    """Mean, std, standard error (batch means) and drift of cd, cl and the part's force over [t0, t1] from the
+    run's force histories (postProcessing), and of each wall bc's force when the run recorded them (runs from
+    2026.11.06.1 with several wall bcs on the part). No fields are read and nothing is written."""
+    folder = Path(folder)
+    try:
+        res = json.loads((folder / f"{name}.json").read_text())
+    except (OSError, ValueError):
+        return {"error": "no result yet"}
+    r = res.get("results") or {}
+    co = r.get("coefficients") or {}
+    av = r.get("averaged") or {}
+    case = folder / "case"
+    if not (av.get("settings") or {}).get("transient"):
+        return {"error": "window averages are for transient runs (solve.transient)"}
+    if not (co.get("q_Pa") and co.get("area_m2") and co.get("drag_dir")):
+        return {"error": "no force coefficients in this result (reference velocity and area)"}
+    got = _force_series(case, "cfdtF_body")
+    if got is None:
+        return {"error": f"no force history in {case}/postProcessing/cfdtF_body"}
+    t, F = got
+    qa = float(co["q_Pa"]) * float(co["area_m2"])
+    d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
+    # units: the monitor is kinematic in an incompressible case; match its mean over the run's own window to the
+    # result's mean cd (rho from the dynamic pressure)
+    U = float((study.get("reference") or {}).get("velocity") or 0) or None
+    rho = 2 * float(co["q_Pa"]) / U ** 2 if U else 1.0
+    cfg0 = av.get("settings") or {}
+    ref_cd = ((av.get("quantities") or {}).get("cd") or {}).get("mean", co.get("cd"))
+    m0 = t >= float(cfg0.get("from", t[0]))
+    raw = float(((F[m0] if m0.any() else F) @ d).mean()) / qa
+    sc = _calibrate(raw, ref_cd, rho, 0.3) if ref_cd is not None else None
+    if sc is None:
+        return {"error": f"the force history does not match the result's cd ({ref_cd}): cannot tell its units"}
+    F = sc * F
+    t1 = float(t[-1]) if t1 is None else float(t1)
+    m = (t >= float(t0)) & (t <= t1)
+    if m.sum() < 5:
+        return {"error": f"fewer than 5 time steps in [{t0}, {t1}] s (the run has {float(t[0]):.4g} to "
+                         f"{float(t[-1]):.4g} s)", "available_s": [_r(t[0]), _r(t[-1])]}
+    tt = t[m]
+    cfg = {"from": float(t0), "min_samples": 5}
+    cd, cl = (F[m] @ d) / qa, (F[m] @ l) / qa
+    period = None
+    fq = dominant_frequency(tt, cl, float(t0))
+    if fq and fq["periods"] >= 4:
+        period = 1.0 / fq["frequency_Hz"]
+    cd_scale = float(np.abs(cd).mean())
+    out = {"window_s": [_r(tt[0]), _r(tt[-1])], "available_s": [_r(t[0]), _r(t[-1])], "time_steps": int(m.sum()),
+           "cd": time_window_stats(tt, cd, cfg, None, period),
+           "cl": time_window_stats(tt, cl, cfg, cd_scale, period),
+           "force_N": {k: time_window_stats(tt, F[m][:, i], cfg, float(np.abs(F[m] @ d).mean()), period)
+                       for i, k in enumerate(("fx", "fy", "fz"))},
+           "note": "drift, scatter and stderr are relative (cl's and the forces' against the drag); stderr from batch "
+                   "means" + (" of whole shedding periods" if period else "")}
+    if fq:
+        out["frequency_Hz"] = fq["frequency_Hz"]
+    pf = {}
+    for p in sorted((case / "postProcessing").glob("cfdtFp_*")) if (case / "postProcessing").is_dir() else []:
+        bc = p.name[len("cfdtFp_"):]
+        g2 = _force_series(case, p.name)
+        if g2 is None:
+            continue
+        tp, Fp = g2
+        mp = (tp >= float(t0)) & (tp <= t1)
+        if mp.sum() < 5:
+            continue
+        Fp = sc * Fp[mp]
+        pf[bc] = {"cd": time_window_stats(tp[mp], (Fp @ d) / qa, cfg, cd_scale, period),
+                  "cl": time_window_stats(tp[mp], (Fp @ l) / qa, cfg, cd_scale, period),
+                  "force_N": {k: _r(float(Fp[:, i].mean())) for i, k in enumerate(("fx", "fy", "fz"))}}
+    if pf:
+        out["patches"] = pf
+    else:
+        out["patches_note"] = ("no per-bc force histories in this run (recorded from 2026.11.06.1 when the part has "
+                               "several wall bcs)")
+    return out

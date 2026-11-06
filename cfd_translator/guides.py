@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.05.1
+Version: 2026.11.06.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -104,6 +104,11 @@ GUIDES = {
             "an angle; also rounded edges meeting flat faces.",
             "Avoid sliver faces from ruled lofts. A part touching a domain side only at an edge or point is warned "
             "about: let it cross the side by a millimetre or end on it with a flat face (tyre contact patches).",
+            "Scanned or downloaded bodies: give the closed triangle mesh itself, geometry {stl: path (STL/OBJ/PLY), "
+            "scale} or add_geometry(name, stl=path), not a faceted STEP (the Rogue's 67k triangles were a 170 MB "
+            "STEP). Wheels may be separate closed bodies (external flow): name them as STL solids and select them "
+            "with {group: 'wheel_front'}, or take any faces with {in_cyl: {axis [0, 1, 0], center, r, y: [y0, y1]}} "
+            "or {in_box: [...]}; results add forces_by_solid.",
         ],
         "steady_rans": [
             "kOmegaSST; relax U 0.4, p 0.2, other 0.4; consistent false; start estimate; 3000-4000 iterations; "
@@ -126,6 +131,11 @@ GUIDES = {
             "Cost: 726k cells, 66,584 time steps, ~22 h on 9 procs over 3 SLURM jobs (queue included). To extend a "
             "finished run use solve.transient.continue: '<request>/<study>' with a later end_time (and a later "
             "average_from to start the averages again) instead of starting over.",
+            "Variants that differ near one feature (a wheel spat): start them from the baseline's flow with "
+            "solve.transient.init_from '<request>/<study>' (U, p, k, omega mapped with mapFields; no steady init) "
+            "and a shorter run, e.g. end_time 2.5 with average_from 0.5 instead of 4 and 1.",
+            "Compare runs over the same window: study_status(request, window=[t0, t1]) gives cd, cl and each wall "
+            "bc's force (mean, std, standard error, drift) without downloading the result.",
         ],
         "reporting": [
             "Give the mean Cd with its min-max and drift, and say whether lift is settled (it needs longer windows "

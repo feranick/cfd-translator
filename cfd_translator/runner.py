@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.04.7
+Version: 2026.11.06.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -562,6 +562,18 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         resume = bool(state.get("started"))
         state["started"] = True
         save()
+    if tr.get("init_from") and not state.get("mapped") and not state.get("init_done"):
+        # solve.transient.init_from: an earlier run's fields on this mesh instead of a uniform start (a variant that
+        # differs near one wheel needs less start-up time)
+        from .transient import map_from
+        fm = foam.find_foam()
+        notes = map_from(case, tr["init_from"], tr.get("init_fields", "last"),
+                         lambda cmd, log: foam._step(fm, cmd, log, case, 3600))
+        state.update(mapped=True, init_notes=notes)
+        save()
+        warns += notes
+    elif state.get("init_notes"):
+        warns += [n for n in state["init_notes"] if n not in warns]
     if plan.get("sliding") and not state.get("sliding_done"):
         # the zone's cells start turning: the mesh is split at its cylinder and coupled non-conformally (sliding.py)
         from .sliding import to_sliding

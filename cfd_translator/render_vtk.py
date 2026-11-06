@@ -1,7 +1,7 @@
 """render_vtk.py — 3D pictures with VTK (through PyVista), offscreen: lit wall surfaces (an image's
 "quality": "high") and isosurfaces ("iso": Q-criterion, |U| or total-pressure coefficient) of a solved study.
 Matplotlib (render.py) stays the default for slices and surfaces, and the fallback when VTK cannot draw.
-Version: 2026.10.28.1
+Version: 2026.11.06.1
 
     render(state_dir, specs, out_dir, name) -> ({name: {path, what, ...}}, warnings)    (in the caller's process)
     probe() -> {ok, window, prefix, why}: can this machine draw offscreen (cached per process)
@@ -351,8 +351,9 @@ def draw_surface(study, mesh, plan, fields, spec, title, path) -> dict:
     _camera(p, spec.get("view", [25, -60]), m.bounds)
     p.screenshot(str(path))
     p.close()
-    return {"faces": int(len(f)), "min": float(vals.min()), "max": float(vals.max()), "clim": [lo, hi],
-            "renderer": "vtk", **({"mirrored": ["xyz"[a] for a, _ in planes]} if planes else {})}
+    fin = np.isfinite(vals)
+    return {"faces": int(len(f)), "min": float(vals[fin].min()), "max": float(vals[fin].max()), "clim": [lo, hi],
+            **({"non_finite_faces": int((~fin).sum())} if not fin.all() else {}), "renderer": "vtk", **({"mirrored": ["xyz"[a] for a, _ in planes]} if planes else {})}
 
 
 def draw_iso(study, mesh, plan, fields, spec, title, path) -> dict:

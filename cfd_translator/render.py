@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.11.03.7
+Version: 2026.11.06.1
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
         isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
@@ -43,6 +43,10 @@ def _limits(vals: np.ndarray, spec: dict, default: str) -> tuple[float, float, s
     """Colour range: clim [lo, hi], 'full' (min to max) or 'robust' (2nd to 98th percentile, so one suction
     peak does not wash out the rest). Returns (lo, hi, extend)."""
     c = spec.get("clim", default)
+    vals = np.asarray(vals, float)
+    vals = vals[np.isfinite(vals)]
+    if not len(vals):
+        raise ValueError("the field has no finite values here (NaN or Inf: a diverged or unwritten field): image skipped")
     if isinstance(c, (list, tuple)):
         lo, hi = float(c[0]), float(c[1])
     elif c == "robust":
@@ -227,7 +231,11 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-    return {"cells": int(sel.sum()), "min": float(np.nanmin(val)), "max": float(np.nanmax(val)), "clim": [lo_c, hi_c]}
+    fin = np.isfinite(val)
+    out = {"cells": int(sel.sum()), "min": float(np.min(val[fin])), "max": float(np.max(val[fin])), "clim": [lo_c, hi_c]}
+    if not fin.all():
+        out["non_finite_points"] = int((~fin).sum())
+    return out
 
 
 def wall_values(study, mesh, plan, fields, spec) -> tuple[np.ndarray, np.ndarray]:
@@ -291,12 +299,16 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     import matplotlib.cm as cm
     import matplotlib.colors as mcolors
     lo_c, hi_c, ext = _limits(vals, spec, "robust")
+    fin = np.isfinite(vals)
     norm = mcolors.Normalize(vmin=lo_c, vmax=hi_c)
     cmap = matplotlib.colormaps[{"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "q": "inferno"}.get(spec.get("field", "p"), "viridis")]
     fig = plt.figure(figsize=(9, 7), dpi=130)
     ax = fig.add_subplot(projection="3d")
-    ax.add_collection3d(Poly3DCollection(polys, facecolors=cmap(norm(vals)), edgecolors="none"))
+    colors = cmap(norm(np.where(fin, vals, lo_c)))
+    colors[~fin] = (0.6, 0.6, 0.6, 1.0)                # NaN or Inf faces grey
+    ax.add_collection3d(Poly3DCollection(polys, facecolors=colors, edgecolors="none"))
     pts = np.concatenate(polys)
+    pts = pts[np.isfinite(pts).all(axis=1)]
     lo, hi = pts.min(axis=0), pts.max(axis=0)
     ax.set_xlim(lo[0], hi[0])
     ax.set_ylim(lo[1], hi[1])
@@ -313,7 +325,10 @@ def _surface(study, mesh, plan, fields, spec, title, path):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-    return {"faces": len(polys), "min": float(vals.min()), "max": float(vals.max()), "clim": [lo_c, hi_c]}
+    out = {"faces": len(polys), "min": float(vals[fin].min()), "max": float(vals[fin].max()), "clim": [lo_c, hi_c]}
+    if not fin.all():
+        out["non_finite_faces"] = int((~fin).sum())
+    return out
 
 
 def render(study, mesh, plan, fields, folder, specs, name="study", state_dir=None) -> tuple[dict, list]:
@@ -350,6 +365,9 @@ def render(study, mesh, plan, fields, folder, specs, name="study", state_dir=Non
                 what = f"{name}: {FIELDS[field]} on {sp.get('surface', 'walls')}"
                 info = _surface(study, mesh, plan, fields, sp, what, path)
             out[nm] = {"path": str(path), "what": what, **{k2: round(v, 6) if isinstance(v, float) else v for k2, v in info.items()}}
+            bad = info.get("non_finite_faces") or info.get("non_finite_points")
+            if bad:
+                warns.append(f"image {nm!r}: {bad} faces/points with NaN or Inf {field} drawn grey (see the field there)")
         except Exception as exc:  # noqa: BLE001 (a picture must not fail the study)
             warns.append(f"image {nm!r}: {type(exc).__name__}: {exc}")
     return out, warns

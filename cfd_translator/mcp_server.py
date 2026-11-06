@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.03.1
+Version: 2026.11.06.1
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -238,7 +238,8 @@ def validate_studies(studies: dict) -> dict:
 
 @server.tool()
 @_tool
-def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail: str = "summary") -> dict:
+def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail: str = "summary",
+                request_name: str | None = None) -> dict:
     """Meshes, solves (OpenFOAM, or the 2D reference solver) and checks each study. Per study: results
     (flow rates, pressures, pressure drop, wall forces, coefficients, probes, wall shear, y+, loads for
     fea-translator), what each bc's selector took, solver convergence, mass and momentum balance,
@@ -248,19 +249,23 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail:
     (<name>_L1.., <name>_<suffix>); 'variants' in the result compares them (mesh convergence). geometry
     {"ref": name} uses a geometry registered with add_geometry.
     detail: "summary" (default: bc selections as counts, no per-face loads), "brief" (verdict, main
-    numbers, mesh, timing) or "full"."""
-    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0), detail=detail)
+    numbers, mesh, timing) or "full". request_name ('run_<id>', optional): the request folder's name, so a caller
+    knows the request path before the answer; repeating it returns that request's status (no second submission)."""
+    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0), detail=detail, request_name=request_name)
 
 
 @server.tool()
 @_tool
-def study_status(request: str, wait_s: float = 45, detail: str = "summary") -> dict:
+def study_status(request: str, wait_s: float = 45, detail: str = "summary", window: list | None = None) -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results,
     the others in 'pending'. Waits up to wait_s seconds (at most 50) for them to finish. detail: "summary"
     (default: coefficients, forces, checks, image paths; bc selections as counts, no per-face loads),
     "brief" (verdict, warnings, main numbers, mesh and layers, timing: for many studies) or "full"
-    (everything, as in <request>/<name>/<name>.json). Variants and mesh_scales are compared in 'variants'."""
-    return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail)
+    (everything, as in <request>/<name>/<name>.json). Variants and mesh_scales are compared in 'variants'.
+    window [t0, t1] (s; t1 null = to the end): instead, for finished transient studies, the mean, std, standard error
+    and drift of cd, cl, the part's force and each wall bc's force over that window, from the force histories (no
+    download of the full result)."""
+    return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail, window)
 
 
 @server.tool()
@@ -275,11 +280,16 @@ def guide(topic: str = "") -> dict:
 
 @server.tool()
 @_tool
-def add_geometry(name: str, goal: dict | None = None, step: str | None = None, step_base64: str | None = None) -> dict:
+def add_geometry(name: str, goal: dict | str | None = None, step: str | None = None, step_base64: str | None = None,
+                 stl: str | None = None, stl_base64: str | None = None, scale: float = 1.0,
+                 groups: dict | list | str | None = None) -> dict:
     """Registers a geometry on this machine once, so studies name it instead of carrying it: a
-    build123d-translator goal (checked by building it: volume, area, bounding box), a STEP file already on
-    this machine (step: path), or one uploaded as base64. Studies then use "geometry": {"ref": name}."""
-    return api.add_geometry(name, goal, step, step_base64)
+    build123d-translator goal (a dict, or the path of a goal JSON file; checked by building it: volume, area,
+    bounding box), a STEP file (step: path, or step_base64), or a closed triangle mesh (stl: path of an STL, OBJ or
+    PLY file, or stl_base64 for an STL; checked watertight; named solids / OBJ groups become face groups that bcs
+    select with {"group": name}; scale: factor to mm, 1000 for metres; groups: {name: [triangle indices]}, one name
+    per triangle, or a JSON file of either). Studies then use "geometry": {"ref": name}."""
+    return api.add_geometry(name, goal, step, step_base64, stl, stl_base64, scale, groups)
 
 
 @server.tool()

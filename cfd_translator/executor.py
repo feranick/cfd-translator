@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.04.3
+Version: 2026.11.06.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -396,13 +396,10 @@ def cell_estimate(study: dict) -> float | None:
         ri, ro, hh = (float(v) for v in g["annulus"])
         vol, thick = math.pi * (ro * ro - ri * ri) * hh, hh
     elif "goal" in g:
-        try:
-            from build123d_translator import translate as T
-            solid, _ = T.build(g["goal"])
-            bb = solid.bounding_box()
-            vol, thick = float(solid.volume), float(bb.max.Z - bb.min.Z)
-        except Exception:  # noqa: BLE001
+        gs = goal_stats(g["goal"])
+        if gs is None:
             return None
+        vol, thick = gs[0], gs[2]
     if not vol or not thick or thick <= 0:
         return None
     layers = 1 if study.get("2d") else (int(m["extrude"]) if m.get("extrude") else None)
@@ -452,6 +449,28 @@ def _refine_extents(study: dict, refine: list, vol: float, thick: float) -> list
     return out
 
 
+_GOAL_STATS: dict = {}
+
+
+def goal_stats(goal: dict) -> tuple[float, float, float] | None:
+    """(volume mm3, area mm2, z extent mm) of a build123d-translator goal, built once per goal and process: the
+    estimates ask for it several times per study (validation, use_slurm, submit), and a 13 kB car goal takes
+    seconds to build on a busy machine (run_studies to mochi passed the router's minute, 2026.11.06)."""
+    import hashlib
+    key = hashlib.sha1(json.dumps(goal, sort_keys=True, default=str).encode()).hexdigest()
+    if key not in _GOAL_STATS:
+        try:
+            from build123d_translator import translate as T
+            solid, _ = T.build(goal)
+            bb = solid.bounding_box()
+            _GOAL_STATS[key] = (float(solid.volume), float(solid.area), float(bb.max.Z - bb.min.Z))
+        except Exception:  # noqa: BLE001
+            _GOAL_STATS[key] = None
+        if len(_GOAL_STATS) > 64:
+            _GOAL_STATS.pop(next(iter(_GOAL_STATS)))
+    return _GOAL_STATS[key]
+
+
 def _part_size(study: dict) -> tuple[float, float] | None:
     """(volume mm3, surface area mm2) of the part, or None."""
     import math
@@ -466,12 +485,12 @@ def _part_size(study: dict) -> tuple[float, float] | None:
         ri, ro, hh = (float(v) for v in g["annulus"])
         return math.pi * (ro * ro - ri * ri) * hh, 2 * math.pi * (ro + ri) * hh + 2 * math.pi * (ro * ro - ri * ri)
     if "goal" in g:
-        try:
-            from build123d_translator import translate as T
-            solid, _ = T.build(g["goal"])
-            return float(solid.volume), float(solid.area)
-        except Exception:  # noqa: BLE001
-            return None
+        gs = goal_stats(g["goal"])
+        return (gs[0], gs[1]) if gs else None
+    if "stl" in g:
+        from .meshsurf import surface_stats
+        ss = surface_stats(g["stl"], float(g.get("scale", 1.0) or 1.0))
+        return (ss["volume_mm3"], ss["area_mm2"]) if ss else None
     return None
 
 
@@ -934,6 +953,26 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
                 st = {"state": "queued", **base, "reason": s["reason"], "ahead": ahead.get(jid)}
                 if s["start"] and s["start"] not in ("N/A", "Unknown"):
                     st["expected_start"] = s["start"]
+                try:
+                    es = eta_start(j, s["reason"], st.get("expected_start"))
+                except Exception:  # noqa: BLE001
+                    es = None
+                if es:
+                    st.update({k: v for k, v in es.items() if v is not None})
+                if j.get("segment") or (request / n / "mesh.json").is_file():
+                    # a later segment (or a job that meshed before): where the run got to, kept between jobs
+                    try:
+                        prog = _progress(request / n, (studies or {}).get(n, {}))
+                    except Exception:  # noqa: BLE001
+                        prog = {}
+                    keep = {k: prog[k] for k in ("time", "end_time", "eta_min_max", "mesh", "iteration",
+                                                 "max_iterations") if k in prog}
+                    if keep:
+                        st.update(keep)
+                        st["stage"] = (f"between jobs: segment {j.get('segment')} queued" if j.get("segment")
+                                       else "queued again")
+                        if "eta_min_max" in keep:
+                            st["note"] = "eta_min_max: the simulated time left at the last job's pace, once running"
             else:
                 prog = _progress(request / n, (studies or {}).get(n, {}))
                 st = {**prog, "state": "running", **base, "job_elapsed_min": s["elapsed_min"]}
@@ -957,27 +996,129 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
 
 
 # ---- jobs and cancel ---------------------------------------------------------------------------
+def _expand_nodes(spec: str | None) -> set[str]:
+    """SLURM node names in a list such as 'spark-5da5,node[01-03]' (scontrol show hostnames when brackets)."""
+    if not spec or spec in ("(null)", "None assigned", "N/A"):
+        return set()
+    if "[" in spec:
+        rc, out, _ = _run(["scontrol", "show", "hostnames", spec])
+        if rc == 0 and out.strip():
+            return set(out.split())
+    return {x for x in spec.split(",") if x}
+
+
+def _my_nodes() -> set[str]:
+    """The nodes this machine's jobs go to (effective_nodelist), or empty: SLURM chooses among all."""
+    return _expand_nodes(effective_nodelist())
+
+
 def queue_summary() -> dict:
-    rc, out, _ = _run(["squeue", "-h", "-u", os.environ.get("USER", ""), "-o", "%i|%j|%T|%C"])
-    run = qd = cpus = 0
+    """This translator's jobs in the queue. On a cluster where jobs are pinned to a node (CFDT_SLURM_NODE=local on
+    the sparks), 'queue' counts the jobs of this machine's node only (running there, or pending with --nodelist
+    naming it) and 'cluster_queue' every node's; 'machine' gives the node's CPUs and 'starts_now' whether a job
+    would start at once (all CPUs of the node idle and nothing pending for it, from any user)."""
+    mine = _my_nodes()
+    rc, out, _ = _run(["squeue", "-h", "-o", "%i|%j|%T|%C|%N|%n|%u"])
+    q = {"running": 0, "queued": 0, "cpus_in_use": 0}
+    cq = {"running": 0, "queued": 0, "cpus_in_use": 0}
+    pending_here_any = 0
+    user = os.environ.get("USER", "")
     for line in out.splitlines() if rc == 0 else []:
-        f = (line.split("|") + [""] * 4)[:4]
-        if not f[1].startswith(f"{CLI}:"):
+        f = (line.split("|") + [""] * 7)[:7]
+        st = f[2]
+        nodes = _expand_nodes(f[4].strip()) or _expand_nodes(f[5].strip())
+        here = not mine or bool(nodes & mine) or (st not in ("RUNNING", "COMPLETING") and not nodes)
+        if st not in ("RUNNING", "COMPLETING") and here:
+            pending_here_any += 1
+        if not f[1].startswith(f"{CLI}:") or (user and f[6] and f[6] != user):
             continue
-        if f[2] in ("RUNNING", "COMPLETING"):
-            run += 1
-            cpus += int(f[3]) if f[3].isdigit() else 0
-        else:
-            qd += 1
+        for d, take in ((cq, True), (q, here)):
+            if not take:
+                continue
+            if st in ("RUNNING", "COMPLETING"):
+                d["running"] += 1
+                d["cpus_in_use"] += int(f[3]) if f[3].isdigit() else 0
+            else:
+                d["queued"] += 1
     machine = {}
-    rc, out, _ = _run(["sinfo", "-h", "-o", "%C"])
-    if rc == 0 and out.strip():
-        a, i, o, t = (out.strip().splitlines()[0].split("/") + ["0"] * 4)[:4]
+    cmd = ["sinfo", "-h", "-o", "%C"] + (["-n", ",".join(sorted(mine))] if mine else [])
+    rc2, out2, _ = _run(cmd)
+    if rc2 == 0 and out2.strip():
+        a, i, o, t = (out2.strip().splitlines()[0].split("/") + ["0"] * 4)[:4]
         try:
-            machine = {"cpus": int(t), "cpus_allocated": int(a)}
+            machine = {"cpus": int(t), "cpus_allocated": int(a), "cpus_idle": int(i)}
         except ValueError:
             pass
-    return {"queue": {"running": run, "queued": qd, "cpus_in_use": cpus}, "machine": machine}
+    res = {"queue": q, "machine": machine}
+    if mine:
+        machine["node"] = ",".join(sorted(mine))
+        res["cluster_queue"] = dict(cq, note="this translator's jobs on every node of the SLURM cluster; 'queue' "
+                                    "counts only those of this machine's node")
+    if machine and rc == 0:
+        free = machine.get("cpus_idle", 0) >= machine.get("cpus", 1) > 0
+        res["starts_now"] = bool(free and pending_here_any == 0)
+        res["pending_for_node"] = pending_here_any
+    return res
+
+
+# running jobs' own ETAs (from their logs), for the start of jobs queued behind them: SLURM counts a running job's
+# whole time limit, which put later DES segments hours late (Rogue spat variants on spark1, 2026.11.06)
+_ETAS: dict = {"at": 0.0, "v": {}}
+
+
+def running_etas(max_age_s: float = 20.0) -> dict:
+    """{job_id: {"node", "cpus", "eta_min", "name"}} for this translator's running jobs whose study reports an
+    eta (its log); cached for max_age_s."""
+    if time.time() - _ETAS["at"] < max_age_s:
+        return _ETAS["v"]
+    from .api import _progress_of
+    rc, out, _ = _run(["squeue", "-h", "-u", os.environ.get("USER", ""), "-t", "R", "-o", "%i|%j|%N|%C"])
+    v = {}
+    for line in out.splitlines() if rc == 0 else []:
+        f = (line.split("|") + [""] * 4)[:4]
+        parts = f[1].split(":")
+        if len(parts) != 3 or parts[0] != CLI:
+            continue
+        try:
+            from .api import out_root
+            req = out_root() / parts[1]
+            meta = json.loads((req / "request.json").read_text())
+            pr = _progress_of(req / parts[2], (meta.get("studies") or {}).get(parts[2], {}))
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(pr, dict) and pr.get("eta_min_max") is not None:
+            v[f[0].strip()] = {"node": f[2].strip(), "cpus": int(f[3]) if f[3].isdigit() else None,
+                               "eta_min": float(pr["eta_min_max"]), "name": f"{parts[1]}/{parts[2]}"}
+    _ETAS.update(at=time.time(), v=v)
+    return v
+
+
+def eta_start(job: dict, reason: str, slurm_start: str | None) -> dict | None:
+    """A sooner start than SLURM's for a queued job, from the ETAs of the running jobs it waits for: its previous
+    segment (reason Dependency: the job.json's previous job) or, waiting for Resources/Priority on its node, the
+    first of that node's running jobs of this translator to finish. None when SLURM's is as early."""
+    etas = running_etas()
+    if not etas:
+        return None
+    prev = (job.get("previous_jobs") or [])[-1:] if job.get("segment") else []
+    cand = None
+    if "Dependency" in (reason or "") and prev and str(prev[0]) in etas:
+        cand = (etas[str(prev[0])]["eta_min"], f"its previous segment (job {prev[0]}) should end then")
+    elif reason in ("Resources", "Priority"):
+        mine = _my_nodes()
+        here = [(e["eta_min"], j) for j, e in etas.items() if not mine or _expand_nodes(e["node"]) & mine]
+        if here:
+            m, j = min(here)
+            cand = (m, f"the first running job on its node (job {j}, {etas[j]['name']}) should end then")
+    if cand is None:
+        return None
+    t = time.time() + 60 * cand[0]
+    when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
+    if slurm_start and slurm_start not in ("N/A", "Unknown") and slurm_start <= when:
+        return None
+    return {"expected_start": when, "expected_start_slurm": slurm_start or None,
+            "expected_start_note": f"from the running jobs' own progress: {cand[1]}; SLURM counts their whole time "
+                                   "limit (an upper bound)"}
 
 
 def cancel_slurm(request: Path, names: list[str]) -> list[str]:

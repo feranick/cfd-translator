@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.03.1
+Version: 2026.11.06.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import multiprocessing as mp
 import os
 import time
@@ -91,10 +92,10 @@ def validate(studies: dict) -> dict:
     ex, groups, errs = prepare_studies(studies)
     v = _validate(ex) if ex else {"ok": not errs, "studies": {}, "errors": [] if errs else
                                    ["studies: a non-empty dict {name: study}"]}
-    from .transient import continue_problems
-    for n, st in ex.items():                 # a run to continue must be on this machine
+    from .transient import continue_problems, init_problems
+    for n, st in ex.items():                 # a run to continue or start from must be on this machine
         if isinstance(st, dict) and n not in errs:
-            cp = continue_problems(st)
+            cp = continue_problems(st) + init_problems(st)
             if cp:
                 errs[n] = cp
     for n, e in errs.items():
@@ -143,9 +144,10 @@ def guide(topic: str | None = None) -> dict:
     return _g(topic)
 
 
-def add_geometry(name: str, goal=None, step=None, step_base64=None) -> dict:
+def add_geometry(name: str, goal=None, step=None, step_base64=None, stl=None, stl_base64=None, scale=1.0,
+                 groups=None) -> dict:
     from .variants import add_geometry as _add
-    return _add(name, goal, step, step_base64)
+    return _add(name, goal, step, step_base64, stl, stl_base64, scale, groups)
 
 
 def list_geometry() -> dict:
@@ -262,6 +264,9 @@ def _collect(folder: Path) -> dict:
                 out[name] = h.get()
             except Exception as exc:  # noqa: BLE001
                 out[name] = {"ok": False, "why": "worker failed", "error": str(exc)[:500]}
+        elif h is None and (folder / name / "cancel").exists():
+            out[name] = {"ok": False, "state": "cancelled",
+                         "why": "cancelled with cancel(request) before it finished (it ran in this server's workers)"}
         elif h is None:
             out[name] = {"ok": False, "state": "failed",
                          "why": "not finished and not running here (the server restarted?); run it again"}
@@ -315,6 +320,12 @@ def _progress(d: Path, study: dict) -> dict:
             lay = m.get("layers") or {}
             if "coverage_pct" in lay:
                 out["mesh"]["layers_coverage_pct"] = lay["coverage_pct"]
+            try:                               # the estimate the job was sized with, next to the real count
+                ce = json.loads((d / "job.json").read_text()).get("cells_estimate") if (d / "job.json").is_file() else None
+            except (OSError, ValueError):
+                ce = None
+            if ce:
+                out["mesh"]["cells_estimate"] = ce
             if m.get("warnings"):
                 out["mesh_warnings"] = m["warnings"][:6]
         from .foam import diverged, divergence_message
@@ -417,15 +428,22 @@ def _progress_of(d: Path, study: dict) -> dict:
             "note": "eta is an upper bound: the run stops earlier when it converges"}
 
 
-def start(studies: dict, solver: str | None = None) -> Path:
-    folder = _request_dir("run")
+REQUEST_NAME = re.compile(r"^run_[A-Za-z0-9_.-]{1,80}$")
+
+
+def start(studies: dict, solver: str | None = None, request_name: str | None = None) -> Path:
+    if request_name:                       # chosen by the caller (the router), so it knows the path before the answer
+        folder = out_root() / request_name
+        folder.mkdir(parents=True, exist_ok=False)
+    else:
+        folder = _request_dir("run")
     (folder / "studies.json").write_text(json.dumps(studies, indent=1))
     s = _solver(solver)
     studies, groups, pre = prepare_studies(studies)
-    from .transient import continue_problems
+    from .transient import continue_problems, init_problems
     for n, st in studies.items():
-        if isinstance(st, dict) and n not in pre and continue_problems(st):
-            pre[n] = continue_problems(st)
+        if isinstance(st, dict) and n not in pre and (continue_problems(st) or init_problems(st)):
+            pre[n] = continue_problems(st) + init_problems(st)
     invalid, jobs = {}, []
     for n, st in studies.items():
         v = validate_study(st) if n not in pre else {"ok": False, "errors": pre[n]}
@@ -491,10 +509,12 @@ def summarize(r: dict) -> dict:
     return out
 
 
-def status(request: str, wait: float = 0.0, detail: str = "full") -> dict:
+def status(request: str, wait: float = 0.0, detail: str = "full", window: list | None = None) -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
+    if window is not None:
+        return _window(folder, window)
     t0 = time.time()
     t_end = t0 + max(0.0, float(wait))
     while True:
@@ -506,6 +526,27 @@ def status(request: str, wait: float = 0.0, detail: str = "full") -> dict:
         if prog and all("job_id" in v for v in prog.values()) and time.time() - t0 >= 15:
             return _detail(res, detail)
         time.sleep(2.0)
+
+
+def _window(folder: Path, window) -> dict:
+    """Averages of the request's finished transient studies over window [t0, t1] (t1 null: to the end)."""
+    from .average import window_average
+    if not (isinstance(window, (list, tuple)) and len(window) == 2 and isinstance(window[0], (int, float))
+            and (window[1] is None or isinstance(window[1], (int, float)))
+            and (window[1] is None or window[1] > window[0])):
+        return {"error": "window: [t0, t1] in s with t0 < t1 (t1 null: to the end of the run)"}
+    meta = json.loads((folder / "request.json").read_text())
+    out = {}
+    for n in meta["names"]:
+        if not (folder / n / f"{n}.json").is_file():
+            out[n] = {"error": "not finished"}
+            continue
+        try:
+            out[n] = window_average(folder / n, n, (meta.get("studies") or {}).get(n, {}), float(window[0]),
+                                    None if window[1] is None else float(window[1]))
+        except Exception as exc:  # noqa: BLE001
+            out[n] = {"error": f"{type(exc).__name__}: {exc}"}
+    return {"request": str(folder), "translator": __version__, "window": list(window), "studies": out}
 
 
 def reprocess(request: str, studies: list[str] | None = None) -> dict:
@@ -580,11 +621,28 @@ def _detail(res: dict, detail: str) -> dict:
     return dict(res, studies={n: summarize(r) for n, r in (res.get("studies") or {}).items()})
 
 
-def run(studies: dict, solver: str | None = None, wait: float | None = None, detail: str = "full") -> dict:
+def run(studies: dict, solver: str | None = None, wait: float | None = None, detail: str = "full",
+        request_name: str | None = None) -> dict:
     """Runs the studies into a new request folder under CFDT_OUT: per study <name>/case (the OpenFOAM
-    case with logs and results), <name>_case.tgz, <name>.json; and studies.json, results.json."""
-    folder = start(studies, solver)
-    return status(str(folder), 1e9 if wait is None else wait, detail)
+    case with logs and results), <name>_case.tgz, <name>.json; and studies.json, results.json.
+    request_name ('run_<anything>'): the folder's name, chosen by the caller so that it knows the request path even
+    when the answer does not reach it in time; a call repeating a name that exists returns that request's status
+    instead of submitting again (a retry after a time-out cannot run the studies twice)."""
+    t0 = time.time()
+    if request_name is not None:
+        if not isinstance(request_name, str) or not REQUEST_NAME.match(request_name):
+            return {"error": "request_name: 'run_' followed by letters, digits, _ . - (up to 80)"}
+        if (out_root() / request_name / "request.json").is_file():
+            res = status(str(out_root() / request_name), 0.0 if wait is None else min(wait, 15.0), detail)
+            return dict(res, note="this request_name was submitted before: its status, nothing submitted again")
+        if (out_root() / request_name).exists():
+            return {"error": f"request_name {request_name!r}: the folder exists but holds no request (still being "
+                             "submitted by an earlier call? call again in a few seconds)",
+                    "request": str(out_root() / request_name)}
+    folder = start(studies, solver, request_name)
+    # the wait counts from the call's start: building goals and submitting can take a while on a busy machine,
+    # and an MCP call must end within a minute (the router's limit)
+    return status(str(folder), 1e9 if wait is None else max(0.0, wait - (time.time() - t0)), detail)
 
 
 def _requests(limit: int):
@@ -613,13 +671,18 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
             jid = json.loads(jf.read_text()).get("job_id") if jf.is_file() else None
             if n in st:
                 s_ = st[n]
-                studies[n] = {k: s_.get(k) for k in ("state", "job_id", "reason", "expected_start", "ahead", "iteration",
-                                                      "max_iterations", "eta_min_max", "job_elapsed_min", "why")
+                studies[n] = {k: s_.get(k) for k in ("state", "job_id", "reason", "expected_start", "expected_start_slurm",
+                                                      "ahead", "stage", "iteration", "max_iterations", "time", "end_time",
+                                                      "eta_min_max", "job_elapsed_min", "why")
                               if s_.get(k) is not None}
+                if isinstance(s_.get("mesh"), dict) and s_["mesh"].get("cells"):
+                    studies[n]["mesh_cells"] = s_["mesh"]["cells"]
             elif (req / n / f"{n}.json").is_file():
                 r = json.loads((req / n / f"{n}.json").read_text())
                 studies[n] = {"state": r.get("state", "done" if r.get("ok") else "failed"), "job_id": jid,
                               "ok": r.get("ok"), **({"reliable": r["reliable"]} if "reliable" in r else {})}
+            elif (req / n / "cancel").exists():
+                studies[n] = {"state": "cancelled", "job_id": jid}
             else:
                 studies[n] = {"state": "local", "job_id": jid}
         live = any(v.get("state") in ("queued", "running") for v in studies.values())
@@ -670,7 +733,12 @@ def run_study_job(request: str, name: str) -> int:
 def case(study: dict, name: str = "study") -> dict:
     """Meshes the study and writes its OpenFOAM case without solving; returns the dictionaries as text."""
     from .runner import prepare
+    from .variants import resolve
 
+    if isinstance(study, dict):           # geometry {"ref": name} as in run_studies
+        study, err = resolve(study)
+        if err:
+            return {"error": "invalid study", "errors": [err]}
     v = validate_study(study)
     if not v["ok"]:
         return {"error": "invalid study", "errors": v["errors"]}

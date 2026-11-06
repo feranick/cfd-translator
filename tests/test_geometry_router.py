@@ -1,0 +1,371 @@
+"""Tests of 2026.11.06.1: mesh geometry (STL/OBJ/PLY) with groups, region selectors, several solids, goal files and
+get_case refs, window averages, init_from, per-node queues, request names, image NaN guard, local cancel state.
+pytest -q"""
+from __future__ import annotations
+
+import json
+import struct
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from cfd_translator import api, meshsurf, select, snappy
+from cfd_translator.format import _step_solids, validate_study
+
+
+def _box(lo, hi, n=1):
+    """Triangles (T, 3, 3) of a closed box, outward, each side split n x n."""
+    lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+    tris = []
+    for ax in range(3):
+        u, v = [k for k in range(3) if k != ax]
+        for side, sgn in ((lo[ax], -1), (hi[ax], 1)):
+            g = np.linspace(0, 1, n + 1)
+            for i in range(n):
+                for j in range(n):
+                    def P(a, b):
+                        p = np.zeros(3)
+                        p[ax] = side
+                        p[u] = lo[u] + (hi[u] - lo[u]) * a
+                        p[v] = lo[v] + (hi[v] - lo[v]) * b
+                        return p
+                    q = [P(g[i], g[j]), P(g[i + 1], g[j]), P(g[i + 1], g[j + 1]), P(g[i], g[j + 1])]
+                    t1, t2 = [q[0], q[1], q[2]], [q[0], q[2], q[3]]
+                    nrm = np.cross(q[1] - q[0], q[2] - q[0])
+                    if nrm[ax] * sgn < 0:
+                        t1, t2 = t1[::-1], t2[::-1]
+                    tris += [t1, t2]
+    return np.array(tris)
+
+
+def _cyl_y(c, r, h, n=48):
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    P0 = np.c_[c[0] + r * np.cos(a), np.full(n, c[1]), c[2] + r * np.sin(a)]
+    P1 = P0 + [0, h, 0]
+    C0, C1 = np.asarray(c, float), np.asarray(c, float) + [0, h, 0]
+    T = []
+    for i in range(n):
+        j = (i + 1) % n
+        T += [[P0[i], P0[j], P1[j]], [P0[i], P1[j], P1[i]], [C0, P0[j], P0[i]], [C1, P1[i], P1[j]]]
+    return np.array(T)
+
+
+def _ascii_stl(path, solids):
+    with open(path, "w") as f:
+        for nm, T in solids:
+            f.write(f"solid {nm}\n")
+            for t in T:
+                f.write(" facet normal 0 0 0\n  outer loop\n")
+                for v in t:
+                    f.write(f"   vertex {v[0]:.9g} {v[1]:.9g} {v[2]:.9g}\n")
+                f.write("  endloop\n endfacet\n")
+            f.write(f"endsolid {nm}\n")
+    return str(path)
+
+
+def _binary_stl(path, T):
+    with open(path, "wb") as f:
+        f.write(b"solid but binary".ljust(80, b" "))
+        f.write(struct.pack("<I", len(T)))
+        for t in T:
+            f.write(struct.pack("<3f", 0, 0, 0) + struct.pack("<9f", *np.asarray(t, float).ravel()) + b"\0\0")
+    return str(path)
+
+
+@pytest.fixture
+def car(tmp_path):
+    body = _box([0, 0, 0], [100, 50, 40], n=4)
+    body[5] = body[5][::-1]                        # one triangle the wrong way round
+    return _ascii_stl(tmp_path / "car.stl", [("body", body), ("wheel_front", _cyl_y([20, -15, 10], 10, 12)),
+                                              ("wheel_rear", _cyl_y([80, -15, 10], 10, 12))])
+
+
+def _study(stl, bcs, **kw):
+    return {"geometry": {"stl": stl}, "domain": {"kind": "external", "box": [-100, -60, -30, 300, 120, 120]},
+            "fluid": "air", "model": "kOmegaSST", "mesh": {"mesher": "snappy", "size": 20},
+            "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": [10, 0, 0]},
+                    {"kind": "outlet", "faces": {"box": "xmax"}}] + bcs, **kw}
+
+
+# ---- reading and checking mesh geometry ----------------------------------------------------------------------------
+def test_ascii_stl_groups_bodies_and_orientation(car):
+    L = meshsurf.load({"stl": car})
+    assert L["names"] == ["body", "wheel_front", "wheel_rear"] and L["bodies"] == 3
+    assert all(v > 0 for v in L["body_volumes_mm3"])                 # every body turned outward
+    assert L["body_volumes_mm3"][0] == pytest.approx(100 * 50 * 40)
+    assert L["flipped"] >= 1
+    assert meshsurf.inside(L["points"], L["tris"], [[50, 25, 20], [150, 0, 0], [20, -10, 10]]).tolist() == \
+        [True, False, True]
+    st = meshsurf.surface_stats(car)
+    assert st["bodies"] == 3 and st["open_edges"] == 0 and st["groups"][1] == "wheel_front"
+
+
+def test_binary_stl_obj_and_ply_with_groups(tmp_path):
+    T = _box([0, 0, 0], [10, 20, 30])
+    b = meshsurf.load({"stl": _binary_stl(tmp_path / "b.stl", T)})
+    assert b["names"] == ["part"] and b["body_volumes_mm3"][0] == pytest.approx(6000, rel=1e-5)
+    # OBJ: shared vertices, two groups, a quad
+    obj = tmp_path / "m.obj"
+    V = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]
+    F = {"bottom": [[1, 4, 3, 2]], "rest": [[5, 6, 7, 8], [1, 2, 6, 5], [2, 3, 7, 6], [3, 4, 8, 7], [4, 1, 5, 8]]}
+    obj.write_text("\n".join(f"v {x} {y} {z}" for x, y, z in V) + "\n" +
+                   "".join(f"g {g}\n" + "".join("f " + " ".join(map(str, f)) + "\n" for f in fs) for g, fs in F.items()))
+    o = meshsurf.load({"stl": str(obj), "scale": 10})
+    assert o["names"] == ["bottom", "rest"] and o["body_volumes_mm3"][0] == pytest.approx(1000)
+    assert int((o["group"] == 0).sum()) == 2
+    # PLY (ascii) with a per-face label
+    ply = tmp_path / "m.ply"
+    faces = [f for fs in F.values() for f in fs]
+    ply.write_text("ply\nformat ascii 1.0\nelement vertex 8\nproperty float x\nproperty float y\nproperty float z\n"
+                   "element face 6\nproperty list uchar int vertex_indices\nproperty int label\nend_header\n" +
+                   "".join(f"{x} {y} {z}\n" for x, y, z in V) +
+                   "".join(f"4 {' '.join(str(i - 1) for i in f)} {0 if k == 0 else 1}\n" for k, f in enumerate(faces)))
+    p = meshsurf.load({"stl": str(ply)})
+    assert p["names"] == ["g0", "g1"] and p["body_volumes_mm3"][0] == pytest.approx(1)
+    # groups given per triangle
+    g = meshsurf.load({"stl": str(ply), "groups": {"lid": [0, 1]}})
+    assert "lid" in g["names"] and int((g["group"] == g["names"].index("lid")).sum()) == 2
+
+
+def test_open_mesh_is_rejected(tmp_path):
+    T = _box([0, 0, 0], [10, 10, 10])[:-1]
+    f = _ascii_stl(tmp_path / "open.stl", [("x", T)])
+    with pytest.raises(meshsurf.SurfaceError, match="not a closed surface"):
+        meshsurf.load({"stl": f})
+    e = validate_study(_study(f, []))["errors"]
+    assert any("not a closed surface" in x for x in e)
+
+
+def test_stl_validation(car):
+    assert validate_study(_study(car, [{"kind": "wall", "faces": {"group": "wheel_front"}}]))["ok"]
+    no_snappy = _study(car, [])
+    no_snappy["mesh"] = {"size": 20}
+    assert any("mesher 'snappy'" in x for x in validate_study(no_snappy)["errors"])
+    internal = dict(_study(car, []), domain={"kind": "internal"}, bcs=[{"kind": "inlet", "faces": {"nx": -1},
+                                                                         "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}])
+    assert any("separate bodies" in x for x in validate_study(internal)["errors"])
+    bad = [{"in_box": [0, 0, 0, -1, 1, 1]}, {"in_cyl": {"axis": [0, 0, 0], "r": 1}}, {"group": 3}, {"solid": -1},
+           {"in_cyl": {"axis": [0, 1, 0], "r": 5, "y": [3, 1]}}, {"group": "a", "at": [0, 0, 0]}]
+    for sel in bad:
+        assert not validate_study(_study(car, [{"kind": "wall", "faces": sel}]))["ok"], sel
+
+
+# ---- faces, selectors and splitting ---------------------------------------------------------------------------------
+def _groups(st):
+    pts, surf, ipt, _ = snappy.surface_premesh(st, "/tmp", 10, 1, st["domain"]["box"])
+    meta = snappy.surface_premesh.meta
+    surf, info, notes = select.split_regions(pts, surf, {t: {"on": "part", **meta.get(t, {})} for t, _ in surf}, st)
+    tags = np.concatenate([np.full(len(t), tg) for tg, t in surf])
+    rings = np.concatenate([t[:, ::-1] for _, t in surf])
+    return select.Groups(pts, rings, tags, info, True), surf, info, notes, ipt
+
+
+def test_group_solid_and_region_selectors(car):
+    reg = {"in_box": [-1, -1, -1, 30.5, 51, 41]}               # the front of the body: splits its long sides
+    st = _study(car, [{"kind": "wall", "name": "front", "faces": reg}])
+    G, surf, info, notes, ipt = _groups(st)
+    assert notes and "split" in notes[0]
+    wf, wr = G.select({"group": "wheel_front"}), G.select({"group": "wheel_rear"})
+    assert wf and wr and not set(wf) & set(wr)
+    assert set(G.select({"solid": 1})) == set(wf)
+    assert len(G.select({"cyl_r": 10})) == 2                   # both treads (faceted, 48 sides)
+    front = G.select(reg)
+    C = np.concatenate([G.groups[t].Cf for t in front])
+    assert (C[:, 0] <= 30.5).all() and len(front) >= 5        # exactly the triangles inside: x0 face + 4 sides' parts
+    wheel = G.select({"in_cyl": {"axis": [0, 1, 0], "center": [80, -15, 10], "r": 11, "y": [-16, -2]}})
+    assert set(wheel) == set(wr)
+    with pytest.raises(Exception, match="no face group"):
+        G.select({"group": "spoiler"})
+    # assign_bcs with them: no face taken twice
+    st2 = _study(car, [{"kind": "wall", "name": "wf", "faces": {"group": "wheel_front"}},
+                       {"kind": "wall", "name": "wr", "faces": {"in_cyl": {"axis": [0, 1, 0], "center": [80, -15, 10],
+                                                                           "r": 11, "span": [-1, 13]}}},
+                       {"kind": "wall", "name": "front", "faces": reg}])
+    G2, *_ = _groups(st2)
+    st2["bcs"] = st2["bcs"][2:]                                # the box sides are not in this surface-only test
+    patches, sel, warns = select.assign_bcs(G2, st2)
+    tags = {p["name"]: set(p["tags"]) for p in patches}
+    assert list(tags)[:3] == ["wf", "wr", "front"] and "walls" in tags
+    assert not (tags["wf"] & tags["front"]) and tags["wr"] == set(G2.select({"group": "wheel_rear"}))
+
+
+def test_stl_inside_point_internal(tmp_path):
+    f = _ascii_stl(tmp_path / "duct.stl", [("duct", _box([0, 0, 0], [200, 20, 20], n=2))])
+    st = {"geometry": {"stl": f}, "fluid": "water", "mesh": {"mesher": "snappy", "size": 4},
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}]}
+    pts, surf, ipt, bb = snappy.surface_premesh(st, tmp_path, 4, 1, None)
+    assert ipt is not None and (ipt > 0).all() and ipt[0] < 200 and ipt[1] < 20
+    assert snappy.surface_premesh.stl["faces"] == 6
+
+
+def test_step_solid_count(tmp_path):
+    p = tmp_path / "x.step"
+    body = "ISO-10303-21;\n" + "#1=MANIFOLD_SOLID_BREP('a',#2);\n" + "x" * (1 << 22) + "#3=MANIFOLD_SOLID_BREP('b',#4);\n"
+    p.write_text(body)
+    assert _step_solids(str(p)) == 2
+    st = {"geometry": {"step": str(p)}, "fluid": "water", "mesh": {"size": 2},
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}]}
+    assert any("fuse" in e for e in validate_study(st)["errors"])
+
+
+# ---- registration, refs, goal files -------------------------------------------------------------------------------
+def test_add_geometry_stl_and_goal_file(tmp_path, monkeypatch, car):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
+    r = api.add_geometry("rogue", stl=car)
+    assert r["ok"] and r["bodies"] == 3 and r["groups"] == ["body", "wheel_front", "wheel_rear"] and "note" in r
+    from cfd_translator.variants import resolve
+    st, err = resolve({"geometry": {"ref": "rogue"}})
+    assert err is None and st["geometry"]["stl"].endswith("rogue.stl")
+    gf = tmp_path / "goal.json"
+    gf.write_text(json.dumps({"base": {"features": [{"type": "box", "size": [10, 10, 10]}]}}))
+    from cfd_translator.variants import _goal_from_text
+    g, e = _goal_from_text(str(gf))
+    assert e is None and g["features"][0]["type"] == "box"
+    assert _goal_from_text(str(tmp_path / "missing.json"))[1].startswith("goal: no file")
+    assert "no build123d" in _goal_from_text('{"a": 1}')[1]
+    bad = api.add_geometry("x", stl=str(tmp_path / "missing.stl"))
+    assert not bad["ok"]
+
+
+def test_get_case_resolves_a_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
+    r = api.case({"geometry": {"ref": "nothing"}, "fluid": "water", "bcs": []})
+    assert r["error"] == "invalid study" and "no geometry 'nothing'" in r["errors"][0]
+
+
+# ---- run handling ---------------------------------------------------------------------------------------------------
+COUETTE = {"2d": True, "geometry": {"box": [1.0, 0.1, 0.01]}, "fluid": {"rho": 1000.0, "mu": 1e-3},
+           "bcs": [{"kind": "wall", "name": "lid", "faces": {"ny": 1}, "velocity": [0.01, 0, 0]},
+                   {"kind": "wall", "name": "bottom", "faces": {"ny": -1}},
+                   {"kind": "opening", "name": "left", "faces": {"nx": -1}},
+                   {"kind": "opening", "name": "right", "faces": {"nx": 1}}],
+           "mesh": {"cells": [20, 10, 1]}}
+
+
+def test_request_name_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
+    monkeypatch.delenv("CFDT_EXECUTOR", raising=False)
+    r = api.run({"c": COUETTE}, "ref", wait=30, request_name="run_router_abc123")
+    assert r["request"].endswith("run_router_abc123") and r["done"]
+    again = api.run({"c": COUETTE}, "ref", wait=1, request_name="run_router_abc123")
+    assert "submitted before" in again["note"] and again["studies"]["c"]["ok"]
+    assert "error" in api.run({"c": COUETTE}, "ref", request_name="../evil")
+
+
+def test_local_cancel_flag_reads_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
+    req = tmp_path / "out" / "run_x"
+    (req / "c").mkdir(parents=True)
+    (req / "request.json").write_text(json.dumps({"names": ["c"], "solver": "ref", "studies": {"c": COUETTE}}))
+    (req / "c" / "cancel").write_text("1")
+    s = api.status(str(req))
+    assert s["studies"]["c"]["state"] == "cancelled"
+
+
+def test_image_limits_ignore_nan():
+    from cfd_translator.render import _limits
+    lo, hi, _ = _limits(np.array([1.0, np.nan, 3.0, np.inf]), {}, "full")
+    assert (lo, hi) == (1.0, 3.0)
+    with pytest.raises(ValueError, match="no finite values"):
+        _limits(np.array([np.nan, np.nan]), {}, "robust")
+
+
+# ---- window averages -------------------------------------------------------------------------------------------------
+def _write(path: Path, header: str, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# Forces\n#\n" + header + "\n" + "\n".join(rows) + "\n")
+
+
+def test_window_average_from_force_histories(tmp_path):
+    folder = tmp_path / "s"
+    t = np.linspace(0.001, 4.0, 4000)
+    Fx = 2.0 + 0.1 * np.sin(2 * np.pi * 5 * t) + 0.05 * (t > 2)        # steps up at 2 s
+    Fz = 0.3 * np.sin(2 * np.pi * 5 * t)
+    hdr = "# Time\ttotal_x\ttotal_y\ttotal_z"
+    _write(folder / "case" / "postProcessing" / "cfdtF_body" / "0" / "forces.dat", hdr,
+           [f"{a:.6g}\t({x / 1.2:.9g} 0 {z / 1.2:.9g})" for a, x, z in zip(t, Fx, Fz)])   # kinematic
+    _write(folder / "case" / "postProcessing" / "cfdtFp_wheel" / "0" / "forces.dat", hdr,
+           [f"{a:.6g}\t({0.1 * x / 1.2:.9g} 0 0)" for a, x in zip(t, Fx)])
+    qa = 0.5 * 1.2 * 30 ** 2 * 0.01
+    m = t >= 1.0
+    res = {"ok": True, "results": {"coefficients": {"cd": float(Fx[m].mean() / qa), "drag_dir": [1, 0, 0],
+                                                    "lift_dir": [0, 0, 1], "q_Pa": 0.5 * 1.2 * 900, "area_m2": 0.01},
+                                   "averaged": {"settings": {"transient": True, "from": 1.0},
+                                                "quantities": {"cd": {"mean": float(Fx[m].mean() / qa)}}}}}
+    (folder / "s.json").write_text(json.dumps(res))
+    from cfd_translator.average import window_average
+    w = window_average(folder, "s", {"reference": {"velocity": 30}}, 2.5, 3.5)
+    assert w["cd"]["mean"] == pytest.approx(2.05 / qa, rel=2e-3)
+    assert w["window_s"][0] >= 2.5 and w["window_s"][1] <= 3.5 and w["frequency_Hz"] == pytest.approx(5, rel=0.05)
+    assert w["patches"]["wheel"]["force_N"]["fx"] == pytest.approx(0.205, rel=3e-3)
+    w2 = window_average(folder, "s", {"reference": {"velocity": 30}}, 1.0, 2.0)
+    assert w2["cd"]["mean"] == pytest.approx(2.0 / qa, rel=2e-3)
+    assert "error" in window_average(folder, "s", {"reference": {"velocity": 30}}, 5.0, 6.0)
+
+
+# ---- init_from -----------------------------------------------------------------------------------------------------------
+def test_init_from_maps_fields(tmp_path, monkeypatch):
+    from cfd_translator import transient
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    src = tmp_path / "run_a" / "base" / "case"
+    (src / "constant" / "polyMesh").mkdir(parents=True)
+    (src / "system").mkdir()
+    (src / "system" / "controlDict").write_text("x")
+    (src / "2.5").mkdir()
+    for f in ("U", "p", "k", "omega", "UMean", "pMean"):
+        (src / "2.5" / f).write_text(f"FoamFile\n{{\n    object      {f};\n}}\n")
+    st = {"solve": {"transient": {"end_time": 2.5, "init_from": "run_a/base"}}}
+    assert transient.init_problems(st) == []
+    assert transient.init_problems({"solve": {"transient": {"end_time": 1, "init_from": "run_a/none"}}})
+    dst = tmp_path / "run_b" / "v" / "case"
+    (dst / "0").mkdir(parents=True)
+    (dst / "system").mkdir()
+    for f in ("U", "p", "k", "omega", "nut"):
+        (dst / "0" / f).write_text("x")
+    ran = []
+
+    def step(cmd, log):
+        ran.append(cmd)
+        tmp = Path(cmd.split()[1])
+        assert sorted(p.name for p in (tmp / "1").iterdir()) == ["U", "k", "omega", "p"]
+        assert "object      U;" in (tmp / "1" / "U").read_text()
+    notes = transient.map_from(dst, "run_a/base", "mean", step)
+    assert ran and "-sourceTime 1" in ran[0] and "U (mean)" in notes[0]
+    assert "patchMap" in (dst / "system" / "mapFieldsDict").read_text()
+    assert transient.settings({"model": "kOmegaSST", "solve": st["solve"], "bcs": [],
+                               "reference": {"velocity": 10}})["init"] == 0
+    bad = {"geometry": {"box": [1, 1, 1]}, "fluid": "air", "model": "kOmegaSSTDES", "mesh": {"size": 0.2},
+           "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}],
+           "solve": {"transient": {"end_time": 1, "init_from": "x/y", "init": 100, "init_fields": "avg"}}}
+    e = validate_study(bad)["errors"]
+    assert any("init_fields" in x for x in e) and any("do not go together" in x for x in e)
+
+
+# ---- per-node queue ---------------------------------------------------------------------------------------------------
+def test_queue_counts_this_node_only(monkeypatch):
+    from cfd_translator import executor
+    out = {"squeue": "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n"
+                     "444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
+                     "450|cfdt:r3:c|RUNNING|4|spark-5da5|spark-5da5|me\n",
+           "sinfo": "4/16/0/20\n"}
+    monkeypatch.setenv("USER", "me")
+    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, out[cmd[0]], ""))
+    monkeypatch.setattr(executor, "effective_nodelist", lambda: "spark-5da5")
+    q = executor.queue_summary()
+    assert q["queue"] == {"running": 1, "queued": 0, "cpus_in_use": 4}
+    assert q["cluster_queue"]["running"] == 2 and q["cluster_queue"]["queued"] == 1
+    assert q["machine"]["node"] == "spark-5da5" and q["starts_now"] is False      # 4 CPUs in use
+    out["squeue"] = "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
+    out["sinfo"] = "0/20/0/20\n"
+    q = executor.queue_summary()
+    assert q["queue"]["running"] == 0 and q["starts_now"] is True and q["pending_for_node"] == 0
+
+
+def test_eta_start_for_a_later_segment(monkeypatch):
+    from cfd_translator import executor
+    monkeypatch.setattr(executor, "running_etas", lambda: {"500": {"node": "n1", "cpus": 20, "eta_min": 30.0,
+                                                                     "name": "r/a"}})
+    es = executor.eta_start({"segment": 2, "previous_jobs": ["500"]}, "Dependency", "2099-01-01T00:00:00")
+    assert es and es["expected_start"] < "2099" and "previous segment" in es["expected_start_note"]
+    assert executor.eta_start({"segment": 2, "previous_jobs": ["500"]}, "Dependency", "2000-01-01T00:00:00") is None
