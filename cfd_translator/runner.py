@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.06.2
+Version: 2026.11.06.3
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -20,18 +20,106 @@ from . import __version__
 from .format import validate_study
 
 
+# what decides the mesh and the patches: two studies that agree on these mesh the same way (an NPSH sweep's points)
+MESH_KEYS = ("geometry", "domain", "mesh", "bcs", "rotating", "porous", "2d")
+MESHED = "meshed.pkl"
+
+
+def mesh_key(study: dict) -> str:
+    import hashlib
+    d = {k: study.get(k) for k in MESH_KEYS}
+    d["version"] = __version__
+    return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _request_studies(folder: Path) -> dict:
+    try:
+        return json.loads((Path(folder).parent / "request.json").read_text()).get("studies") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _mesh_dependents(study: dict, folder: Path) -> list[str]:
+    """Studies of the same request that start from this one (init_from '<this study>') with the same mesh key: they
+    take this study's mesh instead of meshing again."""
+    from .transient import init_ref
+    key, me = mesh_key(study), Path(folder).name
+    return [n for n, st in _request_studies(folder).items()
+            if n != me and isinstance(st, dict) and init_ref(st)[0] == me and mesh_key(st) == key]
+
+
+def _reused_mesh(study: dict, folder: Path):
+    """The mesh of the run this study starts from (init_from), when it was meshed from the same geometry, mesh
+    settings and bcs (mesh_key) and saved for it (meshed.pkl): (mesh, patches, selection, warns, source) or None.
+    A source of the same request still meshing is waited for (its SLURM job ran first; a local one runs alongside)."""
+    import pickle
+
+    from .transient import init_ref, init_source
+    ref, _ = init_ref(study)
+    if not ref:
+        return None
+    folder = Path(folder)
+    src = init_source(ref, folder.parent).resolve()
+    key = mesh_key(study)
+    pf = src / MESHED
+    if not pf.is_file() and src.parent == folder.resolve().parent:
+        sst = _request_studies(folder).get(src.name)
+        if not (isinstance(sst, dict) and mesh_key(sst) == key):
+            return None
+        t_end = time.time() + float(os.environ.get("CFDT_MESH_WAIT_S", "86400"))
+        while not pf.is_file() and time.time() < t_end and not (src / f"{src.name}.json").is_file():
+            if (folder / "cancel").exists():
+                return None
+            time.sleep(10.0)
+    if not pf.is_file():
+        return None
+    try:
+        with open(pf, "rb") as f:
+            rec = pickle.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+    if rec.get("key") != key:
+        return None
+    others = [n for n, st in _request_studies(src).items()
+              if n not in (src.name, folder.name) and isinstance(st, dict) and init_ref(st)[0] == src.name]
+    if not others:                            # the next point saves its own: keep one copy at a time
+        try:
+            pf.unlink()
+        except OSError:
+            pass
+    return rec["mesh"], rec["patches"], rec["selection"], list(rec["warns"]), src
+
+
 def prepare(study: dict, folder: Path):
     from .case import write_case
     from .mesher import mesh_study
     from .select import assign_bcs, mesh_groups
 
     external = study.get("domain", {}).get("kind") == "external"
-    mesh = mesh_study(study, folder)
-    if "assigned" in mesh.info:            # snappyHexMesh: the bcs were chosen on the part's surface before meshing
-        patches, selection, warns = mesh.info.pop("assigned")
+    reused = _reused_mesh(study, folder)
+    if reused is not None:
+        mesh, patches, selection, warns, src = reused
+        warns = [w for w in warns if not w.startswith("mesh reused from")] + [
+            f"mesh reused from {src} (same geometry, mesh settings and bcs): not meshed again"]
+        mesh.info["reused_from"] = str(src)
     else:
-        groups = mesh_groups(mesh, external)
-        patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
+        mesh = mesh_study(study, folder)
+        if "assigned" in mesh.info:            # snappyHexMesh: the bcs were chosen on the part's surface before meshing
+            patches, selection, warns = mesh.info.pop("assigned")
+        else:
+            groups = mesh_groups(mesh, external)
+            patches, selection, warns = assign_bcs(groups, study, mesh.info.get("empty_tags", []))
+    if _mesh_dependents(study, folder):
+        # the next study of a chain (an NPSH sweep's next point) takes this mesh as it is before the case is written
+        import pickle
+        try:
+            tmp = Path(folder) / (MESHED + ".tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump({"key": mesh_key(study), "mesh": mesh, "patches": patches, "selection": selection,
+                             "warns": list(warns)}, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, Path(folder) / MESHED)
+        except Exception as exc:  # noqa: BLE001
+            warns = list(warns) + [f"could not save the mesh for the next study of the chain ({exc}): it meshes again"]
     try:
         plan = write_case(study, mesh, patches, Path(folder) / "case")
     except Exception as exc:
@@ -87,7 +175,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         out["selection"] = selection
         out["mesh"] = {k: v for k, v in plan["quality"].items()}
         out["mesh"].update({k: mesh.info[k] for k in ("kind", "size", "layers", "cells_2d", "quads_2d",
-                                                       "boundary_layers_on", "cells_xyz", "snappy", "regions_removed") if k in mesh.info})
+                                                       "boundary_layers_on", "cells_xyz", "snappy", "regions_removed", "reused_from") if k in mesh.info})
         try:                                   # for the progress of a running study (api._progress)
             from .executor import write_atomic
             write_atomic(folder / "mesh.json", json.dumps({**out["mesh"], "warnings": list(warns)}, default=float))

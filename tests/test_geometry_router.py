@@ -455,3 +455,25 @@ def test_chained_npsh_sweep_and_steady_init_from_validation(tmp_path, monkeypatc
             "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}]}
     assert validate_study(dict(base, solve={"init_from": "b"}))["ok"]
     assert not validate_study(dict(base, solve={"init_fields": "last"}))["ok"]
+
+
+def test_chained_study_reuses_the_mesh(tmp_path, monkeypatch):
+    from cfd_translator import mesher, runner, transient
+    req = tmp_path / "run_c"
+    a = dict(COUETTE)
+    b = dict(COUETTE, solve={"init_from": "a"})
+    c = dict(COUETTE, mesh={"cells": [10, 10, 1]}, solve={"init_from": "b"})       # other cells: meshes itself
+    (req / "a").mkdir(parents=True)
+    (req / "request.json").write_text(json.dumps({"names": ["a", "b", "c"], "studies": {"a": a, "b": b, "c": c}}))
+    assert runner._mesh_dependents(a, req / "a") == ["b"] and runner._mesh_dependents(b, req / "b") == []
+    runner.prepare(a, req / "a")
+    assert (req / "a" / runner.MESHED).is_file()
+    calls = []
+    real = mesher.mesh_study
+    monkeypatch.setattr(mesher, "mesh_study", lambda *x, **k: calls.append(1) or real(*x, **k))
+    mesh, patches, sel, plan, warns = runner.prepare(b, req / "b")
+    assert not calls and any("mesh reused from" in w for w in warns) and mesh.info["reused_from"].endswith("/a")
+    assert not (req / "a" / runner.MESHED).exists()                  # one copy at a time
+    assert transient._same_mesh(req / "a" / "case", req / "b" / "case")
+    runner.prepare(c, req / "c")
+    assert calls == [1]                                              # different mesh settings: meshed

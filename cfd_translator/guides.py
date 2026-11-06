@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.06.2
+Version: 2026.11.06.3
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -65,15 +65,17 @@ GUIDES = {
             "npsh_inlet_m from the flow-weighted inlet total pressure, sigma_tip) and pump.head_m, power_W averaged "
             "over the last quarter. images: a 'vapour' slice (field vapour) shows where it forms.",
             "Mesh: the blades' leading edges and suction sides need fine cells (refine there, 0.2-0.5 mm on a "
-            "small pump); vapour sheets thinner than a few cells are not resolved. Each NPSH point meshes again "
-            "for now.",
+            "small pump); vapour sheets thinner than a few cells are not resolved. Each NPSH point meshes again, "
+            "except in a chain (below), where each point takes the previous point's mesh.",
             "Starts from earlier fields (solve.init_from: '<request>/<study>' of a finished run, or '<study>' of the same "
             "request, which then runs first): a clearance or rotor-angle variant from the baseline MRF run (U, p, k, "
             "omega, nut mapped with mapFields), the first NPSH point from the single-phase run (pressure not carried "
             "over), and with cavitation.chain true each NPSH point from the previous one (U, p_rgh, alpha, k, omega, "
             "nut; copied when the mesh is the same; the inlet pressure ramps down from the previous point's, the flow "
-            "is held from the start). Chained points run one after the other, not side by side: fewer iterations each "
-            "(cavitation.iterations) is what pays for it.",
+            "is held from the start). A chained point with the same geometry, mesh settings and bcs as the point it "
+            "starts from takes that point's mesh (not meshed again) and its fields are copied, not mapped. Chained "
+            "points run one after the other, not side by side: fewer iterations each (cavitation.iterations) is what "
+            "pays for it.",
         ],
         "reporting": [
             "Give pump.head_m, power_W and efficiency as revolution averages with results.averaged (std, drift, "

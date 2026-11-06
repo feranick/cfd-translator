@@ -204,7 +204,8 @@ Future (agreed, not started):
   as its propeller tutorial: correctPhi, correctMeshPhi, movingWallVelocity / movingWallSlipVelocity, alpha
   zeroGradient on the couple's patches); averages over whole revolutions; cavity shedding and pressure
   pulsations. Needs to_sliding to set alpha.water / p_rgh patchFields and a transient VoF controlDict.
-- One mesh shared by all points of a sweep (NPSH, flow points): each point meshes again now (S50 ~20 min).
+- One mesh shared by all points of a sweep: done for chained studies (2026.11.06.3, cavitation.chain or init_from with
+  the same mesh key); unchained parallel sweeps (flow points) still mesh each point.
 - Free-surface VoF (tanks, priming, sloshing, air entrainment); multi-region CHT (dual-fluid heat exchangers);
   Euler-Euler and particles (larger efforts, see the 2026.11.03 discussion).
 - Energy with MRF; supersonic; radiation.
@@ -343,6 +344,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.06.3**: a chained study with the same mesh key takes its source's mesh (meshed.pkl), fields copied.
 
 **2026.11.06.2**: solve.init_from for steady runs (MRF, cavitation), same-request sources (SLURM afterany),
 cavitation.chain for NPSH sweeps, internal fields copied on identical meshes. See README row.
