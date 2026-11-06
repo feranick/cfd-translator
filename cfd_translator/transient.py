@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -72,11 +72,11 @@ def settings(study: dict, mesh=None) -> dict | None:
     out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)), "max_co": float(tr.get("max_co", 1.0)),
            "write_interval": W,
            # a run started from another run's fields (init_from) needs no steady start
-           "init": int(tr.get("init", 0 if (model == "laminar" or tr.get("init_from")) else 500)),
+           "init": int(tr.get("init", 0 if (model == "laminar" or init_ref(study)[0]) else 500)),
            "max_jobs": int(tr.get("max_jobs", 10)), "dt": float(f"{dt:.4g}"), "model": model, "velocity": U,
            "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
            "max_dt": float(f"{min(W / 10, T / 500):.4g}"),
-           **({"init_from": tr["init_from"], "init_fields": tr.get("init_fields", "last")} if tr.get("init_from") else {})}
+           **({"init_from": init_ref(study)[0], "init_fields": init_ref(study)[1]} if init_ref(study)[0] else {})}
     sl = sliding_zone(study)
     if sl:
         # a sliding mesh: at most degrees_per_step of rotation per time step, Courant 2 (OpenFOAM's propeller
@@ -271,69 +271,161 @@ def continue_problems(study: dict) -> list[str]:
     return []
 
 
-INIT_FIELDS = ("U", "p", "k", "omega", "nut", "nuTilda")
+INIT_FIELDS = ("U", "p", "p_rgh", "alpha.water", "k", "omega", "nut", "nuTilda")
+MESH_FILES = ("points", "faces", "owner", "neighbour")
 
 
-def init_problems(study: dict) -> list[str]:
-    """Why solve.transient.init_from cannot be used here ([] when it can): the folder must hold a finished run of
-    this machine whose case has a written time in the case directory itself (reconstructed)."""
-    tr = (study.get("solve") or {}).get("transient") or {}
-    ref = tr.get("init_from")
+def init_ref(study: dict) -> tuple[str | None, str]:
+    """(the run a study starts from, which fields): solve.init_from (steady or transient) or
+    solve.transient.init_from; init_fields 'last' (default) or 'mean'."""
+    s = study.get("solve") or {}
+    tr = s.get("transient") or {}
+    ref = tr.get("init_from") or s.get("init_from")
+    return ref, (tr.get("init_fields") or s.get("init_fields") or "last")
+
+
+def init_source(ref: str, request: Path | None = None) -> Path:
+    """The study folder init_from names: '<request>/<study>' (under CFDT_OUT, or absolute), or '<study>' of the same
+    request."""
+    if "/" not in ref and request is not None:
+        return Path(request) / ref
+    return source_folder(ref)
+
+
+def source_times(src: Path) -> list:
+    case = Path(src) / "case"
+    return [x for x in _times(case) if x[0] > 0] if case.is_dir() else []
+
+
+def init_problems(study: dict, names=None, name: str | None = None) -> list[str]:
+    """Why init_from cannot be used ([] when it can). '<study>' must be another study of the same request (names;
+    it runs first and is checked when this one starts); '<request>/<study>' a finished run of this machine whose case
+    has a written time in the case directory itself (reconstructed)."""
+    ref, which = init_ref(study)
     if not ref:
         return []
-    src = source_folder(ref)
-    case = src / "case"
-    if not case.is_dir():
-        return [f"solve.transient.init_from: no case in {src} on this machine"]
-    t = [x for x in _times(case) if x[0] > 0]
-    if not t:
-        return [f"solve.transient.init_from: {src}/case has no reconstructed time directory after 0 (a sliding-mesh run "
-                "stays decomposed and cannot be mapped yet)"]
-    if tr.get("init_fields", "last") == "mean" and not (t[-1][1] / "UMean").is_file():
-        return [f"solve.transient.init_from: {src}'s latest time ({t[-1][0]:g} s) has no mean fields (UMean); use "
-                "init_fields 'last'"]
-    if tr.get("continue"):
+    s = study.get("solve") or {}
+    key = "solve.transient.init_from" if (s.get("transient") or {}).get("init_from") else "solve.init_from"
+    if (s.get("transient") or {}).get("continue"):
         return ["solve.transient: init_from and continue do not go together (continue carries on the same mesh)"]
+    if "/" not in ref:
+        if name is not None and ref == name:
+            return [f"{key}: a study cannot start from itself"]
+        if names is not None and ref not in names:
+            return [f"{key}: {ref!r} is not a study of this request (give '<request>/<study>' for an earlier run)"]
+        return []
+    src = source_folder(ref)
+    if not (src / "case").is_dir():
+        return [f"{key}: no case in {src} on this machine"]
+    t = source_times(src)
+    if not t:
+        return [f"{key}: {src}/case has no reconstructed time directory after 0 (a sliding-mesh run stays decomposed "
+                "and cannot be mapped yet)"]
+    if which == "mean" and not (t[-1][1] / "UMean").is_file():
+        return [f"{key}: {src}'s latest time ({t[-1][0]:g} s) has no mean fields (UMean); use init_fields 'last'"]
     return []
 
 
-def map_from(case: Path, ref: str, which: str, run_step) -> list[str]:
-    """solve.transient.init_from: the source run's U, p, k, omega, nut (latest time; 'mean': UMean and pMean for U and
-    p) mapped onto this case's 0/ with mapFields (internal field by cell overlap; every boundary keeps this case's
-    conditions; cells outside the source's mesh keep their uniform start). run_step(cmd, log) runs an OpenFOAM
-    command in case. Returns notes."""
+def _same_mesh(a: Path, b: Path) -> bool:
+    """Do two cases have the same polyMesh (byte for byte: a sweep's points meshed from the same input)?"""
+    import hashlib
+    pa, pb = Path(a) / "constant" / "polyMesh", Path(b) / "constant" / "polyMesh"
+    try:
+        if any((pa / f).stat().st_size != (pb / f).stat().st_size for f in MESH_FILES):
+            return False
+        for f in MESH_FILES:
+            h = []
+            for p in (pa / f, pb / f):
+                d = hashlib.sha1()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 22), b""):
+                        d.update(chunk)
+                h.append(d.hexdigest())
+            if h[0] != h[1]:
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _splice_internal(src_text: str, dst_text: str) -> str:
+    """dst's field file with src's internalField (its boundaryField, dimensions and header kept)."""
+    i_s, j_s = src_text.index("\ninternalField"), src_text.index("\nboundaryField")
+    i_d, j_d = dst_text.index("\ninternalField"), dst_text.index("\nboundaryField")
+    return dst_text[:i_d] + src_text[i_s:j_s] + dst_text[j_d:]
+
+
+def map_from(case: Path, src: Path | str, which: str, run_step) -> tuple[list[str], dict]:
+    """init_from: the source run's U, p, k, omega, nut (and p_rgh, alpha.water between cavitation runs) from its
+    latest time ('mean': UMean and pMean for U and p) as this case's start in 0/. On the same mesh (a sweep's
+    points) the internal fields are copied; otherwise mapFields maps them (internal fields by cell overlap; every
+    patch keeps this case's conditions; cells outside the source's mesh keep their uniform start). Pressure moves
+    only between runs of the same kind (single-phase p is kinematic, cavitation p and p_rgh absolute in Pa).
+    run_step(cmd, log) runs an OpenFOAM command in case. Returns (notes, {"fields", "time", "same_mesh", "vof"})."""
     case = Path(case)
-    src_case = source_folder(ref) / "case"
-    t, tdir = [x for x in _times(src_case) if x[0] > 0][-1]
-    tmp = case.parent / "init_source"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    (tmp / "1").mkdir(parents=True)
-    os_ = __import__("os")
-    os_.symlink(src_case.resolve() / "constant", tmp / "constant")
-    shutil.copytree(src_case / "system", tmp / "system")
-    took = []
+    src = source_folder(src) if isinstance(src, str) else Path(src)
+    src_case = src / "case"
+    t, tdir = source_times(src)[-1]
+    src_vof, dst_vof = (tdir / "alpha.water").is_file(), (case / "0" / "alpha.water").is_file()
+    pairs = []
     for f in INIT_FIELDS:
         srcf = tdir / f
         if which == "mean" and f in ("U", "p") and (tdir / f"{f}Mean").is_file():
             srcf = tdir / f"{f}Mean"
-        if not srcf.is_file() or not (case / "0" / f).is_file():
+        if f in ("p", "p_rgh") and src_vof != dst_vof:
             continue
-        txt = srcf.read_text(errors="replace")
-        if srcf.name != f:                          # UMean -> U: the object name in the header
-            txt = re.sub(r"(object\s+)" + re.escape(srcf.name) + r"\s*;", r"\g<1>" + f + ";", txt, count=1)
-        (tmp / "1" / f).write_text(txt)
-        took.append(f + (" (mean)" if srcf.name != f else ""))
-    if not took:
-        raise RuntimeError(f"init_from: none of {INIT_FIELDS} in {tdir}")
-    (case / "system" / "mapFieldsDict").write_text(
-        "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      mapFieldsDict;\n}\n\n"
-        "// internal fields only: every patch keeps this case's boundary conditions\npatchMap ( );\n\n"
-        "cuttingPatches ( );\n")
-    run_step(f"mapFields {tmp} -sourceTime 1", "log.mapFields")
-    shutil.rmtree(tmp, ignore_errors=True)
-    return [f"started from {source_folder(ref)} at t = {t:g} s: {', '.join(took)} mapped onto this mesh (mapFields); "
-            "average_from should leave time for the flow to adjust to this geometry"]
+        if srcf.is_file() and (case / "0" / f).is_file():
+            pairs.append((f, srcf))
+    if not pairs:
+        raise RuntimeError(f"init_from: none of {INIT_FIELDS} in {tdir} matches this case's fields")
+    took = [f + (" (mean)" if srcf.name != f else "") for f, srcf in pairs]
+    same = _same_mesh(src_case, case)
+    if same:
+        for f, srcf in pairs:
+            dst = case / "0" / f
+            dst.write_text(_splice_internal(srcf.read_text(errors="replace"), dst.read_text(errors="replace")))
+        how = "copied (same mesh)"
+    else:
+        tmp = case.parent / "init_source"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        (tmp / "1").mkdir(parents=True)
+        import os
+        os.symlink(src_case.resolve() / "constant", tmp / "constant")
+        shutil.copytree(src_case / "system", tmp / "system")
+        for f, srcf in pairs:
+            txt = srcf.read_text(errors="replace")
+            if srcf.name != f:                      # UMean -> U: the object name in the header
+                txt = re.sub(r"(object\s+)" + re.escape(srcf.name) + r"\s*;", r"\g<1>" + f + ";", txt, count=1)
+            (tmp / "1" / f).write_text(txt)
+        (case / "system" / "mapFieldsDict").write_text(
+            "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      mapFieldsDict;\n}\n\n"
+            "// internal fields only: every patch keeps this case's boundary conditions\npatchMap ( );\n\n"
+            "cuttingPatches ( );\n")
+        run_step(f"mapFields {tmp} -sourceTime 1", "log.mapFields")
+        shutil.rmtree(tmp, ignore_errors=True)
+        how = "mapped onto this mesh (mapFields)"
+    note = f"started from {src} at its time {t:g}: {', '.join(took)} {how}"
+    if src_vof != dst_vof:
+        note += "; pressure not carried over (single-phase and cavitation runs keep it in different units)"
+    return [note], {"fields": [f for f, _ in pairs], "time": t, "same_mesh": same, "vof": src_vof}
+
+
+def wait_for(src: Path, timeout: float, cancel: Path | None = None, poll: float = 10.0) -> dict | None:
+    """The source study's result once it has one (a study of the same request running before this one), or None
+    after timeout seconds / on cancel."""
+    f = Path(src) / f"{Path(src).name}.json"
+    t_end = time.time() + timeout
+    while True:
+        if f.is_file():
+            try:
+                import json
+                return json.loads(f.read_text())
+            except ValueError:
+                pass
+        if time.time() >= t_end or (cancel is not None and Path(cancel).exists()):
+            return None
+        time.sleep(poll)
 
 
 def copy_case(src: Path, dst: Path) -> float | None:

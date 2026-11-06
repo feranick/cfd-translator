@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -74,6 +74,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         from .cpushare import Watcher
         watcher = Watcher(folder, float(os.environ.get("CFDT_CPU_WATCH_S", "60"))).start()
     try:
+        init_src = _init_source(study, folder)
+        if init_src is not None:              # the case writer and the transient run see where the start comes from
+            study = _with_init(study, str(init_src))
         if transient:
             mesh, patches, selection, plan, w, tstate = _prepare_transient(study, folder)
         else:
@@ -132,6 +135,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         _cpu_note(watcher.stop(), info)
                     return {"name": name, "continued": True, **info}      # the next SLURM job carries on
             else:
+                if init_src is not None:
+                    out["init_from"] = _init_steady(case, study, plan, init_src, folder, t_job, timeout, warns)
                 info = foam.run(case, timeout, use)
             out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
             fields = foam.read_fields(case, mesh, plan, mean=transient)
@@ -253,6 +258,64 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
     if watcher is not None:
         _cpu_note(watcher.stop(), out)
     return _save(out, folder, name)
+
+
+def _init_source(study: dict, folder: Path) -> Path | None:
+    """The study folder that solve.init_from / solve.transient.init_from names (same request: '<study>')."""
+    from .transient import init_ref, init_source
+    ref, _ = init_ref(study)
+    return init_source(ref, Path(folder).parent).resolve() if ref else None
+
+
+def _with_init(study: dict, src: str) -> dict:
+    """The study with its init_from as an absolute folder (cavitation.write_vof reads the source's inlet pressure)."""
+    s = dict(study.get("solve") or {})
+    if (s.get("transient") or {}).get("init_from"):
+        s["transient"] = dict(s["transient"], init_from=src)
+    else:
+        s["init_from"] = src
+    return dict(study, solve=s)
+
+
+def _source_ready(src: Path, folder: Path, t_job: float, timeout: float, warns: list) -> bool:
+    """Wait for a source study of the same request (it runs before this one: a SLURM dependency, or this server's
+    worker queue) and say whether it left fields to start from; a failed or missing one is warned about and the run
+    starts from the uniform fields."""
+    from .transient import source_times, wait_for
+    src = Path(src)
+    if not source_times(src):
+        left = max(60.0, timeout - (time.time() - t_job) - 600)
+        res = wait_for(src, left, Path(folder) / "cancel") if src.resolve().parent == Path(folder).resolve().parent else None
+        if res is not None and not res.get("ok"):
+            warns.append(f"init_from: {src.name} did not finish ({res.get('why') or res.get('state')}): this run starts "
+                         "from the uniform fields")
+            return False
+    if not source_times(src):
+        warns.append(f"init_from: {src} has no fields to start from: this run starts from the uniform fields")
+        return False
+    return True
+
+
+def _init_steady(case: Path, study: dict, plan: dict, src: Path, folder: Path, t_job: float, timeout: float,
+                 warns: list) -> dict | None:
+    """solve.init_from on a steady run (MRF, cavitation): the source's fields in 0/ before the solve. Cavitation
+    runs then start from the source's inlet pressure and at their full flow (cavitation.restart_tables)."""
+    from . import foam
+    from .transient import init_ref, map_from
+    if not _source_ready(src, folder, t_job, timeout, warns):
+        return {"from": str(src), "used": False}
+    fm = foam.find_foam()
+    try:
+        notes, info = map_from(case, src, init_ref(study)[1], lambda cmd, log: foam._step(fm, cmd, log, case, 3600))
+    except Exception as exc:  # noqa: BLE001
+        warns.append(f"init_from: could not take the fields of {src} ({type(exc).__name__}: {exc}): this run starts "
+                     "from the uniform fields")
+        return {"from": str(src), "used": False}
+    warns += notes
+    if plan.get("vof"):
+        from .cavitation import restart_tables
+        warns += restart_tables(case, plan, src)
+    return {"from": str(src), "used": True, **info}
 
 
 def _cpu_note(summary: dict | None, out: dict) -> None:
@@ -563,12 +626,14 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         state["started"] = True
         save()
     if tr.get("init_from") and not state.get("mapped") and not state.get("init_done"):
-        # solve.transient.init_from: an earlier run's fields on this mesh instead of a uniform start (a variant that
-        # differs near one wheel needs less start-up time)
+        # init_from: an earlier run's fields on this mesh instead of a uniform start (a variant that differs near one
+        # wheel needs less start-up time)
         from .transient import map_from
         fm = foam.find_foam()
-        notes = map_from(case, tr["init_from"], tr.get("init_fields", "last"),
-                         lambda cmd, log: foam._step(fm, cmd, log, case, 3600))
+        notes = []
+        if _source_ready(Path(tr["init_from"]), folder, t_job, timeout, notes):
+            notes += map_from(case, tr["init_from"], tr.get("init_fields", "last"),
+                              lambda cmd, log: foam._step(fm, cmd, log, case, 3600))[0]
         state.update(mapped=True, init_notes=notes)
         save()
         warns += notes

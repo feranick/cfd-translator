@@ -569,3 +569,16 @@ def test_scancel_takes_the_openfoam_group_down():
     finally:
         foam._ACTIVE.discard(p)
         p.kill()
+
+
+def test_init_from_in_the_same_request_waits_for_its_source(slurm, monkeypatch):
+    """solve.init_from '<study>' of the same request: submitted after its source, with afterany on its job."""
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    b = dict(COUETTE, queue=True, solve={"init_from": "a"})
+    r = api.run({"b": b, "a": dict(COUETTE, queue=True)}, "ref", wait=0)
+    req = Path(r["request"])
+    ja, jb = (json.loads((req / n / "job.json").read_text()) for n in ("a", "b"))
+    assert ja["job_id"] == "1001" and jb["job_id"] == "1002"            # the source went first
+    assert "--dependency=afterany:1001" in jb["command"]
+    bad = api.validate({"x": dict(COUETTE, solve={"init_from": "nope"})})
+    assert not bad["ok"] and "not a study of this request" in bad["studies"]["x"]["errors"][0]

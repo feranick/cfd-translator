@@ -330,7 +330,8 @@ def test_init_from_maps_fields(tmp_path, monkeypatch):
         tmp = Path(cmd.split()[1])
         assert sorted(p.name for p in (tmp / "1").iterdir()) == ["U", "k", "omega", "p"]
         assert "object      U;" in (tmp / "1" / "U").read_text()
-    notes = transient.map_from(dst, "run_a/base", "mean", step)
+    notes, info = transient.map_from(dst, "run_a/base", "mean", step)
+    assert info["same_mesh"] is False and "U" in info["fields"]
     assert ran and "-sourceTime 1" in ran[0] and "U (mean)" in notes[0]
     assert "patchMap" in (dst / "system" / "mapFieldsDict").read_text()
     assert transient.settings({"model": "kOmegaSST", "solve": st["solve"], "bcs": [],
@@ -369,3 +370,88 @@ def test_eta_start_for_a_later_segment(monkeypatch):
     es = executor.eta_start({"segment": 2, "previous_jobs": ["500"]}, "Dependency", "2099-01-01T00:00:00")
     assert es and es["expected_start"] < "2099" and "previous segment" in es["expected_start_note"]
     assert executor.eta_start({"segment": 2, "previous_jobs": ["500"]}, "Dependency", "2000-01-01T00:00:00") is None
+
+
+# ---- init_from on steady runs (MRF, cavitation), chained NPSH sweeps --------------------------------------------------
+def _field(name, internal, bc="inlet { type fixedValue; value uniform 1; }"):
+    return (f"FoamFile\n{{\n    format      ascii;\n    class       volScalarField;\n    object      {name};\n}}\n"
+            f"dimensions [0 0 0 0 0 0 0];\n\ninternalField   {internal};\n\nboundaryField\n{{\n    {bc}\n}}\n")
+
+
+def _case(root: Path, fields: dict, t="0", mesh="same"):
+    for f in ("points", "faces", "owner", "neighbour"):
+        (root / "constant" / "polyMesh").mkdir(parents=True, exist_ok=True)
+        (root / "constant" / "polyMesh" / f).write_text(f"{f} {mesh}")
+    (root / "system").mkdir(exist_ok=True)
+    (root / t).mkdir(parents=True, exist_ok=True)
+    for f, txt in fields.items():
+        (root / t / f).write_text(txt)
+
+
+def test_steady_init_from_same_mesh_copies_internal_fields(tmp_path):
+    from cfd_translator import transient
+    src = tmp_path / "run_a" / "p20"
+    _case(src / "case", {f: _field(f, "nonuniform List<scalar> 2(1 2)", "inlet { type src; }")
+                         for f in ("U", "p_rgh", "alpha.water", "k", "omega", "nut", "p")}, t="4000")
+    dst = tmp_path / "run_a" / "p10" / "case"
+    _case(dst, {f: _field(f, "uniform 0") for f in ("U", "p_rgh", "alpha.water", "k", "omega", "nut")})
+    notes, info = transient.map_from(dst, src, "last", lambda c, l: pytest.fail("no mapFields on the same mesh"))
+    assert info["same_mesh"] and info["vof"] and set(info["fields"]) == {"U", "p_rgh", "alpha.water", "k", "omega", "nut"}
+    t = (dst / "0" / "alpha.water").read_text()
+    assert "List<scalar> 2(1 2)" in t and "type fixedValue" in t and "type src" not in t
+    assert "copied (same mesh)" in notes[0]
+
+
+def test_single_phase_source_leaves_cavitation_pressure(tmp_path):
+    from cfd_translator import transient
+    src = tmp_path / "run_a" / "mrf"
+    _case(src / "case", {f: _field(f, "uniform 3") for f in ("U", "p", "k", "omega", "nut")}, t="3000")
+    dst = tmp_path / "run_b" / "cav" / "case"
+    _case(dst, {f: _field(f, "uniform 0") for f in ("U", "p_rgh", "alpha.water", "k", "omega", "nut")})
+    notes, info = transient.map_from(dst, src, "last", lambda c, l: None)
+    assert "p" not in info["fields"] and "p_rgh" not in info["fields"] and "U" in info["fields"]
+    assert "pressure not carried over" in notes[0]
+    assert "uniform 3" in (dst / "0" / "U").read_text() and "uniform 0" in (dst / "0" / "p_rgh").read_text()
+
+
+def test_restart_tables_from_the_previous_npsh_point(tmp_path):
+    from cfd_translator import cavitation
+    req = tmp_path / "run_a"
+    src = req / "s_npsh20"
+    src.mkdir(parents=True)
+    st = {"fluid": "water", "cavitation": {"npsh": 20.0}}
+    (req / "request.json").write_text(json.dumps({"names": ["s_npsh20"], "studies": {"s_npsh20": st}}))
+    p0_src = cavitation.source_p0(src)
+    assert p0_src == pytest.approx(cavitation.water_vapour(20)["p"] + 998.2 * 9.80665 * 20, rel=2e-3)
+    p0_tab = cavitation._table([(0, 5e5), (300, 1.2e5), (1e6, 1.2e5)])
+    m_tab = cavitation._table([(0, 0.27), (100, 5.5), (1e6, 5.5)])
+    case = tmp_path / "case"
+    (case / "0").mkdir(parents=True)
+    (case / "0" / "p_rgh").write_text(f"inlet {{ p0 {p0_tab}; }}")
+    (case / "0" / "U").write_text(f"outlet {{ massFlowRate {m_tab}; }}")
+    plan = {"vof": {"rho_l": 998.2, "Q": 5.5 / 998.2, "p0_Pa": 1.2e5, "ramp_iterations": 300, "iterations_total": 1000,
+                    "p0_table": p0_tab, "m_table": m_tab}}
+    notes = cavitation.restart_tables(case, plan, src)
+    assert len(notes) == 2
+    assert f"(0 {cavitation._fmt(p0_src)})" in (case / "0" / "p_rgh").read_text()
+    assert "(0 5.5)" in (case / "0" / "U").read_text() and plan["vof"]["flow_ramp_iterations"] == 0
+
+
+def test_chained_npsh_sweep_and_steady_init_from_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    from cfd_translator.variants import expand
+    st = {"fluid": "water", "cavitation": {"npsh": [20, 10, 6], "chain": True},
+          "solve": {"init_from": "run_x/base"}}
+    out, groups, errs = expand({"s": st})
+    assert not errs
+    assert out["s_npsh20"]["solve"]["init_from"] == "run_x/base"
+    assert out["s_npsh10"]["solve"]["init_from"] == "s_npsh20" and out["s_npsh6"]["solve"]["init_from"] == "s_npsh10"
+    from cfd_translator.transient import init_problems
+    assert init_problems(out["s_npsh10"], list(out), "s_npsh10") == []
+    assert "itself" in init_problems({"solve": {"init_from": "a"}}, ["a"], "a")[0]
+    assert "not a study of this request" in init_problems({"solve": {"init_from": "zz"}}, ["a"], "a")[0]
+    assert "no case" in init_problems({"solve": {"init_from": "run_x/base"}})[0]
+    base = {"geometry": {"box": [10, 1, 1]}, "fluid": "water", "mesh": {"size": 0.5},
+            "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}]}
+    assert validate_study(dict(base, solve={"init_from": "b"}))["ok"]
+    assert not validate_study(dict(base, solve={"init_fields": "last"}))["ok"]

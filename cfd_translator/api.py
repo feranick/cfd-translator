@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -95,7 +95,7 @@ def validate(studies: dict) -> dict:
     from .transient import continue_problems, init_problems
     for n, st in ex.items():                 # a run to continue or start from must be on this machine
         if isinstance(st, dict) and n not in errs:
-            cp = continue_problems(st) + init_problems(st)
+            cp = continue_problems(st) + init_problems(st, list(ex), n)
             if cp:
                 errs[n] = cp
     for n, e in errs.items():
@@ -442,8 +442,8 @@ def start(studies: dict, solver: str | None = None, request_name: str | None = N
     studies, groups, pre = prepare_studies(studies)
     from .transient import continue_problems, init_problems
     for n, st in studies.items():
-        if isinstance(st, dict) and n not in pre and (continue_problems(st) or init_problems(st)):
-            pre[n] = continue_problems(st) + init_problems(st)
+        if isinstance(st, dict) and n not in pre and (continue_problems(st) or init_problems(st, list(studies), n)):
+            pre[n] = continue_problems(st) + init_problems(st, list(studies), n)
     invalid, jobs = {}, []
     for n, st in studies.items():
         v = validate_study(st) if n not in pre else {"ok": False, "errors": pre[n]}
@@ -460,10 +460,25 @@ def start(studies: dict, solver: str | None = None, request_name: str | None = N
                                                      "studies": {j["name"]: j["study"] for j in jobs},
                                                      "groups": groups}, default=float))
     from . import executor
-    local = []
-    for j in jobs:
+    from .transient import init_ref
+    # a study that starts from another of this request (init_from '<study>': a chained NPSH sweep) goes after it:
+    # its SLURM job waits for the other's (afterany), a local one waits in the runner
+    same = {j["name"]: init_ref(j["study"])[0] for j in jobs}
+    same = {n: r for n, r in same.items() if r and "/" not in r and r in same}
+    order, placed = [], set()
+    while len(order) < len(jobs):
+        ready = [j for j in jobs if j["name"] not in placed and (same.get(j["name"]) in placed or j["name"] not in same)]
+        if not ready:                          # a cycle: validation does not allow one, but never loop forever
+            ready = [j for j in jobs if j["name"] not in placed]
+        for j in ready:
+            order.append(j)
+            placed.add(j["name"])
+    local, ids = [], {}
+    for j in order:
         if executor.use_slurm(j["study"], s):
-            executor.submit(folder, j["name"], j["study"])
+            info = executor.submit(folder, j["name"], j["study"], after=ids.get(same.get(j["name"])))
+            if info.get("job_id"):
+                ids[j["name"]] = str(info["job_id"])
         else:
             local.append(j)
     if local:

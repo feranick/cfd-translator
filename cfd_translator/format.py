@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -149,8 +149,9 @@ STUDY_KEYS = {
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
              "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs, "
-             "continue, init_from ('<request>/<study>': its fields mapped as the start), init_fields (last | mean), "
-             "degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES}",
+             "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
+             "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
+             "transient), init_fields (last | mean)}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -164,7 +165,7 @@ STUDY_KEYS = {
     "conditions": "{p (Pa absolute, 101325), T (C, 20)}: operating pressure, initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
-    "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3), temperature C | p_vapour Pa, model, iterations}: liquid + "
+    "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3; chain: each point from the previous), temperature C | p_vapour Pa, model, iterations}: liquid + "
                   "vapour (VoF); guide('pumps')",
     "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
     "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
@@ -181,7 +182,7 @@ MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers",
              "gap", "quality", "max_cells", "optimize"}
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
-              "transient"}
+              "transient", "init_from", "init_fields"}
 AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
@@ -811,6 +812,15 @@ def validate_study(st: dict) -> dict:
             errs.append(f"solve: unknown key {k!r} (keys: {sorted(SOLVE_KEYS)})")
     if "iterations" in s and (not isinstance(s["iterations"], int) or s["iterations"] < 1):
         errs.append("solve.iterations: a positive integer")
+    if "init_from" in s and (not isinstance(s["init_from"], str) or not s["init_from"].strip()):
+        errs.append("solve.init_from: '<request>/<study>' of a finished run on this machine, or '<study>' of this "
+                    "request (it runs first): its fields are this run's start")
+    if "init_fields" in s and s["init_fields"] not in ("last", "mean"):
+        errs.append("solve.init_fields: 'last' (default) or 'mean' (a transient source's mean U and p)")
+    if "init_fields" in s and "init_from" not in s:
+        errs.append("solve.init_fields goes with solve.init_from")
+    if s.get("init_from") and isinstance(s.get("transient"), dict) and s["transient"].get("init_from"):
+        errs.append("solve.init_from and solve.transient.init_from: give one")
     if "residual" in s and (not _num(s["residual"]) or not 0 < s["residual"] < 1):
         errs.append("solve.residual: between 0 and 1 (e.g. 1e-5)")
     if "procs" in s and (not isinstance(s["procs"], int) or s["procs"] < 1):
@@ -864,14 +874,15 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
             if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
                 errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
-            if "init_from" in tr and (not isinstance(tr["init_from"], str) or "/" not in tr["init_from"]):
-                errs.append("solve.transient.init_from: '<request>/<study>' of a finished run on this machine (its U, p, "
-                            "k, omega are mapped onto this mesh as the start; no steady init)")
+            if "init_from" in tr and (not isinstance(tr["init_from"], str) or not tr["init_from"].strip()):
+                errs.append("solve.transient.init_from: '<request>/<study>' of a finished run on this machine or "
+                            "'<study>' of this request (its U, p, k, omega are mapped onto this mesh as the start; no "
+                            "steady init)")
             if "init_fields" in tr and tr["init_fields"] not in ("last", "mean"):
                 errs.append("solve.transient.init_fields: 'last' (the source's latest fields, default) or 'mean'")
             if "init_fields" in tr and "init_from" not in tr:
                 errs.append("solve.transient.init_fields goes with init_from")
-            if tr.get("init_from") and tr.get("init"):
+            if (tr.get("init_from") or s.get("init_from")) and tr.get("init"):
                 errs.append("solve.transient: init (steady iterations) and init_from do not go together")
             if "continue" in tr and (not isinstance(tr["continue"], str) or "/" not in tr["continue"]):
                 errs.append("solve.transient.continue: '<request>/<study>' of a finished transient run on this machine "

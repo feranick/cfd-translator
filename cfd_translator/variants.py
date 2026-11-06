@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -280,6 +280,11 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
             for x in vals:
                 n = f"{name}_npsh{float(x):g}"
                 out[n] = merge(st, {"cavitation": {"npsh": float(x)}})
+                if cv.get("chain") and names:
+                    # each point starts from the previous one's fields (solve.init_from in the same request: it runs
+                    # after it); the first keeps the study's own init_from, if any
+                    out[n] = merge(out[n], {"solve": {"init_from": names[-1]}})
+                    out[n]["solve"].pop("init_fields", None)
                 names.append(n)
             groups[name] = {"names": names, "scales": None, "npsh": [float(x) for x in vals],
                             "head_drop": float(cv.get("head_drop", 0.03))}

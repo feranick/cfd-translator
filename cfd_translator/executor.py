@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.06.1
+Version: 2026.11.06.2
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -754,7 +754,7 @@ def submit(request: Path, name: str, study: dict, after: str | None = None, segm
     if not ok:
         res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}",
                "execution": {"executor": "slurm", "slurm_job": None}}
-        if not after:                    # a continuation that fails leaves the running job to write its result
+        if not segment:                  # a continuation that fails leaves the running job to write its result
             write_atomic(d / f"{name}.json", json.dumps(res, indent=1))
         return res
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()

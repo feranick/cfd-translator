@@ -186,7 +186,11 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    the final patches, forces_by_solid); (b) init_from on a spat variant: mapFields' log, the first steps' Courant
    number, whether nut needs mapping or recomputes; (c) per-bc force histories (cfdtFp_*) cost nothing visible;
    (d) Gmsh path with several STEP solids (occ.getDistance exists in Gmsh >= 4.11; else bounding boxes).
-   Router side (llm-translators, the user's): node-filtered queue and sbatch --test-only, starts_now,
+   2026.11.06.2: steady init_from and chained NPSH sweeps; verify on S50: mapFields on 7 M cells (time, log),
+   the chained sweep's head at the first iterations, whether the pressure ramp from the previous point's p0 is
+   smooth, and whether fewer iterations per point (e.g. 3000) still settle.
+   Router side (llm-translators): done by the user 2026.11.06 (sections 0-4); llmt needs a deploy for pending jobs'
+   requested node. Was: node-filtered queue and sbatch --test-only, starts_now,
    cluster_queue; pass request_name and return the request path on a time-out; stage local paths for
    add_geometry(goal=<file>), add_geometry(stl=...) and geometry.stl / geometry.groups.
 6. Benchmarks still missing: a sliding-mesh one (e.g. Taylor-Couette with a sliding inner zone vs the analytic
@@ -339,6 +343,9 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.06.2**: solve.init_from for steady runs (MRF, cavitation), same-request sources (SLURM afterany),
+cavitation.chain for NPSH sweeps, internal fields copied on identical meshes. See README row.
 
 **2026.11.06.1**: mesh geometry (STL/OBJ/PLY, groups), region selectors, several solids, window averages,
 init_from, per-node queue, request_name, eta-based starts, NaN-safe images. See README row.

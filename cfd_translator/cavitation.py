@@ -1,5 +1,5 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel.
-Version: 2026.11.05.1
+Version: 2026.11.06.2
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -33,7 +33,8 @@ import numpy as np
 SCALE = 1e-3
 G0 = 9.80665
 MODELS = ("SchnerrSauer", "Kunz", "Merkle")
-KEYS = {"npsh", "temperature", "p_vapour", "vapour", "model", "iterations", "ramp", "head_drop", "sigma", "max_co"}
+KEYS = {"npsh", "temperature", "p_vapour", "vapour", "model", "iterations", "ramp", "head_drop", "sigma", "max_co",
+        "chain"}
 M_WATER = 0.01801528
 R_GAS = 8.314462618
 
@@ -95,6 +96,8 @@ def errors(st: dict) -> list[str]:
         e.append("cavitation.head_drop: the head drop that defines the NPSH curve's critical point (0.03: NPSH3)")
     if "max_co" in cv and (not _num(cv["max_co"]) or not 0.2 <= cv["max_co"] <= 20):
         e.append("cavitation.max_co: the local time step's Courant number, 0.2-20 (default 2)")
+    if "chain" in cv and not isinstance(cv["chain"], bool):
+        e.append("cavitation.chain: true makes each NPSH point of a sweep start from the previous point's fields")
     if "sigma" in cv and (not _num(cv["sigma"]) or cv["sigma"] < 0):
         e.append("cavitation.sigma: surface tension (N/m, default 0.07)")
     # what the solver path supports
@@ -197,7 +200,8 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     w_max = max((abs(zp["omega_rad_s"]) for zp in plan["zones"].values()), default=0.0)
     dt_max = min(1.0, 0.2 / w_max) if w_max > 0 else 1.0
     plan["vof"] = {**cv, "p_ref_Pa": cv["p0_Pa"], "max_delta_t": dt_max, "p_start_Pa": p_start, "inlet": inlet, "outlet": outlet, "Q": Q,
-                   "ramp_iterations": n_ramp, "flow_ramp_iterations": n_flow, "u_tip": u_tip}
+                   "ramp_iterations": n_ramp, "flow_ramp_iterations": n_flow, "u_tip": u_tip,
+                   "p0_table": p0_tab, "m_table": m_tab, "iterations_total": iters}
     plan["fixed_pressure"] = True
     # fields
     Ub, pb, ab, kb, wb, nb = {}, {}, {}, {}, {}, {}
@@ -489,3 +493,50 @@ def npsh_curve(points: list, head_drop: float = 0.03) -> dict:
     if not all(p.get("reliable") for p in pts):
         out.setdefault("warnings", []).append("some points are not reliable (see each study's unreliable_because)")
     return out
+
+
+def source_p0(src) -> float | None:
+    """The inlet's absolute total pressure (Pa) of a cavitation study (its folder), from its request's study."""
+    import json
+    src = Path(src)
+    try:
+        st = json.loads((src.parent / "request.json").read_text())["studies"][src.name]
+    except (OSError, KeyError, ValueError):
+        return None
+    if not isinstance(st.get("cavitation"), dict) or not _num(st["cavitation"].get("npsh")):
+        return None
+    from .format import fluid_props
+    try:
+        fp = fluid_props(st.get("fluid", "water"))
+        rho, mu = float(fp["rho"]), float(fp["mu"])
+    except Exception:  # noqa: BLE001
+        return None
+    return float(settings(st, rho, mu)["p0_Pa"])
+
+
+def restart_tables(case, plan: dict, src) -> list[str]:
+    """A cavitation run that starts from another run's fields (init_from): its outlet holds the full mass flow from
+    the first iteration (the mapped flow already carries it; a ramp from 5 % would fight it), and its inlet's total
+    pressure falls from the source's (a cavitation run: the previous NPSH point) to its own over the ramp, instead of
+    from a high start without vapour. The tables in 0/p_rgh and 0/U are rewritten; returns notes."""
+    v = plan["vof"]
+    case = Path(case)
+    rho_l, Q = float(v["rho_l"]), float(v["Q"])
+    iters = int(v.get("iterations_total") or 10 * v["ramp_iterations"])
+    notes = []
+    m_new = _table([(0, Q * rho_l), (10 * iters + 1e6, Q * rho_l)])
+    fu = case / "0" / "U"
+    if v.get("m_table") and fu.is_file() and v["m_table"] in fu.read_text():
+        fu.write_text(fu.read_text().replace(v["m_table"], m_new))
+        v.update(m_table=m_new, flow_ramp_iterations=0)
+        notes.append("init_from: the outlet holds the full flow from the start (no flow ramp)")
+    p0s = source_p0(src)
+    fp = case / "0" / "p_rgh"
+    if p0s is not None and v.get("p0_table") and fp.is_file() and v["p0_table"] in fp.read_text():
+        n = max(1, int(v["ramp_iterations"]))
+        p_new = _table([(0, p0s), (n, v["p0_Pa"]), (10 * iters + 1e6, v["p0_Pa"])])
+        fp.write_text(fp.read_text().replace(v["p0_table"], p_new))
+        v.update(p0_table=p_new, p_start_Pa=p0s)
+        notes.append(f"init_from: the inlet's total pressure falls from the source's {p0s:.6g} Pa to {v['p0_Pa']:.6g} Pa "
+                     f"over {n} iterations")
+    return notes
