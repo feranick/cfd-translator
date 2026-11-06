@@ -277,31 +277,72 @@ def _write(path: Path, header: str, rows):
     path.write_text("# Forces\n#\n" + header + "\n" + "\n".join(rows) + "\n")
 
 
-def test_window_average_from_force_histories(tmp_path):
+def _window_run(tmp_path, porosity=True):
+    """A finished DES-like run: adaptive time steps (dt grows 3x over the run), drag with a 0.65 Hz wobble and a step
+    at 2 s, a porous part written kinematic (rhoRef 1) as OpenFOAM does in an incompressible case; the result's
+    averages made by average_results itself, as the runner does."""
+    from cfd_translator.average import average_results
     folder = tmp_path / "s"
-    t = np.linspace(0.001, 4.0, 4000)
-    Fx = 2.0 + 0.1 * np.sin(2 * np.pi * 5 * t) + 0.05 * (t > 2)        # steps up at 2 s
-    Fz = 0.3 * np.sin(2 * np.pi * 5 * t)
-    hdr = "# Time\ttotal_x\ttotal_y\ttotal_z"
+    rng = np.random.default_rng(1)
+    dt = np.linspace(4e-5, 1.2e-4, 60000)
+    t = np.cumsum(dt)
+    t = t[t <= 6.0]
+    rho = 1.2
+    Fx = 270 + 6 * np.sin(2 * np.pi * 0.65 * t) + 4 * (t > 2) + rng.normal(0, 2, len(t))
+    Fz = 60 * np.sin(2 * np.pi * 0.65 * t + 1) + rng.normal(0, 5, len(t))
+    por = 21.0 / rho                                          # N / rho: kinematic, as OpenFOAM writes it
+    hdr = "# Time\tpressure_x\tpressure_y\tpressure_z\tviscous_x\tviscous_y\tviscous_z\tporous_x\tporous_y\tporous_z"
     _write(folder / "case" / "postProcessing" / "cfdtF_body" / "0" / "forces.dat", hdr,
-           [f"{a:.6g}\t({x / 1.2:.9g} 0 {z / 1.2:.9g})" for a, x, z in zip(t, Fx, Fz)])   # kinematic
-    _write(folder / "case" / "postProcessing" / "cfdtFp_wheel" / "0" / "forces.dat", hdr,
-           [f"{a:.6g}\t({0.1 * x / 1.2:.9g} 0 0)" for a, x in zip(t, Fx)])
-    qa = 0.5 * 1.2 * 30 ** 2 * 0.01
+           [f"{a:.9g}\t({0.9 * x:.9g} 0 {z:.9g})\t({0.1 * x:.9g} 0 0)\t({por:.9g} 0 0)" for a, x, z in zip(t, Fx, Fz)])
+    _write(folder / "case" / "postProcessing" / "cfdtFp_wheel" / "0" / "forces.dat", "# Time\ttotal_x\ttotal_y\ttotal_z",
+           [f"{a:.9g}\t({0.1 * x:.9g} 0 0)" for a, x in zip(t, Fx)])
+    q, A = 0.5 * rho * 30 ** 2, 1.4
+    plan = {"rho": rho, "patches": {"walls": {"kind": "wall"}},
+            "monitors": {"pressure": {}, "torque": {},
+                         "forces": {"fo": "cfdtF_body", "patches": ["walls"], "porosity": porosity},
+                         "settings": {"transient": True, "from": 1.0, "min_samples": 20, "drift": 0.02,
+                                      "stderr": 0.01}}}
     m = t >= 1.0
-    res = {"ok": True, "results": {"coefficients": {"cd": float(Fx[m].mean() / qa), "drag_dir": [1, 0, 0],
-                                                    "lift_dir": [0, 0, 1], "q_Pa": 0.5 * 1.2 * 900, "area_m2": 0.01},
-                                   "averaged": {"settings": {"transient": True, "from": 1.0},
-                                                "quantities": {"cd": {"mean": float(Fx[m].mean() / qa)}}}}}
-    (folder / "s.json").write_text(json.dumps(res))
+    Ftot = Fx + 21.0
+    res = {"coefficients": {"cd": float(Ftot[m].mean() / (q * A)), "cl": 0.0, "drag_dir": [1, 0, 0],
+                            "lift_dir": [0, 0, 1], "q_Pa": q, "area_m2": A},
+           "forces": {"part": {"fx": float(Ftot[m].mean()), "porous_included": ["radiator"]},
+                      "porous": {"radiator": {"fx": 21.0, "fy": 0.0, "fz": 0.0}}}}
+    avg, w = average_results(folder / "case", plan, res)
+    res["averaged"] = avg
+    (folder / "s.json").write_text(json.dumps({"ok": True, "results": res}, default=float))
+    (folder / "state.json").write_text(json.dumps({"plan": plan}))
+    return folder, t, Fx + 21.0, q * A
+
+
+def test_window_over_the_run_reproduces_its_averages(tmp_path):
     from cfd_translator.average import window_average
-    w = window_average(folder, "s", {"reference": {"velocity": 30}}, 2.5, 3.5)
-    assert w["cd"]["mean"] == pytest.approx(2.05 / qa, rel=2e-3)
-    assert w["window_s"][0] >= 2.5 and w["window_s"][1] <= 3.5 and w["frequency_Hz"] == pytest.approx(5, rel=0.05)
-    assert w["patches"]["wheel"]["force_N"]["fx"] == pytest.approx(0.205, rel=3e-3)
-    w2 = window_average(folder, "s", {"reference": {"velocity": 30}}, 1.0, 2.0)
-    assert w2["cd"]["mean"] == pytest.approx(2.0 / qa, rel=2e-3)
-    assert "error" in window_average(folder, "s", {"reference": {"velocity": 30}}, 5.0, 6.0)
+    folder, t, F, qa = _window_run(tmp_path)
+    av = json.loads((folder / "s.json").read_text())["results"]["averaged"]
+    w = window_average(folder, "s", {}, 1.0, None)
+    for k in ("cd", "cl"):
+        assert w[k] == av["quantities"][k], k                 # exactly: same series, weights, window and period
+    m = t >= 1.0
+    tw = np.gradient(t[m])
+    assert w["force_N"]["fx"]["mean"] == pytest.approx((F[m] * tw).sum() / tw.sum(), rel=3e-6)   # porous in N
+    assert w["frequency_Hz"] == av["frequency"]["frequency_Hz"]
+    assert "time-weighted" in w["weighting"]
+
+
+def test_window_average_sub_windows(tmp_path):
+    from cfd_translator.average import window_average
+    folder, t, F, qa = _window_run(tmp_path)
+    w = window_average(folder, "s", {}, 4.0, 6.0)
+    assert w["window_s"] == [4.0, 6.0] and w["samples_s"][0] == pytest.approx(4.0, abs=2e-4)
+    m = (t >= 4.0) & (t <= 6.0)
+    assert w["time_steps"] == int(m.sum()) and w["cd"]["n"] == int(m.sum())            # no trimming
+    tw = np.gradient(t[m])
+    assert w["cd"]["mean"] == pytest.approx((F[m] * tw).sum() / tw.sum() / qa, rel=3e-6)
+    assert w["frequency_Hz"] == pytest.approx(0.65, rel=0.1) and "whole window" in w["note"]
+    assert w["patches"]["wheel"]["force_N"]["fx"] == pytest.approx(0.1 * (F[m] - 21.0).mean(), rel=1e-2)
+    w2 = window_average(folder, "s", {}, 1.0, 2.0)
+    assert w2["cd"]["mean"] == pytest.approx(w2["force_N"]["fx"]["mean"] / qa, rel=3e-6)
+    assert "error" in window_average(folder, "s", {}, 7.0, 8.0)
 
 
 # ---- init_from -----------------------------------------------------------------------------------------------------------

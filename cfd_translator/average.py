@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.06.1
+Version: 2026.11.06.4
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -409,6 +409,55 @@ def dominant_frequency(t: np.ndarray, v: np.ndarray, t0: float) -> dict | None:
 
 
 # ---- the averaged results -----------------------------------------------------------------------------
+def body_force_series(case: Path, plan: dict, res: dict, cal, tr: bool):
+    """The part's force per step (N) from its forces monitor, as average_results and window_average both use it: the
+    porous part of OpenFOAM's force (written with rhoRef 1 in an incompressible case) times rho, zones' reactions
+    added as a constant when the monitor held the walls only, units matched to the result's cd by cal(its, cd, ref).
+    Returns ((its, F, drag_dir, lift_dir, q*A, units factor) or None, porous_note, warnings)."""
+    mon = plan.get("monitors") or {}
+    fm = mon.get("forces")
+    co = res.get("coefficients") or {}
+    if not (fm and co.get("q_Pa") and co.get("area_m2")):
+        return None, None, []
+    rho = float(plan["rho"])
+    got = _force_series(case, fm["fo"], 1.0 if plan.get("energy") or plan.get("vof") else rho)
+    if got is None:
+        return None, None, [f"averaging: no force history (postProcessing/{fm['fo']}); final-iteration coefficients kept"]
+    its, Fh = got
+    porous_note = None
+    inc = ((res.get("forces") or {}).get("part") or {}).get("porous_included") or []
+    if inc and fm.get("porosity"):
+        porous_note = "per step (OpenFOAM's forces with porosity)"
+    elif inc:
+        # the monitor holds the walls only (a zone left off the part, or a run from before 2026.10.28.2):
+        # add the reaction of the zones on the part from the (mean) fields, as a constant
+        pz = res["forces"]["porous"]
+        Fh = Fh + sum(np.array([pz[zn]["fx"], pz[zn]["fy"], pz[zn]["fz"]], float) for zn in inc)
+        porous_note = ("added as a constant: the reaction from the " + ("mean " if tr else "") +
+                       "fields (the force monitor held the walls only), so its own fluctuation is not in "
+                       "min, max, std or the standard error")
+    d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
+    qa = float(co["q_Pa"]) * float(co["area_m2"])
+    cd_ref = co.get("cd")
+    s = cal(its, (Fh @ d) / qa, cd_ref)
+    if s is None:
+        return None, porous_note, [f"averaging: the monitored drag at the last iteration ({float(Fh[-1] @ d) / qa:.6g}) "
+                                   f"does not match the fields' cd ({cd_ref}); its history is not used"]
+    return (its, s * Fh, d, l, qa, s), porous_note, []
+
+
+def run_period(series: dict, cfg: dict) -> tuple[float | None, dict | None]:
+    """The period whole-period averages use, as average_results finds it: a sliding mesh's revolution, else the
+    dominant frequency of cl (or cd) from cfg['from'] to the end when the run holds at least 4 of its periods."""
+    if cfg.get("period"):
+        return float(cfg["period"]), None
+    sig = series.get("cl") or series.get("cd")
+    fq = dominant_frequency(sig[0], sig[1], cfg["from"]) if sig is not None else None
+    if fq and fq["periods"] >= 4:
+        return 1.0 / fq["frequency_Hz"], fq
+    return None, fq
+
+
 def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, list]:
     """Window statistics of the monitored quantities; when they agree with the final fields, the means
     replace the final-iteration values in res (rotating.<zone>.torque_Nm, power_W; pump.head_m, power_W,
@@ -503,36 +552,13 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                 else:
                     series["total_pressure_drop"] = (common, tp)
     # drag and lift coefficients from the forces on the body
-    fm = mon.get("forces")
-    co = res.get("coefficients") or {}
     porous_note = None
-    if fm and co.get("q_Pa") and co.get("area_m2"):
-        got = _force_series(case, fm["fo"], 1.0 if plan.get("energy") or plan.get("vof") else rho)
-        if got is None:
-            warns.append(f"averaging: no force history (postProcessing/{fm['fo']}); final-iteration coefficients kept")
-        else:
-            its, Fh = got
-            inc = ((res.get("forces") or {}).get("part") or {}).get("porous_included") or []
-            if inc and fm.get("porosity"):
-                porous_note = "per step (OpenFOAM's forces with porosity)"
-            elif inc:
-                # the monitor holds the walls only (a zone left off the part, or a run from before 2026.10.28.2):
-                # add the reaction of the zones on the part from the (mean) fields, as a constant
-                pz = res["forces"]["porous"]
-                Fh = Fh + sum(np.array([pz[zn]["fx"], pz[zn]["fy"], pz[zn]["fz"]], float) for zn in inc)
-                porous_note = ("added as a constant: the reaction from the " + ("mean " if tr else "") +
-                               "fields (the force monitor held the walls only), so its own fluctuation is not in "
-                               "min, max, std or the standard error")
-            d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
-            qa = float(co["q_Pa"]) * float(co["area_m2"])
-            cd_ref = co.get("cd")
-            s = cal(its, (Fh @ d) / qa, cd_ref)
-            if s is None:
-                warns.append(f"averaging: the monitored drag at the last iteration ({float(Fh[-1] @ d) / qa:.6g}) does not "
-                             f"match the fields' cd ({cd_ref}); its history is not used")
-            else:
-                series["cd"] = (its, s * (Fh @ d) / qa)
-                series["cl"] = (its, s * (Fh @ l) / qa)
+    got, porous_note, w_ = body_force_series(case, plan, res, cal, tr)
+    warns += w_
+    if got is not None:
+        its, F, d, l, qa, _ = got
+        series["cd"] = (its, (F @ d) / qa)
+        series["cl"] = (its, (F @ l) / qa)
     if not series:
         return None, warns
     # derived: power, head, efficiency
@@ -556,13 +582,8 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
                 series["efficiency"] = (com, np.where(P > 0, rho * G0 * Q * H / P, np.nan))
     stats = {}
     fq, period = None, None
-    if tr and cfg.get("period"):
-        period = float(cfg["period"])                 # sliding mesh: averages over whole revolutions
-    elif tr:
-        sig = series.get("cl") or series.get("cd")
-        fq = dominant_frequency(sig[0], sig[1], cfg["from"]) if sig is not None else None
-        if fq and fq["periods"] >= 4:
-            period = 1.0 / fq["frequency_Hz"]
+    if tr:            # sliding mesh: whole revolutions; else whole periods of the dominant frequency when resolved
+        period, fq = run_period(series, cfg)
     for k, (its, v) in series.items():
         # cl is judged against the drag's size (its own mean can be near zero)
         sc = float(np.abs(series["cd"][1][-len(v):]).mean()) if k == "cl" and "cd" in series else None
@@ -674,65 +695,76 @@ def _apply_means(res: dict, stats: dict, plan: dict) -> None:
 
 # ---- averages over any window of a finished transient run ----------------------------------------------------------
 def window_average(folder: Path, name: str, study: dict, t0: float, t1: float | None = None) -> dict:
-    """Mean, std, standard error (batch means) and drift of cd, cl and the part's force over [t0, t1] from the
-    run's force histories (postProcessing), and of each wall bc's force when the run recorded them (runs from
-    2026.11.06.1 with several wall bcs on the part). No fields are read and nothing is written."""
+    """Mean, std, standard error and drift of cd, cl and the part's force over [t0, t1] from the run's force
+    history, built exactly as the run's own averages (body_force_series: porous part in N, zones' constant; the
+    time-weighted time_window_stats; the run's period from run_period), so [average_from, end] gives
+    results.averaged.quantities again. Each wall bc's force too when the run recorded it (cfdtFp_<bc>, from
+    2026.11.06.1). No fields are read and nothing is written."""
     folder = Path(folder)
     try:
         res = json.loads((folder / f"{name}.json").read_text())
-    except (OSError, ValueError):
-        return {"error": "no result yet"}
+        plan = json.loads((folder / "state.json").read_text())["plan"]
+    except (OSError, ValueError, KeyError):
+        return {"error": "no result or saved plan (state.json) yet"}
     r = res.get("results") or {}
-    co = r.get("coefficients") or {}
     av = r.get("averaged") or {}
-    case = folder / "case"
-    if not (av.get("settings") or {}).get("transient"):
+    cfg = dict(av.get("settings") or {})
+    if not cfg.get("transient"):
         return {"error": "window averages are for transient runs (solve.transient)"}
-    if not (co.get("q_Pa") and co.get("area_m2") and co.get("drag_dir")):
-        return {"error": "no force coefficients in this result (reference velocity and area)"}
-    got = _force_series(case, "cfdtF_body")
+    if not plan.get("monitors"):
+        return {"error": "the run has no force monitor"}
+    case = folder / "case"
+    rho = float(plan["rho"])
+
+    def cal(its, raw, ref):                      # as average_results, transient
+        mm = np.asarray(its) >= cfg["from"]
+        x = float(np.asarray(raw)[mm].mean()) if mm.any() else float(raw[-1])
+        return _calibrate(x, ref, rho, 0.3)
+    got, porous_note, w = body_force_series(case, plan, r, cal, True)
     if got is None:
-        return {"error": f"no force history in {case}/postProcessing/cfdtF_body"}
-    t, F = got
-    qa = float(co["q_Pa"]) * float(co["area_m2"])
-    d, l = np.asarray(co["drag_dir"], float), np.asarray(co["lift_dir"], float)
-    # units: the monitor is kinematic in an incompressible case; match its mean over the run's own window to the
-    # result's mean cd (rho from the dynamic pressure)
-    U = float((study.get("reference") or {}).get("velocity") or 0) or None
-    rho = 2 * float(co["q_Pa"]) / U ** 2 if U else 1.0
-    cfg0 = av.get("settings") or {}
-    ref_cd = ((av.get("quantities") or {}).get("cd") or {}).get("mean", co.get("cd"))
-    m0 = t >= float(cfg0.get("from", t[0]))
-    raw = float(((F[m0] if m0.any() else F) @ d).mean()) / qa
-    sc = _calibrate(raw, ref_cd, rho, 0.3) if ref_cd is not None else None
-    if sc is None:
-        return {"error": f"the force history does not match the result's cd ({ref_cd}): cannot tell its units"}
-    F = sc * F
+        return {"error": "; ".join(w) or "no force coefficients in this result (reference velocity and area)"}
+    t, F, d, l, qa, sc = got
+    cd_all, cl_all = (F @ d) / qa, (F @ l) / qa
+    period, fq_run = run_period({"cd": (t, cd_all), "cl": (t, cl_all)}, cfg)
     t1 = float(t[-1]) if t1 is None else float(t1)
     m = (t >= float(t0)) & (t <= t1)
     if m.sum() < 5:
         return {"error": f"fewer than 5 time steps in [{t0}, {t1}] s (the run has {float(t[0]):.4g} to "
                          f"{float(t[-1]):.4g} s)", "available_s": [_r(t[0]), _r(t[-1])]}
     tt = t[m]
-    cfg = {"from": float(t0), "min_samples": 5}
-    cd, cl = (F[m] @ d) / qa, (F[m] @ l) / qa
-    period = None
-    fq = dominant_frequency(tt, cl, float(t0))
-    if fq and fq["periods"] >= 4:
-        period = 1.0 / fq["frequency_Hz"]
-    cd_scale = float(np.abs(cd).mean())
-    out = {"window_s": [_r(tt[0]), _r(tt[-1])], "available_s": [_r(t[0]), _r(t[-1])], "time_steps": int(m.sum()),
-           "cd": time_window_stats(tt, cd, cfg, None, period),
-           "cl": time_window_stats(tt, cl, cfg, cd_scale, period),
-           "force_N": {k: time_window_stats(tt, F[m][:, i], cfg, float(np.abs(F[m] @ d).mean()), period)
-                       for i, k in enumerate(("fx", "fy", "fz"))},
+    wcfg = {"from": float(t0), "min_samples": 5}
+    cd_scale = float(np.abs(cd_all).mean())         # as the run's own: cl judged against the whole run's drag
+    st_cd = time_window_stats(tt, cd_all[m], wcfg, None, period)
+    st_cl = time_window_stats(tt, cl_all[m], wcfg, cd_scale, period)
+    fd = float(np.abs(F @ d).mean())
+    out = {"window_s": [float(t0), t1], "samples_s": [_r(tt[0]), _r(tt[-1])], "available_s": [_r(t[0]), _r(t[-1])],
+           "time_steps": int(m.sum()), "cd": st_cd, "cl": st_cl,
+           "force_N": {k: time_window_stats(tt, F[m][:, i], wcfg, fd, period) for i, k in enumerate(("fx", "fy", "fz"))},
+           "weighting": "time-weighted (each step by its time step: adaptive dt)",
            "note": "drift, scatter and stderr are relative (cl's and the forces' against the drag); stderr from batch "
-                   "means" + (" of whole shedding periods" if period else "")}
-    if fq:
-        out["frequency_Hz"] = fq["frequency_Hz"]
+                   "means"}
+    if porous_note:
+        out["porous_zones"] = porous_note
+    used = st_cd["window"] if st_cd else None
+    if period and used and used[0] > float(tt[0]) + 1e-12:
+        out["note"] += (f"; averaged over whole periods of the run's {1 / period:.4g} Hz (as the run's own averages): "
+                        f"from {used[0]} s, the last {int(round((used[1] - used[0]) / period))} periods of the window")
+    else:
+        out["note"] += "; averaged over the whole window" + (
+            f" (it holds fewer than 4 periods of the run's {1 / period:.4g} Hz)" if period else
+            " (the run's averages use no whole-period cut: its dominant frequency has fewer than 4 periods after "
+            "average_from)" if fq_run else "")
+    if fq_run:
+        out["frequency_Hz"] = fq_run["frequency_Hz"]
+        out["frequency_note"] = ("the run's dominant frequency of cl from average_from to the end (as "
+                                 "results.averaged.frequency)")
+    fw = dominant_frequency(tt, cl_all[m], float(t0))
+    if fw:
+        out["frequency_in_window"] = dict(fw, note="the same detection on this window alone: a window shorter than a "
+                                                   "few periods of the run's frequency finds a faster one")
     pf = {}
-    for p in sorted((case / "postProcessing").glob("cfdtFp_*")) if (case / "postProcessing").is_dir() else []:
-        bc = p.name[len("cfdtFp_"):]
+    pp = case / "postProcessing"
+    for p in sorted(pp.glob("cfdtFp_*")) if pp.is_dir() else []:
         g2 = _force_series(case, p.name)
         if g2 is None:
             continue
@@ -741,9 +773,12 @@ def window_average(folder: Path, name: str, study: dict, t0: float, t1: float | 
         if mp.sum() < 5:
             continue
         Fp = sc * Fp[mp]
-        pf[bc] = {"cd": time_window_stats(tp[mp], (Fp @ d) / qa, cfg, cd_scale, period),
-                  "cl": time_window_stats(tp[mp], (Fp @ l) / qa, cfg, cd_scale, period),
-                  "force_N": {k: _r(float(Fp[:, i].mean())) for i, k in enumerate(("fx", "fy", "fz"))}}
+        tpm = tp[mp]
+        pf[p.name[len("cfdtFp_"):]] = {
+            "cd": time_window_stats(tpm, (Fp @ d) / qa, wcfg, cd_scale, period),
+            "cl": time_window_stats(tpm, (Fp @ l) / qa, wcfg, cd_scale, period),
+            "force_N": {k: (time_window_stats(tpm, Fp[:, i], wcfg, fd, period) or {}).get("mean")
+                        for i, k in enumerate(("fx", "fy", "fz"))}}
     if pf:
         out["patches"] = pf
     else:
