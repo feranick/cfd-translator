@@ -345,6 +345,9 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.07.1**: node memory (SLURM RealMemory) as caps.mem / caps.mem_mb; run.mem above it fails validation.
+Router (user's): skip machines whose executor.caps.mem_mb < run.mem before staging.
+
 **2026.11.06.4**: window averages built by the run's own averaging code (porous part was not scaled by rho: v3g
 cd 0.4029 vs 0.4078); no window cut on an in-window frequency; regression test window = run's averages.
 

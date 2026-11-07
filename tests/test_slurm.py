@@ -332,7 +332,7 @@ def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
     assert job["time_min"] == 510
     d = json.loads((req / "d" / "job.json").read_text())                         # defaults for the other study
     assert d["command"][2:-1] == ["--mem=16G", "--nice=10"] and d["time_min"] == 20          # CFDT_TIMEOUT 600 s + 10 min
-    assert executor.status()["caps"] == {"timeout_s": "86400", "mem": "32G", "procs": "19"}
+    assert executor.status()["caps"] == {"timeout_s": "86400", "mem": "32G", "procs": "19", "mem_mb": 32768}
     assert executor.mem_mb("8G") == 8192 and executor.mem_mb("500M") == 500 and executor.mem_mb("x") is None
 
 

@@ -518,3 +518,31 @@ def test_chained_study_reuses_the_mesh(tmp_path, monkeypatch):
     assert transient._same_mesh(req / "a" / "case", req / "b" / "case")
     runner.prepare(c, req / "c")
     assert calls == [1]                                              # different mesh settings: meshed
+
+
+def test_run_mem_checked_against_the_node(monkeypatch):
+    """mochi, 2026.11.07: run.mem 90G passed validation and failed at sbatch ('Memory specification can not be
+    satisfied'): a node's RealMemory is now a cap, reported in caps.mem / mem_mb for the router."""
+    from cfd_translator import executor
+    executor._NODES.clear()
+    monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
+    monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
+    monkeypatch.setattr(executor, "effective_nodelist", lambda: None)
+    monkeypatch.setattr(executor, "node_cores", lambda: 20)
+
+    def run(cmd, timeout=20):
+        return (0, "mochi 64000\n", "") if cmd[:2] == ["sinfo", "-h"] and "%N %m" in cmd else (1, "", "")
+    monkeypatch.setattr(executor, "_run", run)
+    c = executor.caps()
+    assert c["mem"] == "62G" and c["mem_mb"] == 62 * 1024 and "RealMemory" in c["mem_from"]
+    e = executor.run_errors({"run": {"mem": "90G"}})
+    assert e and "at most 62G" in e[0] and "machines()" in e[0]
+    assert executor.run_errors({"run": {"mem": "48G"}}) == []
+    assert executor.mem_plan({"run": {"mem": "auto"}}, 30e6)[0] <= 62 * 1024          # the estimate is capped too
+    monkeypatch.setenv("CFDT_MAX_MEM", "32G")                                          # a lower setting wins
+    assert executor.caps()["mem"] == "32G" and executor.caps()["mem_mb"] == 32768
+    executor._NODES.clear()
+    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, "mochi 1\n", ""))   # memory not configured
+    monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
+    assert "mem" not in executor.caps()
+    executor._NODES.clear()

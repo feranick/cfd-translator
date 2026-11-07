@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.06.2
+Version: 2026.11.07.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -232,9 +232,35 @@ def node_cores() -> int | None:
     return max(n["cores"] for n in ns) if ns else None
 
 
+def node_mem_mb() -> float | None:
+    """The most memory one job can ask for (MB): the largest RealMemory among the nodes jobs go to (sinfo %m), or
+    None when SLURM does not know it (unset nodes report 1 MB). mochi's jobs failed only at submission with
+    'Memory specification can not be satisfied' when run.mem asked for more (90G, 2026.11.07)."""
+    if kind() != "slurm":
+        return None
+    if "mem" not in _NODES:
+        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %m"])
+        mem = {}
+        for line in out.splitlines() if rc == 0 else []:
+            f = line.split()
+            if len(f) >= 2 and f[1].rstrip("+").isdigit():
+                mem[f[0]] = max(mem.get(f[0], 0), int(f[1].rstrip("+")))
+        if rc != 0:
+            return None                       # asked again next time
+        _NODES["mem"] = mem
+    mem = _NODES["mem"]
+    want = effective_nodelist()
+    vals = [v for n, v in mem.items() if (not want or n in want.split(",")) and v >= 1024]
+    return float(max(vals)) if vals else None
+
+
+def _fmt_mem(mb: float) -> str:
+    return f"{int(mb // 1024)}G" if mb >= 1024 else f"{int(mb)}M"
+
+
 def caps() -> dict:
     """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none. With
-    SLURM, procs is also at most a node's cores."""
+    SLURM, procs is also at most a node's cores, and mem at most a node's memory (mem_mb in MB, for the router)."""
     out = {}
     for k, env in (("timeout_s", "CFDT_MAX_TIMEOUT"), ("mem", "CFDT_MAX_MEM"), ("procs", "CFDT_MAX_PROCS")):
         v = os.environ.get(env, "").strip()
@@ -244,6 +270,12 @@ def caps() -> dict:
     if nc and (not out.get("procs") or int(out["procs"]) > nc):
         out["procs"] = str(nc)
         out["procs_from"] = "a node's cores (SLURM, one rank per core)"
+    nm = node_mem_mb()
+    if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
+        out["mem"] = _fmt_mem(nm)
+        out["mem_from"] = "a node's memory (SLURM RealMemory)"
+    if out.get("mem") and mem_mb(out["mem"]):
+        out["mem_mb"] = int(mem_mb(out["mem"]))
     return out
 
 
@@ -271,7 +303,8 @@ def run_errors(st: dict) -> list[str]:
         if not mb:
             errs.append("run.mem: SLURM memory per job, e.g. '8G' or '500M', or 'auto' (from the cell estimate)")
         elif "mem" in cap and mem_mb(cap["mem"]) and mb > mem_mb(cap["mem"]):
-            errs.append(f"run.mem: at most {cap['mem']} on this machine (CFDT_MAX_MEM)")
+            errs.append(f"run.mem: at most {cap['mem']} on this machine ({cap.get('mem_from', 'CFDT_MAX_MEM')}); "
+                        "choose a machine with more (machines(): executor.caps.mem) or ask for less")
     n = r.get("procs")
     if n is not None:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
