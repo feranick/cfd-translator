@@ -546,3 +546,42 @@ def test_run_mem_checked_against_the_node(monkeypatch):
     monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
     assert "mem" not in executor.caps()
     executor._NODES.clear()
+
+
+def test_worker_ends_with_its_parent(tmp_path):
+    """workers.watch_parent: a worker whose server dies (kill -9) exits instead of waiting forever."""
+    import os
+    import subprocess
+    import sys
+    import time
+    code = (
+        "import os, sys, time, subprocess\n"
+        "from cfd_translator.workers import watch_parent\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    watch_parent(os.getppid())\n"
+        "    open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "    time.sleep(60)\n"
+        "    os._exit(1)\n"
+        "time.sleep(60)\n")
+    pf = tmp_path / "child.pid"
+    parent = subprocess.Popen([sys.executable, "-c", code, str(pf)], cwd=str(Path(__file__).parent.parent))
+    for _ in range(100):
+        if pf.is_file() and pf.read_text():
+            break
+        time.sleep(0.05)
+    child = int(pf.read_text())
+    parent.kill()
+    parent.wait()
+
+    def alive(p):
+        try:
+            st = Path(f"/proc/{p}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            return st != "Z"
+        except (OSError, IndexError):
+            return False
+    for _ in range(60):
+        if not alive(child):
+            break
+        time.sleep(0.1)
+    assert not alive(child)

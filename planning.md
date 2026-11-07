@@ -70,7 +70,7 @@ variants.py   geometry refs, variants, mesh_scales, NPSH sweeps (compare)
 executor.py   SLURM: submit, run-study, states, estimates, caps   cpushare.py  other processes on our CPUs, reap
 render.py / render_vtk.py   images                refsolver.py  2D MAC reference solver
 runner.py     one study end to end, verdict       bench.py      benchmarks
-api.py, cli.py, mcp_server.py, guides.py
+api.py, cli.py, mcp_server.py, guides.py, workers.py (pool workers end with the server)
 ```
 
 MCP tools: study_format, validate_studies, run_studies, study_status, get_case, guide, add_geometry, list_geometry,
@@ -344,6 +344,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.07.2**: worker pools end with the server (workers.watch_parent, as feat).
 
 **2026.11.07.1**: node memory (SLURM RealMemory) as caps.mem / caps.mem_mb; run.mem above it fails validation.
 Router (user's): skip machines whose executor.caps.mem_mb < run.mem before staging.
