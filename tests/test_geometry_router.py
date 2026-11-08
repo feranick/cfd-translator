@@ -585,3 +585,41 @@ def test_worker_ends_with_its_parent(tmp_path):
             break
         time.sleep(0.1)
     assert not alive(child)
+
+
+def test_progress_of_an_init_from_transient_run(tmp_path):
+    """2026.11.07: runs started with solve.transient.init_from (no steady start) were shown as 'iteration 1 of 500'
+    at ~34,000 s an iteration while they were at t = 0.83 s (mochi) and 1.63 s (spark1)."""
+    d = tmp_path / "s"
+    (d / "case").mkdir(parents=True)
+    st = {"model": "kOmegaSSTDES",
+          "solve": {"transient": {"end_time": 2.5, "average_from": 0.5, "init_from": "run_a/b", "init_fields": "mean"}}}
+    # mapping under way: its own stage
+    (d / "case" / "log.mapFields").write_text("Create meshes\n\nMapping fields for time 1\n\n    interpolating p\n")
+    pr = api._progress_of(d, st)
+    assert pr["stage"].startswith("mapping fields") and pr["fields_mapped"] == ["p"] and pr["limit_min"] == 60
+    (d / "case" / "log.mapFields").write_text("    interpolating U\n\nEnd\n")
+    lines = []
+    for k in range(1, 200):
+        lines += [f"Courant Number mean: 0.1 max: 0.9", f"deltaT = 4.7e-05", f"Time = {0.8 + k * 4.7e-5:.8g}s",
+                  f"ExecutionTime = {k * 1.7:.1f} s  ClockTime = {k * 1.7:.0f} s", ""]
+    (d / "case" / "log.foamRun").write_text("Time = 0.8s\n\n" + "\n".join(lines))
+    pr = api._progress_of(d, st)
+    assert pr["stage"] == "solving (transient)" and pr["time"] == pytest.approx(0.8093, abs=1e-3)
+    assert pr["end_time"] == 2.5 and "iteration" not in pr and pr["eta_min_max"] > 0
+
+
+def test_mapping_failure_is_a_clear_error(tmp_path, monkeypatch):
+    from cfd_translator import transient
+    monkeypatch.setenv("CFDT_MAP_TIMEOUT", "120")
+    assert transient.map_timeout() == 120
+    src = tmp_path / "run_a" / "b"
+    _case(src / "case", {f: _field(f, "uniform 1") for f in ("U", "p")}, t="4", mesh="one")
+    dst = tmp_path / "run_b" / "c" / "case"
+    _case(dst, {f: _field(f, "uniform 0") for f in ("U", "p")}, mesh="other")
+
+    def slow(cmd, log):
+        raise RuntimeError("mapFields took more than 120 s (CFDT_TIMEOUT)")
+    with pytest.raises(RuntimeError, match="CFDT_MAP_TIMEOUT"):
+        transient.map_from(dst, src, "last", slow)
+    assert not (dst.parent / "init_source").exists()                 # the temporary source is removed

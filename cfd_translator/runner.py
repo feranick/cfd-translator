@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.06.3
+Version: 2026.11.08.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -389,12 +389,13 @@ def _init_steady(case: Path, study: dict, plan: dict, src: Path, folder: Path, t
     """solve.init_from on a steady run (MRF, cavitation): the source's fields in 0/ before the solve. Cavitation
     runs then start from the source's inlet pressure and at their full flow (cavitation.restart_tables)."""
     from . import foam
-    from .transient import init_ref, map_from
+    from .transient import init_ref, map_from, map_timeout
     if not _source_ready(src, folder, t_job, timeout, warns):
         return {"from": str(src), "used": False}
     fm = foam.find_foam()
     try:
-        notes, info = map_from(case, src, init_ref(study)[1], lambda cmd, log: foam._step(fm, cmd, log, case, 3600))
+        notes, info = map_from(case, src, init_ref(study)[1],
+                               lambda cmd, log: foam._step(fm, cmd, log, case, map_timeout()))
     except Exception as exc:  # noqa: BLE001
         warns.append(f"init_from: could not take the fields of {src} ({type(exc).__name__}: {exc}): this run starts "
                      "from the uniform fields")
@@ -716,12 +717,13 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     if tr.get("init_from") and not state.get("mapped") and not state.get("init_done"):
         # init_from: an earlier run's fields on this mesh instead of a uniform start (a variant that differs near one
         # wheel needs less start-up time)
-        from .transient import map_from
+        # once per run: transient.json's 'mapped' keeps later SLURM jobs from mapping again
+        from .transient import map_from, map_timeout
         fm = foam.find_foam()
         notes = []
         if _source_ready(Path(tr["init_from"]), folder, t_job, timeout, notes):
             notes += map_from(case, tr["init_from"], tr.get("init_fields", "last"),
-                              lambda cmd, log: foam._step(fm, cmd, log, case, 3600))[0]
+                              lambda cmd, log: foam._step(fm, cmd, log, case, map_timeout()))[0]
         state.update(mapped=True, init_notes=notes)
         save()
         warns += notes

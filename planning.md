@@ -345,6 +345,9 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.08.1**: init_from transient runs no longer reported as steady iterations (they were running); mapping
+stage in progress, CFDT_MAP_TIMEOUT. mapFields 911k -> 865k cells: < 1 min on mochi.
+
 **2026.11.07.2**: worker pools end with the server (workers.watch_parent, as feat).
 
 **2026.11.07.1**: node memory (SLURM RealMemory) as caps.mem / caps.mem_mb; run.mem above it fails validation.

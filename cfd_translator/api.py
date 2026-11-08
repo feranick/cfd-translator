@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.07.2
+Version: 2026.11.08.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -383,6 +383,19 @@ def _progress_of(d: Path, study: dict) -> dict:
                      "snapping" if "Morphing phase" in t or "Snapping" in t else "refining")
             return {"stage": f"meshing (snappyHexMesh: {stage})",
                     "elapsed_min": round((time.time() - sl.stat().st_ctime) / 60, 1)}
+        ml = d / "case" / "log.mapFields"
+        if ml.is_file():                       # init_from: mapping the source's fields onto this mesh (serial)
+            try:
+                mt = ml.read_text(errors="replace")
+            except OSError:
+                mt = ""
+            if "\nEnd" not in mt:
+                done = re.findall(r"^\s+interpolating (\S+)", mt, re.M)
+                from .transient import map_timeout
+                return {"stage": "mapping fields (init_from, mapFields, serial)",
+                        "elapsed_min": round((time.time() - ml.stat().st_ctime) / 60, 1),
+                        **({"fields_mapped": done} if done else {}),
+                        "limit_min": round(map_timeout() / 60, 1)}
         return {"stage": "meshing / writing the case" if (d / "case").exists() else "starting"}
     try:
         text = log.read_text(errors="replace")[-200000:]
@@ -391,7 +404,11 @@ def _progress_of(d: Path, study: dict) -> dict:
     it = _re.findall(r"^Time = ([-+0-9.eE]+)", text, _re.M)
     s = study.get("solve", {})
     trs = s.get("transient")
-    init = int(trs.get("init", 0 if study.get("model", "laminar") == "laminar" else 500)) if trs else 0
+    # no steady start when the run starts from another run's fields (init_from): reading its time steps as steady
+    # iterations showed 'iteration 1 of 500' at 34,000 s an iteration for runs at t = 0.8 and 1.6 s (2026.11.07)
+    from .transient import init_ref
+    init = (int(trs.get("init", 0 if (study.get("model", "laminar") == "laminar" or init_ref(study)[0]) else 500))
+            if trs else 0)
     if trs and (init == 0 or (d / "case" / "log.foamRun.init").exists()):
         from .transient import progress as _tp
         T = float(trs["end_time"])

@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.07.1
+Version: 2026.11.08.1
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -667,7 +667,9 @@ def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs
     s = study.get("solve") or {}
     tr = s.get("transient")
     if tr:
-        init = 0 if tr.get("continue") else int(tr.get("init", 0 if model == "laminar" else 500))
+        from .transient import init_ref
+        init = 0 if (tr.get("continue") or (init_ref(study)[0] and "init" not in tr)) else \
+            int(tr.get("init", 0 if model == "laminar" else 500))
         solve = (init + (transient_steps(study) or 0)) * it
     elif study.get("cavitation"):
         # incompressibleVoF (cavitation.py): the vapour fraction (MULES, two correctors) and more pressure work

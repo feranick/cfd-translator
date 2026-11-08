@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.06.2
+Version: 2026.11.08.1
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -402,13 +402,30 @@ def map_from(case: Path, src: Path | str, which: str, run_step) -> tuple[list[st
             "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      mapFieldsDict;\n}\n\n"
             "// internal fields only: every patch keeps this case's boundary conditions\npatchMap ( );\n\n"
             "cuttingPatches ( );\n")
-        run_step(f"mapFields {tmp} -sourceTime 1", "log.mapFields")
-        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            run_step(f"mapFields {tmp} -sourceTime 1", "log.mapFields")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"init_from: mapFields from {src} did not finish ({type(exc).__name__}: {str(exc)[:300]}). It is serial "
+                f"and limited to {map_timeout():.0f} s (CFDT_MAP_TIMEOUT); see {case / 'log.mapFields'}. Start without "
+                "init_from, or from a run whose mesh is closer to this one") from exc
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
         how = "mapped onto this mesh (mapFields)"
     note = f"started from {src} at its time {t:g}: {', '.join(took)} {how}"
     if src_vof != dst_vof:
         note += "; pressure not carried over (single-phase and cavitation runs keep it in different units)"
     return [note], {"fields": [f for f, _ in pairs], "time": t, "same_mesh": same, "vof": src_vof}
+
+
+def map_timeout() -> float:
+    """Seconds mapFields may take (CFDT_MAP_TIMEOUT, default 3600). The Rogue's 911k -> 865k cells took under a
+    minute on mochi (2026.11.07); a longer one is stuck, or the meshes hardly overlap."""
+    import os
+    try:
+        return max(60.0, float(os.environ.get("CFDT_MAP_TIMEOUT", "3600")))
+    except ValueError:
+        return 3600.0
 
 
 def wait_for(src: Path, timeout: float, cancel: Path | None = None, poll: float = 10.0) -> dict | None:
