@@ -345,6 +345,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.08.2**: queued jobs' `ahead` counts only pending jobs that can run on the same node.
+
 **2026.11.08.1**: init_from transient runs no longer reported as steady iterations (they were running); mapping
 stage in progress, CFDT_MAP_TIMEOUT. mapFields 911k -> 865k cells: < 1 min on mochi.
 

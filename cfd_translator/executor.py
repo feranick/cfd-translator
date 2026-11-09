@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.08.1
+Version: 2026.11.08.2
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -896,16 +896,22 @@ def squeue(ids: list[str]) -> dict:
 
 
 def pending_ahead() -> dict:
-    """All pending jobs on the machine as (priority, id), to count the jobs ahead of each."""
-    rc, out, _ = _run(["squeue", "-h", "-t", "PD", "-o", "%i|%Q"])
+    """Pending jobs ahead of each pending job: higher priority (or the same and an older id) and able to run on the
+    same node: no requested nodes on either side, or requested node lists that share a node (%n). On the sparks
+    (one controller, jobs pinned with --nodelist) spark1's job 506 counted spark2's 469-471 (2026.11.08)."""
+    rc, out, _ = _run(["squeue", "-h", "-t", "PD", "-o", "%i|%Q|%n"])
     jobs = []
     for line in out.splitlines() if rc == 0 else []:
-        i, _, p = line.partition("|")
+        f = (line.split("|") + ["", ""])[:3]
         try:
-            jobs.append((float(p or 0), int(i)))
+            jobs.append((float(f[1] or 0), int(f[0]), frozenset(_expand_nodes(f[2].strip()))))
         except ValueError:
             pass
-    return {str(i): sum(1 for pp, ii in jobs if pp > p or (pp == p and ii < i)) for p, i in jobs}
+
+    def share(a, b):
+        return not a or not b or bool(a & b)
+    return {str(i): sum(1 for pp, ii, nn in jobs if (pp > p or (pp == p and ii < i)) and share(n, nn))
+            for p, i, n in jobs}
 
 
 def sacct(ids: list[str]) -> dict | None:

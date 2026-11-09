@@ -623,3 +623,15 @@ def test_mapping_failure_is_a_clear_error(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="CFDT_MAP_TIMEOUT"):
         transient.map_from(dst, src, "last", slow)
     assert not (dst.parent / "init_source").exists()                 # the temporary source is removed
+
+
+def test_jobs_ahead_count_only_the_same_node(monkeypatch):
+    """spark1's job 506 (--nodelist=spark-5da5) showed ahead 3: spark2's 469-471 (2026.11.08)."""
+    from cfd_translator import executor
+    out = ("469|100|spark-0808\n470|100|spark-0808\n471|100|spark-0808\n"
+           "480|100|\n"                                      # no nodelist: may run on either node
+           "506|100|spark-5da5\n507|100|spark-5da5\n")
+    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, out, ""))
+    a = executor.pending_ahead()
+    assert a["506"] == 1 and a["507"] == 2                 # 480 (anywhere) and, for 507, 506
+    assert a["471"] == 2 and a["480"] == 3                 # 469, 470; a job without a nodelist waits behind all
