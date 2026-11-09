@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.08.1
+Version: 2026.11.09.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -342,6 +342,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             return _save(out, folder, name)
         out.update(ok=False, why=type(exc).__name__, error=str(exc)[:3000],
                    warnings=warns + [n for n in getattr(exc, "notes", []) if n not in warns])
+        from .foam import Killed
+        if isinstance(exc, Killed):     # an OpenFOAM program killed for memory: said as such (it read 'failed')
+            out["state"] = "out_of_memory"
         out["trace"] = traceback.format_exc()[-2000:]
     if watcher is not None:
         _cpu_note(watcher.stop(), out)

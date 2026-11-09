@@ -1,5 +1,9 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.08.2
+Version: 2026.11.09.2
+
+From 2026.11.09.2 how a job that left the queue ended (final_state) is llmt-runtime's (llmt_runtime.jobs.classify_end,
+with cfdt's out-of-memory advice), and status() reports llmt-runtime's version ("runtime"); the rest of the SLURM layer
+moves in phase 2.
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
@@ -733,9 +737,16 @@ def status() -> dict:
                 "node": {"setting": node_setting(), "nodelist": effective_nodelist(),
                          "cluster_nodes": cluster_nodes()},
                 **({"cores_shared": ca["why"]} if (ca := core_accounting()) and ca.get("shared") else {}),
-                "mem": mem_setting()}
+                "mem": mem_setting(), "runtime": _runtime_version()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
-            "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
+            "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps(),
+            "runtime": _runtime_version()}
+
+
+def _runtime_version() -> str:
+    """llmt-runtime's version (machines() and llmt status show it)."""
+    from llmt_runtime import __version__ as v
+    return v
 
 
 # ---- submitting --------------------------------------------------------------------------------
@@ -942,21 +953,22 @@ def _tail(path: Path, n: int = 30) -> str:
         return "(no job.log)"
 
 
-def final_state(acct: str | None, log: str) -> tuple[str, str]:
-    """(state, why) of a job that left the queue without a result."""
-    a = (acct or "").upper()
-    if a.startswith("TIMEOUT") or (not acct and "DUE TO TIME LIMIT" in log):
-        return "timed_out", ("the SLURM time limit ended the job: raise CFDT_TIMEOUT (the job asks for it plus 10 "
-                             "minutes), or lower the study's solve.iterations or coarsen its mesh")
-    if a.startswith("OUT_OF_MEMORY") or (not acct and ("oom-kill" in log.lower() or "out of memory" in log.lower())):
-        return "out_of_memory", "out of memory: add --mem=... to CFDT_SLURM_ARGS, or coarsen the mesh"
-    if a.startswith("CANCELLED") or (not acct and "CANCELLED" in log):
-        who = a.split("BY", 1)[1].strip() if "BY" in a else None
-        return "cancelled", "cancelled" + (f" by user {who}" if who else "")
-    if not acct and log == "(no job.log)":     # never started: scancel while queued leaves nothing behind
-        return "cancelled", ("left the queue without starting (no job.log): cancelled while queued (scancel), or "
-                             "SLURM dropped it; submit it again if it was not cancelled on purpose")
-    return "failed", f"the job ended without a result ({acct or 'no accounting'}); the end of job.log:\n{log}"
+def final_state(acct: str | None, log: str, folder: Path | None = None) -> tuple[str, str]:
+    """(state, why) of a job that left the queue without a result, from sacct's state and the end of job.log ('(no
+    job.log)' when there is none): llmt-runtime's rules (jobs.classify_end), with cfdt's out-of-memory advice when the
+    study folder is given. SLURM's out-of-memory wording 'Detected N oom_kill events' counts whatever sacct says
+    (before 2026.11.09.2 only 'oom-kill', and only without accounting: such jobs came back as 'failed')."""
+    from llmt_runtime import jobs as J
+
+    from .runtime import RT
+    has_log = log != "(no job.log)"
+    job = {}
+    if folder is not None:
+        try:
+            job = json.loads((Path(folder) / "job.json").read_text())
+        except (OSError, ValueError):
+            pass
+    return J.classify_end(RT, acct, log if has_log else "", has_log=has_log, folder=folder, job=job)
 
 
 def slurm_states(request: Path, names: list[str], studies: dict | None = None, write: bool = True) -> dict:
@@ -1019,9 +1031,9 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
                 st = {**prog, "state": "running", **base, "job_elapsed_min": s["elapsed_min"]}
             out[n] = st
             continue
-        state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"))
+        state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"), request / n)
         node, here = _JOB_NODE.get(jid), local_node()
-        if (state in ("failed", "cancelled") and "by user" not in why and not (request / n / "job.log").exists()
+        if (state in ("failed", "cancelled") and " by " not in why and not (request / n / "job.log").exists()
                 and node and here and node != here):
             state, why = "failed", (f"the job went to node {node} and left no job.log: that node cannot see {request} "
                                     "(its filesystem is not shared with this one). Keep jobs on this node "

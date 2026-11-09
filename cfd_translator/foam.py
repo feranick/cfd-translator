@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.04.7
+Version: 2026.11.09.2
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -196,10 +196,13 @@ def was_killed(text: str, rc: int | None = None) -> bool:
 
 
 def memory_hint(what: str, stage: str | None = None, cells: int | None = None) -> str:
-    """Why a program was killed and what to do: its memory limit (SLURM_MEM_PER_NODE) and run.mem."""
-    mb = os.environ.get("SLURM_MEM_PER_NODE")
-    have = f"{int(mb) / 1024:.3g} GB" if mb and mb.isdigit() else None
-    nxt = f"{2 * int(mb) // 1024}G" if mb and mb.isdigit() else "16G"
+    """Why a program was killed and what to do: its memory limit (llmt-runtime's memory_limit_mb: the SLURM job's,
+    else its cgroup's) and run.mem."""
+    from llmt_runtime.memory import memory_limit_mb
+    lim = memory_limit_mb()
+    mb = str(int(lim)) if lim else None
+    have = f"{int(mb) / 1024:.3g} GB" if mb else None
+    nxt = f"{2 * int(mb) // 1024}G" if mb else "16G"
     return (f"{what} was killed{' while ' + stage if stage else ''} (signal 9), almost certainly because it ran out of "
             f"memory{' (this job had ' + have + ')' if have else ''}"
             f"{f'; the mesh had {cells:,} cells at that point' if cells else ''}. Give the study more: \"run\": "

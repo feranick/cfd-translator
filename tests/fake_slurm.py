@@ -27,11 +27,28 @@ def save(i, r):
 
 
 def alive(pid):
+    """A job's process exists and is not a zombie: /proc on Linux; elsewhere (macOS has no /proc, where every job
+    looked gone at once before 2026.11.09.2) kill(pid, 0), then ps for the zombie state."""
+    if Path("/proc").is_dir():
+        try:
+            st = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            return st != "Z"
+        except (OSError, IndexError):
+            return False
     try:
-        st = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        return st != "Z"
-    except (OSError, IndexError):
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return bool(out.strip()) and not out.strip().startswith("Z")
 
 
 def state(r):

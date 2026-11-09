@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.08.1
+Version: 2026.11.09.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -284,7 +284,12 @@ def _collect(folder: Path) -> dict:
     for v in out.values():
         if isinstance(v, dict):
             v.pop("trace", None)
-    res = {"request": str(folder), "translator": __version__, "solver": meta["solver"], "done": not pending,
+    # the version the studies ran with (their results', else request.json's), and translator_now when this server
+    # runs another (llmt-runtime's ran_with; before 2026.11.09.2 the installed version, whatever the run used)
+    from llmt_runtime import requests as R
+
+    from .runtime import RT
+    res = {"request": str(folder), **R.ran_with(RT, meta, out), "solver": meta["solver"], "done": not pending,
            "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
     if pending:
         res["progress"] = progress
@@ -449,7 +454,7 @@ def _progress_of(d: Path, study: dict) -> dict:
             "note": "eta is an upper bound: the run stops earlier when it converges"}
 
 
-REQUEST_NAME = re.compile(r"^run_[A-Za-z0-9_.-]{1,80}$")
+from llmt_runtime.requests import REQUEST_NAME  # noqa: E402,F401 (run_<id>: the router names requests)
 
 
 def start(studies: dict, solver: str | None = None, request_name: str | None = None) -> Path:
@@ -475,11 +480,15 @@ def start(studies: dict, solver: str | None = None, request_name: str | None = N
     for n, e in pre.items():              # a study whose variants could not be spelled out
         if n not in studies:
             invalid[n] = {"ok": False, "why": "invalid study", "errors": e}
+    from llmt_runtime import requests as R
+
     from . import executor as _ex
-    (folder / "request.json").write_text(json.dumps({"names": [j["name"] for j in jobs], "invalid": invalid,
-                                                     "solver": s, "started": time.time(), "executor": _ex.kind(),
-                                                     "studies": {j["name"]: j["study"] for j in jobs},
-                                                     "groups": groups}, default=float))
+    from .runtime import RT
+    # with the versions it is submitted with ("translator", llmt-runtime's "runtime"): status says what it ran with
+    (folder / "request.json").write_text(json.dumps(R.request_meta(RT, names=[j["name"] for j in jobs], invalid=invalid,
+                                                                   solver=s, started=time.time(), executor=_ex.kind(),
+                                                                   studies={j["name"]: j["study"] for j in jobs},
+                                                                   groups=groups), default=float))
     from . import executor
     from .transient import init_ref
     # a study that starts from another of this request (init_from '<study>': a chained NPSH sweep) goes after it:
@@ -664,18 +673,22 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None, det
     request_name ('run_<anything>'): the folder's name, chosen by the caller so that it knows the request path even
     when the answer does not reach it in time; a call repeating a name that exists returns that request's status
     instead of submitting again (a retry after a time-out cannot run the studies twice)."""
+    from llmt_runtime import requests as R
+
+    from .runtime import RT
     t0 = time.time()
-    if request_name is not None:
-        if not isinstance(request_name, str) or not REQUEST_NAME.match(request_name):
-            return {"error": "request_name: 'run_' followed by letters, digits, _ . - (up to 80)"}
-        if (out_root() / request_name / "request.json").is_file():
-            res = status(str(out_root() / request_name), 0.0 if wait is None else min(wait, 15.0), detail)
-            return dict(res, note="this request_name was submitted before: its status, nothing submitted again")
-        if (out_root() / request_name).exists():
-            return {"error": f"request_name {request_name!r}: the folder exists but holds no request (still being "
-                             "submitted by an earlier call? call again in a few seconds)",
-                    "request": str(out_root() / request_name)}
-    folder = start(studies, solver, request_name)
+    kind_, found = R.check_request_name(RT, request_name)     # llmt-runtime: new | repeat (its status) | error
+    if kind_ == "error":
+        return found
+    if kind_ == "repeat":
+        res = status(str(found), 0.0 if wait is None else min(wait, 15.0), detail)
+        return dict(res, note=R.REPEAT_NOTE)
+    try:
+        folder = start(studies, solver, request_name)
+    except FileExistsError:                                   # another call took the name between the look and now
+        return {"error": f"request_name {request_name!r}: the folder exists but holds no request (still being "
+                         "submitted by an earlier call? call again in a few seconds)",
+                "request": str(out_root() / request_name)}
     # the wait counts from the call's start: building goals and submitting can take a while on a busy machine,
     # and an MCP call must end within a minute (the router's limit)
     return status(str(folder), 1e9 if wait is None else max(0.0, wait - (time.time() - t0)), detail)
