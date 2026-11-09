@@ -139,7 +139,10 @@ def test_validation_messages():
     assert not validate_study(dict(CHANNEL, mesh={"cells": [10, 10, 2]}))["ok"]          # 2d needs nz = 1
     assert not validate_study({**CHANNEL, "bcs": [{"kind": "wall", "faces": {"all": True}}]})["ok"]   # no driver
     f = api.study_format()
-    assert len(json.dumps(f)) < 12500 and api.validate(f["example"])["ok"]
+    # the format itself; 'status' (installed tools and versions) differs by machine: 12,518 on a machine with
+    # every tool against 12,334 in a sandbox without them (2026.11.09)
+    assert len(json.dumps({k: v for k, v in f.items() if k != "status"})) < 12300 and api.validate(f["example"])["ok"]
+    assert len(json.dumps(f["status"])) < 1000
 
 
 # ---- case -------------------------------------------------------------------------------------

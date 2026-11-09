@@ -24,6 +24,10 @@ def _bare_machine(monkeypatch, tmp_path_factory):
     for k in _CLEAR:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.delenv("CFDT_SLURM_NODE", raising=False)
+    # no X display, as the MCP server runs: an ssh -X session's DISPLAY made VTK's probe print 'X11 connection
+    # rejected because of wrong authentication' ten times (2026.11.09); offscreen drawing does not need it
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     from cfd_translator import executor
     executor._NODES.clear()                  # sinfo's answer is cached per process
     executor._JOB_NODE.clear()
