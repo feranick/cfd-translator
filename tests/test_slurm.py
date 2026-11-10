@@ -525,8 +525,14 @@ def test_cpu_share_on_the_real_proc(tmp_path):
         while time.time() - t0 < 1.0:
             pass
         after = cpushare.snapshot()
-        taken, who = cpushare.competitors(set(os.sched_getaffinity(0)), sl.pid, before, after, time.time() - t0)
-        assert taken > 0.5 and any(w["pid"] == os.getpid() for w in who)
+        dt = time.time() - t0
+        taken, who = cpushare.competitors(set(os.sched_getaffinity(0)), sl.pid, before, after, dt)
+        assert taken > 0.5
+        # competitors lists the top 5: on a busy machine (a Spark during deploy --test, 2026.11.09: 19 cores taken by
+        # others) this process may be crowded out, but then each one listed took at least as much as it did
+        mine = (after[os.getpid()][2] - before[os.getpid()][2]) / dt
+        assert any(w["pid"] == os.getpid() for w in who) or (len(who) == 5 and all(w["cores"] >= mine - 0.05
+                                                                                   for w in who)), (mine, who)
     finally:
         sl.kill()
 
