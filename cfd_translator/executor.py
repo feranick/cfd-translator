@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.09.4
+Version: 2026.11.09.7
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -887,19 +887,45 @@ def squeue(ids: list[str]) -> dict | None:
     return J.squeue([str(i) for i in ids])
 
 
-def pending_ahead() -> dict:
+# cfdt's own read of the whole queue (every user's jobs: id, name, state, CPUs, node, requested nodes, user, priority),
+# kept a few seconds: pending_ahead, running_etas and queue_summary share it (they made three squeue calls of their
+# own, next to the runtime's, in one study_status or jobs() answer)
+QUEUE_FMT = "%i|%j|%T|%C|%N|%n|%u|%Q"
+_QROWS: dict = {"at": 0.0, "v": None}
+
+
+def queue_rows(max_age_s: float = 3.0) -> list[dict] | None:
+    """[{id, name, state, cpus, node, req, user, prio}] for every job SLURM lists (one squeue call, kept max_age_s);
+    None when SLURM does not answer."""
+    if _QROWS["v"] is not None and time.time() - _QROWS["at"] < max_age_s:
+        return _QROWS["v"]
+    rc, out, _ = _run(["squeue", "-h", "-o", QUEUE_FMT])
+    if rc != 0:
+        return None
+    rows = []
+    for line in out.splitlines():
+        f = (line.split("|") + [""] * 8)[:8]
+        jid = f[0].strip().split("_")[0]
+        if not jid.isdigit():
+            continue
+        try:
+            prio = float(f[7]) if f[7].strip() else 0.0
+        except ValueError:
+            prio = 0.0
+        rows.append({"id": jid, "name": f[1], "state": f[2].strip(), "cpus": int(f[3]) if f[3].strip().isdigit() else 0,
+                     "node": f[4].strip(), "req": f[5].strip(), "user": f[6].strip(), "prio": prio})
+    _QROWS.update(at=time.time(), v=rows)
+    return rows
+
+
+def pending_ahead(rows: list[dict] | None = None) -> dict:
     """Pending jobs ahead of each pending job: higher priority (or the same and an older id) and able to run on the
     same node: no requested nodes on either side, or requested node lists that share a node (%n). On the sparks
-    (one controller, jobs pinned with --nodelist) spark1's job 506 counted spark2's 469-471 (2026.11.08). Applied
-    on top of llmt-runtime's `ahead` (by priority, every node's)."""
-    rc, out, _ = _run(["squeue", "-h", "-t", "PD", "-o", "%i|%Q|%n"])
-    jobs = []
-    for line in out.splitlines() if rc == 0 else []:
-        f = (line.split("|") + ["", ""])[:3]
-        try:
-            jobs.append((float(f[1] or 0), int(f[0]), frozenset(_expand_nodes(f[2].strip()))))
-        except ValueError:
-            pass
+    (one controller, jobs pinned with --nodelist) spark1's job 506 counted spark2's 469-471 (2026.11.08). From
+    queue_rows (no squeue call of its own); applied on top of llmt-runtime's `ahead` (by priority, every node's)."""
+    rows = queue_rows() if rows is None else rows
+    jobs = [(r["prio"], int(r["id"]), frozenset(_expand_nodes(r["req"])))
+            for r in rows or [] if r["state"] == "PENDING"]
 
     def share(a, b):
         return not a or not b or bool(a & b)
@@ -1037,19 +1063,18 @@ def queue_summary() -> dict:
     nothing pending for it, from any user), 'pending_for_node' how many are pending for it."""
     base = J.queue_summary(RT)
     mine = _my_nodes()
-    rc, out, _ = _run(["squeue", "-h", "-o", "%i|%j|%T|%C|%N|%n|%u"])
+    rows = queue_rows()
     q = {"running": 0, "queued": 0, "cpus_in_use": 0}
     cq = {"running": 0, "queued": 0, "cpus_in_use": 0}
     pending_here_any = 0
     user = os.environ.get("USER", "")
-    for line in out.splitlines() if rc == 0 else []:
-        f = (line.split("|") + [""] * 7)[:7]
-        st = f[2]
-        nodes = _expand_nodes(f[4].strip()) or _expand_nodes(f[5].strip())
+    for r in rows or []:
+        st = r["state"]
+        nodes = _expand_nodes(r["node"]) or _expand_nodes(r["req"])
         here = not mine or bool(nodes & mine) or (st not in ("RUNNING", "COMPLETING") and not nodes)
         if st in J.QUEUED and here:
             pending_here_any += 1
-        if not f[1].startswith(f"{CLI}:") or (user and f[6] and f[6] != user):
+        if not r["name"].startswith(f"{CLI}:") or (user and r["user"] and r["user"] != user):
             continue
         if st not in J.QUEUED and st not in J.ACTIVE:      # ended, still listed (MinJobAge): not in the queue
             continue
@@ -1058,7 +1083,7 @@ def queue_summary() -> dict:
                 continue
             if st in J.ACTIVE:
                 d["running"] += 1
-                d["cpus_in_use"] += int(f[3]) if f[3].isdigit() else 0
+                d["cpus_in_use"] += r["cpus"]
             else:
                 d["queued"] += 1
     machine = dict(base.get("machine") or {})
@@ -1067,7 +1092,7 @@ def queue_summary() -> dict:
         machine["node"] = ",".join(sorted(mine))
         res["cluster_queue"] = dict(cq, note="this translator's jobs on every node of the SLURM cluster; 'queue' "
                                     "counts only those of this machine's node")
-    if machine and rc == 0:
+    if machine and rows is not None:
         free = machine.get("cpus_idle", 0) >= machine.get("cpus", 1) > 0
         res["starts_now"] = bool(free and pending_here_any == 0)
         res["pending_for_node"] = pending_here_any
@@ -1085,11 +1110,12 @@ def running_etas(max_age_s: float = 20.0) -> dict:
     if time.time() - _ETAS["at"] < max_age_s:
         return _ETAS["v"]
     from .api import _progress_of
-    rc, out, _ = _run(["squeue", "-h", "-u", os.environ.get("USER", ""), "-t", "R", "-o", "%i|%j|%N|%C"])
+    user = os.environ.get("USER", "")
     v = {}
-    for line in out.splitlines() if rc == 0 else []:
-        f = (line.split("|") + [""] * 4)[:4]
-        parts = f[1].split(":")
+    for r in queue_rows() or []:
+        if r["state"] != "RUNNING" or (user and r["user"] and r["user"] != user):
+            continue
+        parts = r["name"].split(":")
         if len(parts) != 3 or parts[0] != CLI:
             continue
         try:
@@ -1099,8 +1125,8 @@ def running_etas(max_age_s: float = 20.0) -> dict:
         except Exception:  # noqa: BLE001
             continue
         if isinstance(pr, dict) and pr.get("eta_min_max") is not None:
-            v[f[0].strip()] = {"node": f[2].strip(), "cpus": int(f[3]) if f[3].isdigit() else None,
-                               "eta_min": float(pr["eta_min_max"]), "name": f"{parts[1]}/{parts[2]}"}
+            v[r["id"]] = {"node": r["node"], "cpus": r["cpus"] or None,
+                          "eta_min": float(pr["eta_min_max"]), "name": f"{parts[1]}/{parts[2]}"}
     _ETAS.update(at=time.time(), v=v)
     return v
 

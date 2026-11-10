@@ -38,6 +38,7 @@ def _bare_machine(monkeypatch, tmp_path_factory):
     executor._JOB_NODE.clear()               # failed scontrol is not asked again within 5 s) and partition limit
     executor._CELLS.clear()                  # cell estimates kept 30 s per study
     executor._ETAS.update(at=0.0, v={})      # the running jobs' ETAs, kept 20 s
+    executor._QROWS.update(at=0.0, v=None)   # cfdt's read of the whole queue, kept 3 s
     J._PENDING.update(t=0.0, v=None)         # the pending jobs (kept 3 s) and a slow sbatch (30 s): not across tests
     J._SBATCH_DOWN.update(until=0.0, why="")
 

@@ -73,7 +73,9 @@ the tool wrapper with the 48 s deadline, server log in `$CFDT_OUT/.server`) and 
   cfdt's wrappers; a helper taking a folder plus `**kwargs` must not name the folder `state`; MCP answer tests pin
   `GUARD.stale` to None.
 - Open (cfdt): two tests fail only on macOS (tool errors: SDK version; the Ahmed snappy benchmark); the bench test
-  depends on timing; `pending_ahead`'s extra `squeue` call; `extend` (runtime PLANNING.md, section 2). An explicit
+  depends on timing; `extend` (runtime PLANNING.md, section 2). 2026.11.09.7: cfdt's extras (pending_ahead,
+  running_etas, queue_summary) share one queue read (`queue_rows`); the runtime's `pending_jobs` call for its `ahead`
+  remains: one call less only with a runtime option (`ahead_of` with a 'can share a node' test, also for lmpt/omct). An explicit
   `CFDT_SLURM_MEM` size is no longer cut to `CFDT_MAX_MEM`.
 
 ## Conventions

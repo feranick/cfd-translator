@@ -395,9 +395,9 @@ def test_queue_counts_this_node_only(monkeypatch):
     from llmt_runtime import slurm as S
 
     from cfd_translator import executor
-    out = {"squeue": "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n"
-                     "444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
-                     "450|cfdt:r3:c|RUNNING|4|spark-5da5|spark-5da5|me\n",
+    out = {"squeue": "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me|100\n"
+                     "444|cfdt:r2:b|PENDING|20||spark-0808|me|100\n"
+                     "450|cfdt:r3:c|RUNNING|4|spark-5da5|spark-5da5|me|100\n",
            "sinfo": "spark-5da5|4/16/0/20\n"}
     monkeypatch.setenv("USER", "me")
     monkeypatch.setenv("CFDT_SLURM_NODE", "spark-5da5")
@@ -411,8 +411,19 @@ def test_queue_counts_this_node_only(monkeypatch):
     assert q["queue"] == {"running": 1, "queued": 0, "cpus_in_use": 4}
     assert q["cluster_queue"]["running"] == 2 and q["cluster_queue"]["queued"] == 1
     assert q["machine"]["node"] == "spark-5da5" and q["starts_now"] is False      # 4 CPUs in use
-    out["squeue"] = "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
+    calls = []
+    real = run
+
+    def counting(cmd, timeout=15):
+        calls.append(cmd[0])
+        return real(cmd, timeout)
+    monkeypatch.setattr(S, "run", counting)
+    executor.pending_ahead()
+    assert calls == []                                                 # the same read, kept: no squeue of its own
+    out["squeue"] = ("443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me|100\n"
+                     "444|cfdt:r2:b|PENDING|20||spark-0808|me|100\n")
     out["sinfo"] = "spark-5da5|0/20/0/20\n"
+    executor._QROWS.update(at=0.0)                                     # older than 3 s
     q = executor.queue_summary()
     assert q["queue"]["running"] == 0 and q["starts_now"] is True and q["pending_for_node"] == 0
 
@@ -652,10 +663,14 @@ def test_mapping_failure_is_a_clear_error(tmp_path, monkeypatch):
 def test_jobs_ahead_count_only_the_same_node(monkeypatch):
     """spark1's job 506 (--nodelist=spark-5da5) showed ahead 3: spark2's 469-471 (2026.11.08)."""
     from cfd_translator import executor
-    out = ("469|100|spark-0808\n470|100|spark-0808\n471|100|spark-0808\n"
-           "480|100|\n"                                      # no nodelist: may run on either node
-           "506|100|spark-5da5\n507|100|spark-5da5\n")
-    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, out, ""))
+    rows = "".join(f"{i}|x:{i}|PENDING|20||{n}|u|100\n" for i, n in
+                   ((469, "spark-0808"), (470, "spark-0808"), (471, "spark-0808"),
+                    (480, ""),                               # no nodelist: may run on either node
+                    (506, "spark-5da5"), (507, "spark-5da5")))
+    rows += "443|x:443|RUNNING|20|spark-0808|spark-0808|u|100\n"      # running jobs are not 'ahead'
+    seen = []
+    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: seen.append(cmd) or (0, rows, ""))
     a = executor.pending_ahead()
+    assert seen == [["squeue", "-h", "-o", executor.QUEUE_FMT]] and "443" not in a
     assert a["506"] == 1 and a["507"] == 2                 # 480 (anywhere) and, for 507, 506
     assert a["471"] == 2 and a["480"] == 3                 # 469, 470; a job without a nodelist waits behind all
