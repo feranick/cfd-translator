@@ -1,13 +1,16 @@
 """The tests run as on a bare machine, whatever the installation's config/env says: local execution (no SLURM:
 a machine whose controller was down failed three benchmark tests with 'could not submit', 2026.10.22), results in
-a temporary folder (not the real CFDT_OUT), one rank, no caps. Tests that need SLURM set it up themselves (the
-fake SLURM of test_slurm.py), after this fixture."""
+a temporary folder (not the real CFDT_OUT), one rank, no caps. Tests that need SLURM set it up themselves (llmt-runtime's
+fake SLURM, llmt_runtime.testing.fake_slurm, in test_slurm.py and test_runtime.py), after this fixture.
+Version: 2026.11.09.4
+"""
 from __future__ import annotations
 
 import pytest
 
 _CLEAR = ("CFDT_SLURM_ARGS", "CFDT_SLURM_MIN_MINUTES", "CFDT_MAX_TIMEOUT", "CFDT_MAX_MEM", "CFDT_MAX_PROCS",
-          "CFDT_CELLS_PER_RANK", "CFDT_MPIRUN", "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_MEM_PER_NODE")
+          "CFDT_CELLS_PER_RANK", "CFDT_MPIRUN", "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_MEM_PER_NODE",
+          "CFDT_SLURM_MEM", "CFDT_SLURM_TIME", "CFDT_SLURM_TIME_FACTOR", "CFDT_SLURM_TIME_MIN")
 
 
 def pytest_configure(config):
@@ -28,9 +31,15 @@ def _bare_machine(monkeypatch, tmp_path_factory):
     # rejected because of wrong authentication' ten times (2026.11.09); offscreen drawing does not need it
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    from llmt_runtime import jobs as J
+
     from cfd_translator import executor
-    executor._NODES.clear()                  # sinfo's answer is cached per process
-    executor._JOB_NODE.clear()
+    executor._NODES.clear()                  # cfdt's core accounting, and llmt-runtime's cluster nodes (kept 60 s; a
+    executor._JOB_NODE.clear()               # failed scontrol is not asked again within 5 s) and partition limit
+    executor._CELLS.clear()                  # cell estimates kept 30 s per study
+    executor._ETAS.update(at=0.0, v={})      # the running jobs' ETAs, kept 20 s
+    J._PENDING.update(t=0.0, v=None)         # the pending jobs (kept 3 s) and a slow sbatch (30 s): not across tests
+    J._SBATCH_DOWN.update(until=0.0, why="")
 
 
 @pytest.fixture(autouse=True, scope="session")

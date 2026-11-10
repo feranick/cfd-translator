@@ -1,4 +1,7 @@
-"""SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py)."""
+"""SLURM execution (llm-translators docs/EXECUTION.md) against llmt-runtime's fake SLURM
+(llmt_runtime.testing.fake_slurm; cfdt's own tests/fake_slurm.py until 2026.11.09.3).
+Version: 2026.11.09.4
+"""
 from __future__ import annotations
 
 import json
@@ -11,10 +14,16 @@ import time
 from pathlib import Path
 
 import pytest
+from llmt_runtime import slurm as S
+from llmt_runtime.testing import fake_slurm
 
 from cfd_translator import api, executor
 
 REPO = Path(__file__).resolve().parents[1]
+FAKE_KNOBS = ("FAKE_SBATCH_FAIL", "FAKE_SBATCH_PENDING", "FAKE_PENDING", "FAKE_SBATCH_DELAY", "FAKE_SBATCH_SLEEP",
+              "FAKE_SBATCH_SLOW_AFTER", "FAKE_MIN_JOB_AGE", "FAKE_PRIORITY", "FAKE_RUN_NODE", "FAKE_START",
+              "FAKE_SACCT_FAIL", "FAKE_SQUEUE_FAIL", "FAKE_SCONTROL_NODES", "FAKE_SCONTROL_FAIL", "FAKE_SCONTROL_DENY",
+              "FAKE_SINFO_FAIL", "FAKE_SINFO_PARTITIONS", "FAKE_SINFO_CPUS", "FAKE_TIME_LEFT")
 COUETTE = {"geometry": {"box": [400, 100, 10]}, "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3},
            "bcs": [{"kind": "wall", "name": "lid", "faces": {"ny": 1}, "velocity": [0.01, 0, 0]},
                    {"kind": "wall", "name": "bottom", "faces": {"ny": -1}},
@@ -25,33 +34,48 @@ COUETTE = {"geometry": {"box": [400, 100, 10]}, "2d": True, "fluid": {"rho": 1.0
 
 @pytest.fixture
 def slurm(tmp_path, monkeypatch):
-    bindir, state = tmp_path / "bin", tmp_path / "slurm"
-    bindir.mkdir()
-    state.mkdir()
-    for cmd in ("sbatch", "squeue", "scancel", "sacct", "sinfo", "scontrol"):
-        w = bindir / cmd
-        w.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{REPO / "tests" / "fake_slurm.py"}" {cmd} "$@"\n')
-        w.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_SLURM_DIR", str(state))
+    """llmt-runtime's fake SLURM on PATH (one node fake1: 40 CPUs, 2 threads per core, 64000 MB); returns its state
+    folder (job records in <state>/jobs/<id>.json)."""
     monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
     monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
     monkeypatch.setenv("CFDT_TIMEOUT", "600")
     monkeypatch.setenv("PYTHONPATH", f"{REPO}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
-    for k in ("FAKE_PENDING", "FAKE_SACCT_FAIL", "FAKE_SBATCH_FAIL", "FAKE_SBATCH_DELAY", "CFDT_SLURM_MIN_MINUTES",
-              "CFDT_PROCS", "CFDT_SLURM_ARGS", "CFDT_MPIRUN", "CFDT_WORKERS", "SLURM_JOB_ID", "SLURM_NTASKS"):
+    for k in FAKE_KNOBS + ("CFDT_SLURM_MIN_MINUTES", "CFDT_PROCS", "CFDT_SLURM_ARGS", "CFDT_MPIRUN", "CFDT_WORKERS",
+                           "SLURM_JOB_ID", "SLURM_NTASKS"):
         monkeypatch.delenv(k, raising=False)
-    return state
+    return fake_slurm(tmp_path, monkeypatch)
 
 
 def _job(state: Path, i) -> dict:
-    return json.loads((state / f"{i}.json").read_text())
+    return json.loads((state / "jobs" / f"{i}.json").read_text())
 
 
 def _set(state: Path, i, **kw):
+    """Changes a job's record in the fake: state=None takes it out of PENDING (with final=...: it left the queue in
+    that state, as squeue and sacct then say), pid=999999 a job that ran (sacct names its node) and has ended."""
     r = _job(state, i)
     r.update(kw)
-    (state / f"{i}.json").write_text(json.dumps(r))
+    (state / "jobs" / f"{i}.json").write_text(json.dumps(r))
+
+
+def _script(rec: dict) -> Path:
+    """The job.sh a fake job record was submitted with (the last argument of its sbatch)."""
+    return Path([a for a in rec["args"] if not a.startswith("-")][-1])
+
+
+def _nodes(tmp_path: Path, monkeypatch, spec: str) -> None:
+    """cfdt's former FAKE_NODES ('name host cpus threads [addr];...') as llmt-runtime's fake takes nodes: `scontrol -o
+    show node` lines in a file (FAKE_SCONTROL_NODES); then the cluster is asked again."""
+    lines = []
+    for item in spec.split(";"):
+        f = item.split()
+        addr = f[4] if len(f) > 4 else f[1]
+        lines.append(f"NodeName={f[0]} Arch=x86_64 CPUTot={f[2]} NodeAddr={addr} NodeHostName={f[1]} State=IDLE "
+                     f"ThreadsPerCore={f[3]}")
+    p = tmp_path / f"nodes_{len(list(tmp_path.glob('nodes_*.txt')))}.txt"
+    p.write_text("\n".join(lines) + "\n")
+    monkeypatch.setenv("FAKE_SCONTROL_NODES", str(p))
+    executor._NODES.clear()
 
 
 def _cli(*args, timeout=60):
@@ -91,7 +115,8 @@ def test_queued_then_cancelled(slurm, monkeypatch):
     r = api.run({"a": dict(COUETTE, queue=True), "b": dict(COUETTE, queue=True)}, "ref", wait=0)
     req = r["request"]
     pa, pb = r["progress"]["a"], r["progress"]["b"]
-    assert pa["state"] == pb["state"] == "queued" and pa["reason"] == "Resources"
+    # SLURM's reason as the fake gives it: llmt-runtime's says Priority (cfdt's own fake said Resources)
+    assert pa["state"] == pb["state"] == "queued" and pa["reason"] == "Priority"
     assert pa["ahead"] == 0 and pb["ahead"] == 1                        # same priority: the older id first
     j = api.jobs()
     assert j["queue"]["queued"] == 2 and j["machine"] == {"cpus": 8, "cpus_allocated": 2, "cpus_idle": 6}
@@ -124,7 +149,7 @@ def test_running_then_cancelled_kills_the_job(slurm, monkeypatch):
 def test_final_states_from_sacct(slurm, monkeypatch, acct, state, words):
     monkeypatch.setenv("FAKE_PENDING", "1")
     r = api.run({"s": dict(COUETTE, queue=True)}, "ref", wait=0)
-    _set(slurm, 1001, pending=False, final=acct)        # it left the queue without a result
+    _set(slurm, 1001, state=None, final=acct)           # it left the queue without a result
     out = api.status(r["request"])
     s = out["studies"]["s"]
     assert out["done"] and s["ok"] is False and s["state"] == state and words in s["why"], s
@@ -140,7 +165,7 @@ def test_final_states_from_job_log_without_accounting(slurm, monkeypatch, log, s
     monkeypatch.setenv("FAKE_SACCT_FAIL", "1")
     r = api.run({"s": dict(COUETTE, queue=True)}, "ref", wait=0)
     (Path(r["request"]) / "s" / "job.log").write_text(log + "\n")
-    _set(slurm, 1001, pending=False, final="GONE")      # not in squeue; sacct fails
+    _set(slurm, 1001, state=None, final="GONE")         # not in squeue; sacct fails
     s = api.status(r["request"])["studies"]["s"]
     assert s["state"] == state, s
     if state == "failed":
@@ -260,12 +285,13 @@ def test_benchmarks_from_the_mcp_tool_return_at_once_and_are_collected(slurm, mo
     meta = json.loads((Path(out["bench"]) / "bench_request.json").read_text())
     assert meta["unknown"] == ["nope"] and meta["cases"] == ["couette_2d"]
     monkeypatch.delenv("FAKE_PENDING")
-    for i in [p.stem for p in slurm.glob("1*.json")]:              # the queued jobs start now (as SLURM would)
+    for i in [p.stem for p in (slurm / "jobs").glob("*.json")]:    # the queued jobs start now (as SLURM would)
         r = _job(slurm, i)
-        _set(slurm, i, pending=False, final=None)
-        subprocess.Popen(["bash", r["script"]], cwd=str(Path(r["script"]).parent),
-                         env=dict(os.environ, SLURM_JOB_ID=str(i), SLURM_NTASKS="1"),
-                         stdout=open(r["output"], "a"), stderr=subprocess.STDOUT).wait(timeout=120)
+        _set(slurm, i, state=None, final=None)
+        with open(r["log"], "a") as log:
+            subprocess.Popen(["bash", str(_script(r))], cwd=str(_script(r).parent),
+                             env=dict(os.environ, SLURM_JOB_ID=str(i), SLURM_NTASKS="1"),
+                             stdout=log, stderr=subprocess.STDOUT).wait(timeout=120)
     res = api.bench_status(out["bench"], 1)
     assert res["done"] and res["passed"] == ["couette_2d"], res
     assert (Path(out["bench"]) / "bench.json").exists()
@@ -328,7 +354,8 @@ def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
     sh = (req / "o" / "job.sh").read_text()
     assert "#SBATCH --time=510" in sh and "#SBATCH --ntasks=4" in sh             # 30000 s + 10 min; run.procs
     job = json.loads((req / "o" / "job.json").read_text())
-    assert job["command"][2:-1] == ["--nice=10", "--mem=12G"] and job["run"]["mem"] == "12G"
+    # llmt-runtime's fix (2026.11.09.4): --mem goes in job.sh, not on sbatch's command line (`sbatch job.sh` lost it)
+    assert job["command"][2:-1] == ["--nice=10"] and "#SBATCH --mem=12G" in sh and job["run"]["mem"] == "12G"
     assert job["time_min"] == 510
     d = json.loads((req / "d" / "job.json").read_text())                         # defaults for the other study
     assert d["command"][2:-1] == ["--mem=16G", "--nice=10"] and d["time_min"] == 20          # CFDT_TIMEOUT 600 s + 10 min
@@ -338,35 +365,39 @@ def test_study_run_overrides_within_the_machine_caps(slurm, monkeypatch):
 
 def test_job_memory_settings(monkeypatch):
     """docs/EXECUTION.md: CFDT_SLURM_MEM auto (from the cell estimate) | a size | none; a --mem in CFDT_SLURM_ARGS
-    wins over it; the study's run.mem wins over both; within CFDT_MAX_MEM."""
+    wins over it; the study's run.mem wins over both; within CFDT_MAX_MEM. llmt-runtime's fix (2026.11.09.4): the
+    job's --mem is in job.sh (job_mem), no longer appended to sbatch's arguments (sbatch_args)."""
     monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
     big = dict(COUETTE, mesh={"cells": [2000, 2000, 1]})                     # 4M cells: 2 + 4 x 4 = 18 GB
+    unknown = {"geometry": {"step": "x.step"}, "mesh": {"size": 1}}          # no cell estimate
     est = executor.cell_estimate(big)
     monkeypatch.setenv("CFDT_SLURM_ARGS", "--nice=5")
-    assert executor.sbatch_args(big, est) == (["--nice=5", "--mem=18G"], "estimate")          # auto, the default
-    assert executor.sbatch_args(COUETTE, None)[0][-1] == "--mem=8G"                            # no estimate
+    assert executor.sbatch_args(big, est) == (["--nice=5"], "estimate") and executor.job_mem(big) == "18G"  # auto
+    assert executor.job_mem(unknown) == "8G"                                                    # no estimate
     monkeypatch.setenv("CFDT_MAX_MEM", "16G")
-    assert executor.sbatch_args(big, est)[0][-1] == "--mem=16G"                                # the cap
+    assert executor.job_mem(big) == "16G"                                                       # the cap
     monkeypatch.delenv("CFDT_MAX_MEM")
     monkeypatch.setenv("CFDT_SLURM_MEM", "12G")
-    assert executor.sbatch_args(big, est) == (["--nice=5", "--mem=12G"], "CFDT_SLURM_MEM")
+    assert executor.sbatch_args(big, est) == (["--nice=5"], "CFDT_SLURM_MEM") and executor.job_mem(big) == "12G"
     monkeypatch.setenv("CFDT_SLURM_MEM", "none")
-    assert executor.sbatch_args(big, est) == (["--nice=5"], "none")
+    assert executor.sbatch_args(big, est) == (["--nice=5"], "none") and executor.job_mem(big) is None
     # a --mem in CFDT_SLURM_ARGS wins over CFDT_SLURM_MEM; run.mem wins over both; run.mem auto: the estimate
     monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nice=5")
     monkeypatch.setenv("CFDT_SLURM_MEM", "auto")
     assert executor.sbatch_args(big, est) == (["--mem=8G", "--nice=5"], "CFDT_SLURM_ARGS")
+    assert executor.job_mem(big) is None                                     # sbatch takes CFDT_SLURM_ARGS's
     assert executor.mem_needed_mb(big, est) == 8192
-    assert executor.sbatch_args(dict(big, run={"mem": "20G"}), est) == (["--nice=5", "--mem=20G"], "study")
-    assert executor.sbatch_args(dict(big, run={"mem": "auto"}), est) == (["--nice=5", "--mem=18G"], "estimate")
+    r20 = dict(big, run={"mem": "20G"})
+    assert executor.sbatch_args(r20, est) == (["--nice=5"], "study") and executor.job_mem(r20) == "20G"
+    ra = dict(big, run={"mem": "auto"})
+    assert executor.sbatch_args(ra, est) == (["--nice=5"], "estimate") and executor.job_mem(ra) == "18G"
 
 
 def test_several_options_in_one_slurm_args_value(slurm, tmp_path, monkeypatch):
     """CFDT_SLURM_ARGS="--mem=8G --nodelist=spark-5da5": split as a shell does (shlex), each option where it
     belongs: the memory as the job's --mem, the node list over CFDT_SLURM_NODE, in the status and the rank cap."""
     import socket
-    monkeypatch.setenv("FAKE_NODES", f"spark-5da5 {socket.gethostname().split('.')[0]} 20 1;spark-0808 far 40 1")
-    executor._NODES.clear()
+    _nodes(tmp_path, monkeypatch, f"spark-5da5 {socket.gethostname().split('.')[0]} 20 1;spark-0808 far 40 1")
     monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=8G --nodelist=spark-0808")
     monkeypatch.setenv("CFDT_SLURM_NODE", "local")
     args, src = executor.sbatch_args(COUETTE, 1e3)
@@ -409,8 +440,7 @@ def test_ranks_are_capped_at_a_nodes_cores_and_jobs_stay_on_this_node(slurm, tmp
     CFDT_SLURM_NODE (llm-translators docs/EXECUTION.md): local (default) | any | a node list."""
     import socket
     host = socket.gethostname().split(".")[0]
-    monkeypatch.setenv("FAKE_NODES", f"spark-5da5 {host} 40 2;spark-0808 otherhost 64 1")
-    executor._NODES.clear()
+    _nodes(tmp_path, monkeypatch, f"spark-5da5 {host} 40 2;spark-0808 otherhost 64 1")
     # default local: this machine's node only
     assert executor.local_node() == "spark-5da5" and executor.node_list() == "spark-5da5"
     assert executor.node_cores() == 20 and executor.caps()["procs"] == "20"
@@ -432,13 +462,11 @@ def test_ranks_are_capped_at_a_nodes_cores_and_jobs_stay_on_this_node(slurm, tmp
     # found by address when the host name is not the node's
     monkeypatch.delenv("CFDT_SLURM_ARGS")
     monkeypatch.delenv("CFDT_SLURM_NODE")
-    monkeypatch.setenv("FAKE_NODES", "n1 elsewhere 8 1 127.0.0.1;n2 far 8 1 10.9.9.9")
-    executor._NODES.clear()
-    monkeypatch.setattr(executor, "_my_addresses", lambda: {"127.0.0.1"})
+    _nodes(tmp_path, monkeypatch, "n1 elsewhere 8 1 127.0.0.1;n2 far 8 1 10.9.9.9")
+    monkeypatch.setattr(S, "addresses", lambda: {"127.0.0.1"})     # llmt-runtime's this_node asks it
     assert executor.local_node() == "n1"
     # a one-node cluster: no --nodelist
-    monkeypatch.setenv("FAKE_NODES", f"mochi {host} 40 2")
-    executor._NODES.clear()
+    _nodes(tmp_path, monkeypatch, f"mochi {host} 40 2")
     assert executor.node_list() is None and executor.node_cores() == 20
 
 
@@ -446,24 +474,25 @@ def test_a_job_lost_on_another_node_says_so(slurm, tmp_path, monkeypatch):
     import socket
     monkeypatch.setenv("FAKE_PENDING", "1")
     monkeypatch.setenv("CFDT_SLURM_NODE", "any")
-    monkeypatch.setenv("FAKE_NODES", f"here {socket.gethostname().split('.')[0]} 8 1;far farhost 8 1")
-    executor._NODES.clear()
+    _nodes(tmp_path, monkeypatch, f"here {socket.gethostname().split('.')[0]} 8 1;far farhost 8 1")
     req = tmp_path / "req"
     (req / "s").mkdir(parents=True)
     info = executor.submit(req, "s", COUETTE)
-    _set(slurm, info["job_id"], final="FAILED", node="far", pending=False)
-    st = executor.slurm_states(req, ["s"], {"s": COUETTE})
+    # it ran (pid: sacct names its node), on node far, and left neither a result nor job.log
+    _set(slurm, info["job_id"], final="FAILED", node="far", state=None, pid=999999)
+    st = executor.slurm_states(req, ["s"], {"s": COUETTE})        # llmt-runtime's lost-node diagnosis
     assert st["s"]["state"] == "failed" and "node far" in st["s"]["why"] and "CFDT_SLURM_NODE=local" in st["s"]["why"]
 
 
-def test_a_failed_sinfo_is_asked_again(slurm, monkeypatch):
-    """omct 2026.10.25.2: a failing sinfo / scontrol must not be remembered as 'no nodes'."""
+def test_a_failed_sinfo_is_asked_again(slurm, tmp_path, monkeypatch):
+    """omct 2026.10.25.2: a failing sinfo / scontrol must not be remembered as 'no nodes'. The nodes come from
+    llmt-runtime's `scontrol -o show node` (FAKE_SCONTROL_FAIL); it asks again after NODES_RETRY_S (5 s), 0 here."""
     import socket
-    monkeypatch.setenv("FAKE_NODES", f"a {socket.gethostname().split('.')[0]} 16 2;b far 16 2")
-    executor._NODES.clear()
-    monkeypatch.setenv("FAKE_SINFO_FAIL", "1")
+    _nodes(tmp_path, monkeypatch, f"a {socket.gethostname().split('.')[0]} 16 2;b far 16 2")
+    monkeypatch.setattr(S, "NODES_RETRY_S", 0.0)
+    monkeypatch.setenv("FAKE_SCONTROL_FAIL", "1")
     assert executor.node_cores() is None and executor.local_node() is None and executor.node_list() is None
-    monkeypatch.delenv("FAKE_SINFO_FAIL")
+    monkeypatch.delenv("FAKE_SCONTROL_FAIL")
     assert executor.node_cores() == 8 and executor.local_node() == "a" and executor.node_list() == "a"
 
 
@@ -478,19 +507,34 @@ def test_validation_warns_when_slurm_args_memory_is_too_small(slurm, monkeypatch
 
 def test_core_accounting_says_when_slurm_shares_cores(slurm, monkeypatch):
     """spark1, 2026.10.30: an 18-rank job ran at 36 s per iteration next to another run. status says when SLURM's
-    configuration lets two jobs have the same cores."""
+    configuration lets two jobs have the same cores. llmt-runtime's fake SLURM has no `scontrol show config` or
+    `show partition`: the test answers them (cfdt's own fake did, with FAKE_SELECT and FAKE_OVERSUBSCRIBE), through
+    llmt-runtime's slurm.run, which cfdt's commands go through."""
+    real = S.run
+    conf = {"select": "select/cons_tres CR_Core_Memory", "over": "NO", "fail": False}
+
+    def run(cmd, timeout=15):
+        if cmd[:3] == ["scontrol", "show", "config"] or cmd[:4] == ["scontrol", "-o", "show", "partition"]:
+            if conf["fail"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "Unable to contact slurm controller")
+            sel, par = conf["select"].split()
+            out = (f"Configuration data as of 2026-10-31T00:00:00\nSelectType              = {sel}\n"
+                   f"SelectTypeParameters    = {par}\nSlurmctldPort           = 6817\n" if cmd[1] == "show" else
+                   f"PartitionName=main Nodes=fake1 OverSubscribe={conf['over']} State=UP\n")
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        return real(cmd, timeout)
+    monkeypatch.setattr(S, "run", run)
     assert executor.core_accounting()["shared"] is False and "cores_shared" not in executor.status()
     for sel, over, frag in (("select/cons_tres CR_Memory", "NO", "do not count cores"),
                             ("select/linear CR_Memory", "NO", "whole nodes"),
                             ("select/cons_tres CR_Core_Memory", "FORCE:4", "OverSubscribe=FORCE")):
         executor._NODES.clear()
-        monkeypatch.setenv("FAKE_SELECT", sel)
-        monkeypatch.setenv("FAKE_OVERSUBSCRIBE", over)
+        conf.update(select=sel, over=over)
         ca = executor.core_accounting()
         assert ca["shared"] and any(frag in w for w in ca["why"]), (sel, over, ca)
         assert executor.status()["cores_shared"] == ca["why"]
     executor._NODES.clear()
-    monkeypatch.setenv("FAKE_SINFO_FAIL", "1")
+    conf["fail"] = True
     assert executor.core_accounting() is None and "accounting" not in executor._NODES     # asked again next time
 
 

@@ -1,16 +1,27 @@
-"""cfdt on llmt-runtime (2026.11.09.2, phase 1): the shared pieces are the runtime's, configured for cfdt.
-Version: 2026.11.09.2
+"""cfdt on llmt-runtime: the shared pieces are the runtime's, configured for cfdt (2026.11.09.2, phase 1: workers,
+out of memory, final_state, versions; 2026.11.09.4, phase 2: the SLURM layer, with cfdt's sizing as hooks).
+Version: 2026.11.09.4
 """
 import json
 import os
+import subprocess
+import threading
+import time
 from pathlib import Path
 
+import pytest
+
 import llmt_runtime
+from llmt_runtime import jobs as J
 from llmt_runtime import memory as M
+from llmt_runtime import slurm as S
 from llmt_runtime import workers as W
+from llmt_runtime.testing import fake_slurm
 
 from cfd_translator import __version__, api, executor, foam, workers
 from cfd_translator.runtime import RT
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def test_runtime_configured_for_cfdt(monkeypatch):
@@ -68,3 +79,204 @@ def test_request_records_versions_and_status_says_what_ran(tmp_path, monkeypatch
     (tmp_path / "run_versions" / "request.json").write_text(json.dumps(meta))
     again = api.status(str(tmp_path / "run_versions"))
     assert again["translator"] == "2026.11.08.2" and again["translator_now"] == __version__
+
+
+# ---- 2026.11.09.4, phase 2: the SLURM layer (settings, the machine, time limits, job.sh and job.json, submission,
+# states, the queue's CPUs, cancel's flags and scancel) is llmt-runtime's; cfdt's sizing comes in as hooks
+
+FAKE_KNOBS = ("FAKE_SBATCH_FAIL", "FAKE_SBATCH_PENDING", "FAKE_PENDING", "FAKE_SBATCH_DELAY", "FAKE_SBATCH_SLEEP",
+              "FAKE_SBATCH_SLOW_AFTER", "FAKE_MIN_JOB_AGE", "FAKE_PRIORITY", "FAKE_RUN_NODE", "FAKE_START",
+              "FAKE_SACCT_FAIL", "FAKE_SQUEUE_FAIL", "FAKE_SCONTROL_NODES", "FAKE_SCONTROL_FAIL", "FAKE_SCONTROL_DENY",
+              "FAKE_SINFO_FAIL", "FAKE_SINFO_PARTITIONS", "FAKE_SINFO_CPUS", "FAKE_TIME_LEFT")
+COUETTE = {"geometry": {"box": [400, 100, 10]}, "2d": True, "fluid": {"rho": 1.0, "mu": 1e-3},
+           "bcs": [{"kind": "wall", "name": "lid", "faces": {"ny": 1}, "velocity": [0.01, 0, 0]},
+                   {"kind": "wall", "name": "bottom", "faces": {"ny": -1}},
+                   {"kind": "opening", "name": "left", "faces": {"nx": -1}},
+                   {"kind": "opening", "name": "right", "faces": {"nx": 1}}],
+           "mesh": {"cells": [20, 10, 1]}}                                          # 200 cells
+
+
+@pytest.fixture()
+def slurm(tmp_path, monkeypatch):
+    """llmt-runtime's fake SLURM (one node fake1: 40 CPUs, 2 threads per core, 64000 MB); returns its state folder."""
+    monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path / "out"))
+    monkeypatch.setenv("CFDT_TIMEOUT", "600")
+    monkeypatch.setenv("PYTHONPATH", f"{REPO}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
+    for k in FAKE_KNOBS + ("CFDT_WORKERS", "SLURM_JOB_ID", "SLURM_NTASKS"):
+        monkeypatch.delenv(k, raising=False)
+    return fake_slurm(tmp_path, monkeypatch)
+
+
+def _fake_job(state_dir: Path, jid: str, **rec) -> None:
+    """A job in the fake's queue (a record as its sbatch writes them; pid 999999: not running)."""
+    d = state_dir / "jobs"
+    d.mkdir(parents=True, exist_ok=True)
+    base = {"name": "cfdt:r:s", "cpus": 1, "t0": time.time(), "log": "x", "pid": 999999, "node": "fake1"}
+    (d / f"{jid}.json").write_text(json.dumps({**base, **rec}))
+
+
+def _request(state_dir: Path, jid: str, log: str | None = None, job: dict | None = None) -> Path:
+    """A request with one SLURM study 's' whose job.json names the job `jid`."""
+    req = state_dir.parent / "out" / f"run_{jid}"
+    (req / "s").mkdir(parents=True)
+    (req / "request.json").write_text(json.dumps({"names": ["s"], "solver": "ref", "started": time.time(),
+                                                  "studies": {"s": COUETTE}}))
+    (req / "s" / "job.json").write_text(json.dumps({"executor": "slurm", "job_id": jid, "procs": 1, **(job or {})}))
+    if log is not None:
+        (req / "s" / "job.log").write_text(log)
+    return req
+
+
+def test_slurm_layer_is_the_runtimes_with_cfdts_hooks():
+    h = RT.hooks
+    assert h.time_need_min is None and h.resource_lines is None and h.solves is None    # the runtime's defaults
+    assert S.time_need_min(RT, {"run": {"timeout_s": 600}}) == 20 == executor.time_limit_min({"run": {"timeout_s": 600}})
+    assert h.procs(COUETTE) == executor.procs_for_job(COUETTE) == 1
+    big = dict(COUETTE, mesh={"cells": [2000, 2000, 1]})                                  # 2 + 4 x 4 GB
+    assert h.mem_auto(big) == "18G" == executor.mem_auto(big) and h.job_extra(COUETTE) == {"cells_estimate": 200}
+    assert h.running_progress(Path("/nonexistent"), {}) == {"stage": "starting"}
+    assert executor.FINAL == J.FINAL and executor.write_atomic is J.write_atomic
+    assert set(executor.status()) == {"kind", "workers", "procs", "timeout_s", "caps", "runtime"}   # local: as before
+
+
+def test_slurm_time_and_the_executor_status(slurm, monkeypatch):
+    """CFDT_SLURM_TIME (new in cfdt, llmt-runtime's meanings): 'timeout' by default, which is what cfdt always asked
+    (ceil(timeout / 60) + 10); max, minutes and estimate on request."""
+    ex = executor.status()
+    assert ex["time"] == ex["slurm_time"] == "timeout" and ex["time_limit_min"] == 20
+    assert ex["runtime"] == llmt_runtime.__version__ and ex["node_cores"] == 20
+    assert {"args", "nodes", "node", "caps", "mem", "sbatch", "min_minutes", "procs", "timeout_s"} <= set(ex)
+    assert ex["caps"] == {"procs": "20", "procs_from": "a node's cores (SLURM, one rank per core)", "mem": "64000M",
+                          "mem_from": "a node's memory (SLURM RealMemory)", "mem_mb": 64000}
+    assert executor.job_time(COUETTE)[0] == "20"
+    monkeypatch.setenv("CFDT_SLURM_TIME", "max")
+    monkeypatch.setenv("FAKE_SINFO_PARTITIONS", "main*|2:00:00")
+    assert executor.job_time(COUETTE)[0] == "120" and executor.status()["time"] == "max"
+    monkeypatch.setenv("CFDT_SLURM_TIME", "45")
+    assert executor.job_time(COUETTE)[0] == "45"
+    monkeypatch.setenv("CFDT_SLURM_TIME", "estimate")
+    t, info = executor.job_time(COUETTE, 2.0)
+    assert t == "20" and info["time_from"] == "estimate" and info["timeout_s"] == 600     # max(20, 3 x 2 + 10) min
+
+
+def test_job_sh_and_job_json(slurm, monkeypatch):
+    """job.sh as cfdt wrote it, with --mem inside (llmt-runtime's fix: it was only on sbatch's command line, so
+    `sbatch job.sh` lost it); job.json with cfdt's keys and the runtime's; dependencies through after=."""
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    req = slurm.parent / "out" / "run_j"
+    info = executor.submit(req, "a", COUETTE)
+    text = (req / "a" / "job.sh").read_text()
+    sh = text.splitlines()
+    assert [ln for ln in sh if ln.startswith("#SBATCH")] == [
+        "#SBATCH --job-name=cfdt:run_j:a", f"#SBATCH --chdir={req / 'a'}", f"#SBATCH --output={req / 'a' / 'job.log'}",
+        "#SBATCH --ntasks=1", "#SBATCH --nodes=1", "#SBATCH --ntasks-per-core=1", "#SBATCH --time=20",
+        "#SBATCH --mem=3G", "#SBATCH --export=ALL"]                       # 200 cells: 2 GB + 0.8 MB, in whole GB
+    assert sh[-1].endswith(f"-m cfd_translator.cli run-study {req} a") and sh[-1].startswith("exec ")
+    assert text == executor.job_script(req, "a", 1, COUETTE)
+    j = json.loads((req / "a" / "job.json").read_text())
+    old = {"executor", "job_id", "submitted", "procs", "time_min", "command", "run", "cells_estimate", "mem_from"}
+    assert old <= set(j) and j == info and j["job_id"] == "1001" and j["cells_estimate"] == 200
+    assert j["mem"] == "3G" and j["mem_from"] == "estimate" and j["time_min"] == 20 and j["procs"] == 1
+    assert not any(str(a).startswith("--mem") for a in j["command"])
+    assert j["translator"] == __version__ and j["runtime"] == llmt_runtime.__version__
+    # the next segment waits for this job (after=: --dependency=afterany) and records it
+    nxt = executor.submit(req, "a", COUETTE, after="1001", segment=2)
+    assert nxt["job_id"] == "1002" and "--dependency=afterany:1001" in nxt["command"] and nxt["after"] == ["1001"]
+    assert nxt["segment"] == 2 and nxt["previous_jobs"] == ["1001"]
+    # run.mem 'auto': the estimate, whatever a --mem in CFDT_SLURM_ARGS says; job.json keeps the study's run
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "--mem=1G --nice=5")
+    c = executor.submit(req, "c", dict(COUETTE, run={"mem": "auto"}))
+    assert "#SBATCH --mem=3G" in (req / "c" / "job.sh").read_text() and c["command"][2:-1] == ["--nice=5"]
+    assert c["run"] == {"mem": "auto"} and c["mem_from"] == "estimate"
+
+
+def test_an_ended_job_squeue_still_lists_is_final(slurm, monkeypatch):
+    """squeue lists an ended job for MinJobAge (300 s) in its final state: cfdt 2026.11.09.3 read every state but
+    PENDING as running. It is now final, from job.log (no accounting here), and written as the study's result."""
+    monkeypatch.setenv("FAKE_MIN_JOB_AGE", "300")
+    monkeypatch.setenv("FAKE_SACCT_FAIL", "1")
+    _fake_job(slurm, "1001", ended=time.time(), final="FAILED")
+    req = _request(slurm, "1001", log="Traceback (most recent call last):\nValueError: boom")
+    assert executor.squeue(["1001"])["1001"]["state"] == "FAILED"
+    st = executor.slurm_states(req, ["s"], {"s": COUETTE})["s"]
+    assert st["state"] == "failed" and "ValueError: boom" in st["why"]
+    assert json.loads((req / "s" / "s.json").read_text())["state"] == "failed"         # final: kept
+
+
+def test_queue_summary_counts_each_node_once_with_cfdts_extras(slurm, monkeypatch):
+    monkeypatch.setenv("FAKE_SINFO_PARTITIONS", "debug*|1:00:00;long|infinite")       # fake1 in two partitions
+    _fake_job(slurm, "1001", state="PENDING", cpus=4, name="cfdt:r:x")
+    _fake_job(slurm, "1002", state="PENDING", name="feat:r:y")                       # another translator's
+    assert executor.queue_summary() == {"queue": {"running": 0, "queued": 1, "cpus_in_use": 0},
+                                        "machine": {"cpus": 8, "cpus_allocated": 2, "cpus_idle": 6},
+                                        "starts_now": False, "pending_for_node": 2}
+
+
+def test_eta_start_still_applied_to_queued_jobs(slurm, monkeypatch):
+    """A queued job's start from the running jobs' own ETAs (cfdt's), on top of llmt-runtime's states."""
+    monkeypatch.setenv("FAKE_START", "2099-01-01T00:00:00")          # SLURM's: from the whole time limits ahead
+    _fake_job(slurm, "1002", state="PENDING")
+    req = _request(slurm, "1002", job={"segment": 2, "previous_jobs": ["1001"]})
+    monkeypatch.setattr(executor, "running_etas", lambda: {"1001": {"node": "fake1", "cpus": 1, "eta_min": 30.0,
+                                                                     "name": "r/a"}})
+    st = executor.slurm_states(req, ["s"], {"s": COUETTE})["s"]
+    assert st["state"] == "queued" and st["ahead"] == 0 and st["expected_start_slurm"] == "2099-01-01T00:00:00"
+    assert st["expected_start"] < "2099" and "own progress" in st["expected_start_note"]
+
+
+def test_bench_runs_a_case_once_as_a_slurm_job(slurm, tmp_path, monkeypatch):
+    """carbonio, `llmt bench cfdt couette_2d` with CFDT_EXECUTOR=slurm: PASS within seconds while the case's job stayed
+    queued. bench.run took the cases study_status still returned pending (after its 15 s) for cases to run here, and
+    ran them locally as well. It now waits for the job and evaluates the job's result."""
+    from cfd_translator import bench
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    local = []
+    monkeypatch.setattr(bench, "run_study", lambda *a, **k: local.append(a[0]) or {"ok": False, "why": "ran here"})
+    real = api.status
+    monkeypatch.setattr(api, "status", lambda request, wait=0.0, *a, **k: real(request, 0.0, *a, **k))  # no 15 s
+    monkeypatch.setattr(bench, "SLURM_POLL_S", 0.2)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(bench.run("ref", ["couette_2d"], tmp_path / "bench")), daemon=True)
+    t.start()
+    rec = slurm / "jobs" / "1001.json"
+    for _ in range(300):
+        if rec.is_file():
+            break
+        time.sleep(0.1)
+    time.sleep(2.0)                                   # bench.run looks at the queued job several times meanwhile
+    assert rec.is_file() and t.is_alive() and not local, local
+    # the job starts, as SLURM would: RUNNING while it lives, then its result
+    r = json.loads(rec.read_text())
+    script = Path([a for a in r["args"] if not a.startswith("-")][-1])
+    with open(r["log"], "a") as log:
+        p = subprocess.Popen(["bash", str(script)], cwd=str(script.parent), stdout=log, stderr=subprocess.STDOUT,
+                             env=dict(os.environ, SLURM_JOB_ID="1001", SLURM_NTASKS="1"))
+    tmp = rec.with_name("1001.tmp")
+    tmp.write_text(json.dumps(dict(r, state=None, pid=p.pid)))
+    tmp.replace(rec)
+    p.wait(timeout=120)
+    t.join(120)
+    assert not t.is_alive() and not local, local
+    assert out["couette_2d"]["passed"], out
+    assert [f.name for f in (slurm / "jobs").glob("*.json")] == ["1001.json"]       # one job, run once
+
+
+def test_an_interrupted_wait_says_which_jobs_are_left(slurm, tmp_path, monkeypatch, capsys):
+    """Ctrl-C while `cfdt bench` (or `cfdt run`) waits for SLURM jobs: the jobs left in the queue and how to cancel
+    them; they are not cancelled."""
+    from cfd_translator import bench
+    monkeypatch.setenv("FAKE_PENDING", "1")
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(api, "status", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        bench.run("ref", ["couette_2d"], tmp_path / "bench")
+    err = capsys.readouterr().err
+    assert "1001" in err and "scancel 1001" in err and "cfdt cancel" in err and "nothing was cancelled" in err
+    assert json.loads((slurm / "jobs" / "1001.json").read_text())["state"] == "PENDING"        # still queued
+    with pytest.raises(KeyboardInterrupt):
+        api.run({"r": dict(COUETTE, queue=True)}, "ref")
+    err = capsys.readouterr().err
+    assert "scancel 1002" in err and "cfdt status" in err

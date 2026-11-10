@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.2
+Version: 2026.11.09.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -7,8 +7,10 @@ Version: 2026.11.09.2
                                      returns after that many seconds with the rest pending
     start(studies, solver)           the same in the background: returns the request folder
     status(request, wait)            finished studies with results, the others pending (with state)
-    jobs(limit, active)              recent requests with SLURM jobs and their states; the queue
-    cancel(request, names)           scancel / cancel flag for the request's studies
+    jobs(limit, active)              recent requests with SLURM jobs and their states; the queue (llmt-runtime's
+                                     job states and queue, with cfdt's progress, ETAs and per-node counts)
+    cancel(request, names)           scancel / cancel flag for the request's studies (llmt-runtime's cancel_request;
+                                     the local pool's side stays here)
     case(study, name)                mesh and OpenFOAM case of one study, without solving (file texts)
     render_images(folder, images)    new pictures of a finished study from its saved mesh and fields
     bench(names, solver)             the benchmark studies with known answers
@@ -691,7 +693,12 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None, det
                 "request": str(out_root() / request_name)}
     # the wait counts from the call's start: building goals and submitting can take a while on a busy machine,
     # and an MCP call must end within a minute (the router's limit)
-    return status(str(folder), 1e9 if wait is None else max(0.0, wait - (time.time() - t0)), detail)
+    try:
+        return status(str(folder), 1e9 if wait is None else max(0.0, wait - (time.time() - t0)), detail)
+    except KeyboardInterrupt:          # `cfdt run` interrupted: say which SLURM jobs go on and how to stop them
+        from .executor import print_queued_note
+        print_queued_note(folder)
+        raise
 
 
 def _requests(limit: int):
@@ -704,7 +711,9 @@ def _requests(limit: int):
 
 def jobs(limit: int = 20, active: bool = False) -> dict:
     """The newest requests with SLURM jobs (any server process, any chat), each study's state, job id and ETA;
-    the queue of this translator's jobs and the machine's CPUs."""
+    the queue of this translator's jobs and the machine's CPUs. The states are llmt-runtime's job_states and the
+    machine's CPUs its queue_summary (executor.slurm_states, executor.queue_summary), with cfdt's progress, ETAs and
+    per-node counts; the answer keeps cfdt's shape."""
     from . import executor
 
     out = []
@@ -743,31 +752,41 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
     return {"translator": __version__, "executor": executor.status(), **executor.queue_summary(), "requests": out}
 
 
+def job_progress(folder: Path, study: dict) -> dict:
+    """Where a running SLURM study is, as jobs() shows it (llmt-runtime's hooks.running_progress): stage, iteration,
+    max_iterations, time, end_time, eta_min_max and mesh_cells from its logs."""
+    pr = _progress(Path(folder), study or {})
+    if not isinstance(pr, dict):
+        return {}
+    out = {k: pr[k] for k in ("stage", "iteration", "max_iterations", "time", "end_time", "eta_min_max") if k in pr}
+    if isinstance(pr.get("mesh"), dict) and pr["mesh"].get("cells"):
+        out["mesh_cells"] = pr["mesh"]["cells"]
+    return out
+
+
 def cancel(request: str, names: list[str] | None = None) -> dict:
     """Stops the request's studies (or the named ones): scancel for SLURM jobs; for local studies a cancel
-    flag that the running solver (in whatever process runs it) checks every second."""
-    from . import executor
+    flag that the running solver (in whatever process runs it) checks every second. The flags and scancel are
+    llmt-runtime's cancel_request (2026.11.09.4); the local pool's side stays here."""
+    from .runtime import RT
 
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
     meta = json.loads((folder / "request.json").read_text())
-    names = names or meta["names"]
-    unknown = [n for n in names if n not in meta["names"]]
-    if unknown:
-        return {"error": f"no studies {unknown} in this request ({meta['names']})"}
-    todo = [n for n in names if not (folder / n / f"{n}.json").is_file()]
-    for n in todo:
-        (folder / n).mkdir(parents=True, exist_ok=True)
-        (folder / n / "cancel").write_text(str(time.time()))
-    ids = executor.cancel_slurm(folder, todo)
+    c = RT.jobs.cancel_request(folder, meta, names)
+    if "want" not in c:                      # unknown names
+        return c
+    names, todo, ids = c["want"], c["todo"], c["cancelled_jobs"]
     local = [n for n in todo if not (folder / n / "job.json").is_file()]
     here = [n for n in local if n in _POOL.jobs.get(str(folder), {})]
     time.sleep(1.0 if ids or here else 0.0)
     res = status(str(folder), 3.0 if (ids or here) else 0.0)
-    out = {"request": str(folder), "cancelled_jobs": ids, "already_finished": [n for n in names if n not in todo],
+    out = {"request": str(folder), "cancelled_jobs": ids, "already_finished": c["already_finished"],
            "states": {n: (res["studies"].get(n, {}).get("state") or ("done" if n in res["studies"] else
                           res.get("progress", {}).get(n, {}).get("state"))) for n in names}}
+    if c.get("error"):
+        out["error"] = c["error"]
     if [n for n in local if n not in here]:
         out["note"] = ("local studies not run by this server process: a cancel flag was left; the process running "
                        "them (if any) stops them within seconds, otherwise they are not running")

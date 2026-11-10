@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.10.25.3
+Version: 2026.11.09.4
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -15,7 +15,8 @@ Version: 2026.10.25.3
     cfdt reprocess REQUEST [NAMES...]    results again from finished cases (current post-processing, no solve)
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
 
-'-' reads the studies from stdin.
+'-' reads the studies from stdin. Interrupted (Ctrl-C) while `run` or `bench` waits for SLURM jobs, the command says
+which jobs are left in the queue and how to cancel them (it cancels nothing), then exits with 130.
 """
 from __future__ import annotations
 
@@ -67,6 +68,14 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     if a.cmd == "run-study":
         sys.exit(api.run_study_job(a.request, a.name))
+    try:
+        out = _command(a)
+    except KeyboardInterrupt:     # run / bench printed the SLURM jobs left in the queue (api.run, bench.run)
+        sys.exit(130)
+    print(json.dumps(out, indent=1, default=float))
+
+
+def _command(a) -> dict:
     if a.cmd == "status":
         out = api.status(a.request) if a.request else api.tool_status()
     elif a.cmd == "format":
@@ -90,7 +99,7 @@ def main(argv=None) -> None:
         out = api.render_images(a.folder, _load(a.images) if a.images else True)
     else:
         out = api.bench(a.names or None, a.solver)
-    print(json.dumps(out, indent=1, default=float))
+    return out
 
 
 if __name__ == "__main__":

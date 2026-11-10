@@ -1,7 +1,11 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.10.28.4
+Version: 2026.11.09.4
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
+        With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
+        their results: a case runs once. (Until 2026.11.09.4 a case still queued when study_status returned, after its
+        15 s, was run again here: `cfdt bench couette_2d` printed PASS within seconds while its job waited in the
+        queue.) Interrupted (Ctrl-C), it says which jobs are left in the queue and how to cancel them.
 
   couette_2d       plane Couette flow: Q = U H / 2, wall shear mu U / H (exact on any mesh)
   channel_2d       plane Poiseuille: dp/dx = 12 mu U / H^2, wall force = dp H (2D, parabolic inlet)
@@ -734,16 +738,18 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             out[n] = {"skipped": f"needs {', '.join(missing)}"}
             continue
         todo.append(n)
-    # with CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request); the chains call feat and stay here
-    queued = {}
+    # with CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request), and only there: run() waits for their
+    # results; the chains call feat and stay here
+    queued, submitted, t_sub = {}, set(), time.time()
     from . import executor
     if executor.kind() == "slurm":
         from . import api
         jobs = {n: dict(cases[n]["study"], queue=True) for n in todo if not cases[n].get("chain")}
         if jobs:
             req = api.start(jobs, solver)
+            submitted = set(jobs)
             print(f"[cfdt bench] {len(jobs)} SLURM jobs in {req}", file=sys.stderr, flush=True)
-            queued = api.status(str(req), 1e9)["studies"]
+            queued = _wait_for_jobs(req)
     for n in todo:
         c = cases[n]
         print(f"[cfdt bench] {n} ...", file=sys.stderr, flush=True)
@@ -752,10 +758,42 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             out[n] = _chain_thermal(Path(folder), solver) if c["chain"] == "thermal" else _chain(Path(folder), solver)
             _progress(n, out[n], t0)
             continue
-        r = queued[n] if n in queued else run_study(n, c["study"], Path(folder) / n, solver)
+        if n in submitted:                   # its SLURM job's result: never run here as well
+            r = queued.get(n) or {"ok": False, "why": "submitted as a SLURM job, but its request has no result for it"}
+            t0 = t_sub
+        else:
+            r = run_study(n, c["study"], Path(folder) / n, solver)
         out[n] = evaluate(n, r, cases)
         _progress(n, out[n], t0, r)
     return out
+
+
+SLURM_POLL_S = 5.0         # between two looks at a bench's SLURM jobs (study_status itself waits up to 15 s)
+SLURM_SAY_S = 300.0        # how often the wait says which jobs it waits for
+
+
+def _wait_for_jobs(req: Path) -> dict:
+    """The results of a bench request's studies once every one is done: their SLURM jobs, collected (study_status
+    returns SLURM studies still pending after 15 s; before 2026.11.09.4 run() then ran those cases here as well).
+    Interrupted (KeyboardInterrupt), it prints the jobs left in the queue and how to cancel them, and re-raises:
+    the jobs are not cancelled."""
+    from . import api
+    from .executor import print_queued_note
+    said = time.time()
+    try:
+        while True:
+            st = api.status(str(req), 60)
+            if st.get("done"):
+                return st.get("studies") or {}
+            if time.time() - said >= SLURM_SAY_S:
+                ids = sorted({str(p.get("job_id")) for p in (st.get("progress") or {}).values() if p.get("job_id")})
+                print(f"[cfdt bench] waiting for {len(st.get('pending') or [])} case(s) in SLURM jobs "
+                      f"{', '.join(ids) or '(no ids yet)'} ({req})", file=sys.stderr, flush=True)
+                said = time.time()
+            time.sleep(SLURM_POLL_S)
+    except KeyboardInterrupt:
+        print_queued_note(req)
+        raise
 
 
 def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:

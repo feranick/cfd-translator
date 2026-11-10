@@ -1,16 +1,31 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.09.2
+Version: 2026.11.09.4
 
-From 2026.11.09.2 how a job that left the queue ended (final_state) is llmt-runtime's (llmt_runtime.jobs.classify_end,
-with cfdt's out-of-memory advice), and status() reports llmt-runtime's version ("runtime"); the rest of the SLURM layer
-moves in phase 2.
+From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
+runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
+memory, time limits (CFDT_SLURM_TIME), job.sh and submission (--dependency through after=), squeue/sacct and the states
+of jobs (ended jobs squeue still lists, the lost-node diagnosis), the queue's CPUs, the cancel flags and scancel. The
+names below stay as thin wrappers with cfdt's signatures (api, runner, bench, cavitation, transient, sliding, snappy and
+the tests call them). What stays cfdt's: the sizing (cell_estimate, procs_for_job: ranks capped at cells /
+CFDT_CELLS_PER_RANK and a node's cores, mem_plan / mem_auto: 2 GB + 4 GB per million cells, 8G when unknown, the time
+estimate for validation), the solver's progress (api._progress), cpushare (leftover processes, core accounting:
+cores_shared), segments of transient runs and chained studies (init_from), eta_start / running_etas (a queued job's start
+from the running jobs' own ETAs, applied on top of the runtime's states), queue_summary's extras (cluster_queue,
+starts_now, pending_for_node, machine.node), the queue position per node (pending_ahead), and writing a finished failure
+as the study's result (slurm_states). They reach the runtime as hooks on runtime.RT (procs, mem_auto, job_extra:
+cells_estimate, running_progress, oom_advice, timeout_hint). 2026.11.09.2 (phase 1): final_state and the runtime's
+version.
 
 Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     CFDT_EXECUTOR          local | slurm (local)
     CFDT_SLURM_MIN_MINUTES studies estimated below this run locally even with slurm (0; no estimate: SLURM)
     CFDT_SLURM_ARGS        extra sbatch arguments, split like a shell does
+    CFDT_SLURM_MEM         auto (from the cell estimate) | a size | none
+    CFDT_SLURM_NODE        local | any | a node list
+    CFDT_SLURM_TIME        timeout (default: ceil(timeout / 60) + 10 minutes) | max (the partition's limit) | estimate
+                           (from the study's time estimate, within 'timeout') | minutes (llmt-runtime's meanings)
     CFDT_PROCS             MPI ranks per study (a study's solve.procs overrides it)
-    CFDT_TIMEOUT           seconds per study; the job's time limit is ceil(timeout / 60) + 10 minutes
+    CFDT_TIMEOUT           seconds per study
 A study's "queue": true (always SLURM) or false (always local) overrides the minimum, not CFDT_EXECUTOR=local.
 
 Every SLURM state is computed from the files and the queue (never from in-process handles), so any server
@@ -19,133 +34,117 @@ process, after restarts or from another chat, sees the same thing:
     queued         squeue: PENDING (reason, expected_start, ahead)
     running        squeue: RUNNING / COMPLETING (the solver's progress, job_elapsed_min)
     timed_out, out_of_memory, cancelled, failed
-                   gone from squeue without a result: sacct, or job.log when sacct knows nothing; these
-                   are written as the study's result ({"ok": false, "state", "why"}) so they stay final
+                   gone from squeue without a result (or listed in a final state: MinJobAge): sacct, or job.log when
+                   sacct knows nothing; these are written as the study's result ({"ok": false, "state", "why"}) so they
+                   stay final
 """
 from __future__ import annotations
 
 import json
 import math
 import os
-import re
-import shlex
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+from llmt_runtime import jobs as J
+from llmt_runtime import slurm as S
+
+from .runtime import RT
+
 CLI = "cfdt"
-FINAL = ("timed_out", "out_of_memory", "cancelled", "failed")
+FINAL = J.FINAL            # ("timed_out", "out_of_memory", "cancelled", "failed")
 
 
-# ---- settings ----------------------------------------------------------------------------------
+# ---- settings (llmt-runtime's) ----------------------------------------------------------------------
 def kind() -> str:
-    k = os.environ.get("CFDT_EXECUTOR", "local").strip().lower() or "local"
-    return k if k in ("local", "slurm") else "local"
+    return S.kind(RT)
 
 
 def min_minutes() -> float:
-    try:
-        return float(os.environ.get("CFDT_SLURM_MIN_MINUTES", "0"))
-    except ValueError:
-        return 0.0
+    return S.min_minutes(RT)
 
 
 def timeout_s(study: dict | None = None) -> float:
     """The study's run.timeout_s, else CFDT_TIMEOUT (3600)."""
-    t = ((study or {}).get("run") or {}).get("timeout_s")
-    return float(t) if t else float(os.environ.get("CFDT_TIMEOUT", "3600"))
+    return S.timeout_s(RT, study)
 
 
 def time_limit_min(study: dict | None = None) -> int:
-    return int(math.ceil(timeout_s(study) / 60.0)) + 10
+    """ceil(timeout / 60) + 10: the job's limit with CFDT_SLURM_TIME=timeout (the default; llmt-runtime's
+    time_need_min, cfdt has no hook for it)."""
+    return S.time_need_min(RT, study)
 
 
 def procs_of(study: dict) -> int:
-    p = ((study.get("run") or {}).get("procs")) or (study.get("solve") or {}).get("procs")
-    return int(p) if p else int(os.environ.get("CFDT_PROCS", "1") or 1)
+    """MPI ranks asked for: run.procs, then solve.procs, then CFDT_PROCS (before the size cap)."""
+    return S.procs_of(RT, study)
+
+
+def slurm_args() -> list[str]:
+    """CFDT_SLURM_ARGS split as a shell does (several options in one value); unbalanced quotes: the plain words."""
+    return S.slurm_args(RT)
+
+
+def job_time(study: dict | None = None, estimate_min: float | None = None) -> tuple[str, dict]:
+    """(the job's --time, details): CFDT_SLURM_TIME timeout (default) | max | estimate | minutes."""
+    return S.job_time(RT, study, estimate_min)
 
 
 # ---- per-study run settings (study.run) within the machine's caps ------------------------------------
 RUN_KEYS = {"timeout_s", "mem", "procs", "queue"}
-_MEM = re.compile(r"^(\d+(?:\.\d+)?)([KMGT]?)B?$", re.I)
+mem_mb = S.mem_mb          # '8G' -> 8192 (SLURM's units: K, M (default), G, T); None if malformed
 
 
-def mem_mb(text) -> float | None:
-    """'8G' -> 8192 (SLURM's units: K, M (default), G, T)."""
-    m = _MEM.match(str(text).strip())
-    if not m:
-        return None
-    return float(m.group(1)) * {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 ** 2}[m.group(2).upper()]
+class _Caches(dict):
+    """cfdt's own caches of what SLURM said (core accounting). clear() also makes llmt-runtime forget the cluster's
+    nodes and the partition's limit (the tests clear it between cases)."""
+
+    def clear(self) -> None:
+        super().clear()
+        S.forget()
 
 
-_NODES: dict = {}
+_NODES: dict = _Caches()
+
+
+def _node_name(n: dict) -> str:
+    return n.get("NodeName") or ""
 
 
 def slurm_nodes(all_nodes: bool = False) -> list[dict]:
     """The SLURM nodes jobs may go to (all of the cluster's with all_nodes): [{name, host, cpus, threads, cores}]
-    from sinfo; [] without SLURM. cores = CPUs / threads per core: with --ntasks-per-core=1 a job gets at most that
-    many ranks on one node (mochi: 40 CPUs, 2 threads per core: 20; a 36-rank request was 'Requested node
-    configuration is not available')."""
+    from llmt-runtime's `scontrol -o show node`; [] without SLURM. cores: physical cores (Sockets x CoresPerSocket,
+    else CPUs / threads per core): with --ntasks-per-core=1 a job gets at most that many ranks on one node (mochi: 40
+    CPUs, 2 threads per core: 20; a 36-rank request was 'Requested node configuration is not available')."""
     if kind() != "slurm":
         return []
-    if "v" in _NODES:
-        known = _NODES["v"]
-    else:
-        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %n %c %Z"])
-        nodes = {}
-        if rc == 0:
-            for line in out.splitlines():
-                f = line.split()
-                if len(f) >= 4 and f[2].isdigit():
-                    thr = int(f[3]) if f[3].isdigit() else 1
-                    nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2]), "threads": thr,
-                                   "cores": max(1, int(f[2]) // max(thr, 1))}
-        known = list(nodes.values())
-        if rc == 0 and known:                 # a failed sinfo is asked again next time, not remembered as empty
-            _NODES["v"] = known
-    want = None if all_nodes else effective_nodelist()
-    return [n for n in known if not want or n["name"] in want.split(",")]
+    nodes = S.cluster_nodes() or []
+    if not all_nodes:
+        nodes = S.job_nodes(RT) if nodes else []
+    out = []
+    for n in nodes:
+        try:
+            thr = int(n.get("ThreadsPerCore") or 1)
+        except ValueError:
+            thr = 1
+        out.append({"name": _node_name(n), "host": n.get("NodeHostName") or _node_name(n), "cpus": S.node_cpus(n),
+                    "threads": thr, "cores": S.node_core_count(n)})
+    return out
 
 
 def _my_addresses() -> set:
-    import socket
-    out = set()
-    try:
-        for a in socket.getaddrinfo(socket.gethostname(), None):
-            out.add(a[4][0])
-    except OSError:
-        pass
-    rc, txt, _ = _run(["hostname", "-I"])
-    if rc == 0:
-        out.update(txt.split())
-    return out
+    """This machine's addresses (llmt-runtime's: `hostname -I`, the host name's own)."""
+    return S.addresses()
 
 
 def local_node() -> str | None:
     """This machine's node in the SLURM cluster (llm-translators docs/EXECUTION.md, 'Clusters of several nodes'):
-    `scontrol -o show node`, the host name matched to NodeName or NodeHostName, else one of this machine's
-    addresses to NodeAddr."""
-    if "local" in _NODES:
-        return _NODES["local"]
-    import socket
-    host = socket.gethostname().split(".")[0]
-    rc, out, _ = _run(["scontrol", "-o", "show", "node"])
-    recs = []
-    if rc == 0:
-        for line in out.splitlines():
-            kv = dict(re.findall(r"(\w+)=(\S+)", line))
-            if kv.get("NodeName"):
-                recs.append(kv)
-    hit = next((r["NodeName"] for r in recs if host in (r["NodeName"], r.get("NodeHostName", "").split(".")[0])), None)
-    if hit is None and recs:
-        mine = _my_addresses()
-        hit = next((r["NodeName"] for r in recs if r.get("NodeAddr") in mine), None)
-    if rc == 0 and recs:                      # a failed scontrol is asked again next time
-        _NODES["local"] = hit
-        _NODES["scontrol_nodes"] = len(recs)
-    return hit
+    llmt-runtime's this_node (NodeName or NodeHostName equal to the host name, else NodeAddr among this machine's
+    addresses)."""
+    me = S.this_node(S.cluster_nodes())
+    return me.get("NodeName") if me else None
 
 
 def core_accounting() -> dict | None:
@@ -153,6 +152,7 @@ def core_accounting() -> dict | None:
     and the partitions' OverSubscribe. {shared: bool, why, select, params, oversubscribe}; None when SLURM does
     not say (asked again next time). Cores are shared when the select plugin is linear without CR_Core/CR_CPU
     counting, when the parameters count only memory (CR_Memory), or when a partition oversubscribes."""
+    import re
     if "accounting" in _NODES:
         return _NODES["accounting"]
     rc, out, _ = _run(["scontrol", "show", "config"])
@@ -177,23 +177,13 @@ def core_accounting() -> dict | None:
 
 
 def cluster_nodes() -> int:
-    """How many nodes `scontrol -o show node` lists (sinfo's count when scontrol is not available)."""
-    if "scontrol_nodes" not in _NODES:
-        local_node()
-    return int(_NODES.get("scontrol_nodes") or len(slurm_nodes(all_nodes=True)))
+    """How many nodes `scontrol -o show node` lists (0 when SLURM does not answer)."""
+    return len(S.cluster_nodes() or [])
 
 
 def args_nodelist() -> str | None:
     """A --nodelist / -w in CFDT_SLURM_ARGS (split as a shell does), which wins over CFDT_SLURM_NODE."""
-    a = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
-    for i, x in enumerate(a):
-        if x in ("-w", "--nodelist") and i + 1 < len(a):
-            return a[i + 1]
-        if x.startswith("--nodelist="):
-            return x.split("=", 1)[1]
-        if x.startswith("-w") and len(x) > 2:
-            return x[2:]
-    return None
+    return S.args_nodelist(RT)
 
 
 def _args_nodelist() -> bool:
@@ -204,12 +194,12 @@ def effective_nodelist() -> str | None:
     """The nodes a job may run on, as it asks: CFDT_SLURM_ARGS' --nodelist/-w, else node_list(); None: SLURM
     chooses. tool_status reports it (the router's sbatch --test-only must ask the same) and the rank caps use those
     nodes' cores."""
-    return args_nodelist() or node_list()
+    return S.node_pin(RT)[1]
 
 
 def node_setting() -> str:
     """CFDT_SLURM_NODE: local (default) | any | a node list."""
-    return os.environ.get("CFDT_SLURM_NODE", "").strip() or "local"
+    return S.node_setting(RT)
 
 
 def node_list() -> str | None:
@@ -217,66 +207,47 @@ def node_list() -> str | None:
     CFDT_SLURM_NODE=local (the default) this machine's node when the cluster has several (the sparks: spark1 is
     spark-5da5, spark2 spark-0808, and their home folders are not shared, so a job sent to the other node vanished
     without a log); 'any': none (SLURM chooses; shared home folders); a node list: those. A --nodelist / -w in
-    CFDT_SLURM_ARGS wins (then cfdt adds none). One-node clusters: none."""
-    if _args_nodelist():
-        return None
-    v = node_setting()
-    if v.lower() == "any":
-        return None
-    if v.lower() != "local":
-        return v
-    if cluster_nodes() <= 1:
-        return None
-    return local_node()
+    CFDT_SLURM_ARGS wins (then cfdt adds none). One-node clusters: none. (llmt-runtime's node_pin.)"""
+    return S.node_pin(RT)[0]
 
 
 def node_cores() -> int | None:
-    """The most ranks one job can have: the largest node's cores (one rank per core)."""
-    ns = slurm_nodes()
-    return max(n["cores"] for n in ns) if ns else None
+    """The most ranks one job can have: the largest node's cores (one rank per core) among the nodes its jobs may go
+    to (the pinned ones, else the cluster's); None without SLURM."""
+    if kind() != "slurm" or not S.cluster_nodes():
+        return None
+    ns = S.job_nodes(RT)
+    return max(S.node_core_count(n) for n in ns) if ns else None
 
 
 def node_mem_mb() -> float | None:
-    """The most memory one job can ask for (MB): the largest RealMemory among the nodes jobs go to (sinfo %m), or
-    None when SLURM does not know it (unset nodes report 1 MB). mochi's jobs failed only at submission with
-    'Memory specification can not be satisfied' when run.mem asked for more (90G, 2026.11.07)."""
-    if kind() != "slurm":
-        return None
-    if "mem" not in _NODES:
-        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %m"])
-        mem = {}
-        for line in out.splitlines() if rc == 0 else []:
-            f = line.split()
-            if len(f) >= 2 and f[1].rstrip("+").isdigit():
-                mem[f[0]] = max(mem.get(f[0], 0), int(f[1].rstrip("+")))
-        if rc != 0:
-            return None                       # asked again next time
-        _NODES["mem"] = mem
-    mem = _NODES["mem"]
-    want = effective_nodelist()
-    vals = [v for n, v in mem.items() if (not want or n in want.split(",")) and v >= 1024]
-    return float(max(vals)) if vals else None
-
-
-def _fmt_mem(mb: float) -> str:
-    return f"{int(mb // 1024)}G" if mb >= 1024 else f"{int(mb)}M"
+    """The most memory one job can ask for (MB): the largest RealMemory among the nodes jobs go to, or None when
+    SLURM does not know it. mochi's jobs failed only at submission with 'Memory specification can not be satisfied'
+    when run.mem asked for more (90G, 2026.11.07). llmt-runtime's (scontrol RealMemory)."""
+    return S.node_mem_mb(RT)
 
 
 def caps() -> dict:
     """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none. With
-    SLURM, procs is also at most a node's cores, and mem at most a node's memory (mem_mb in MB, for the router)."""
+    SLURM, procs is also at most a node's cores, and mem at most a node's memory, exactly as SLURM gives it
+    ('64000M'; it read '62G' before 2026.11.09.4), mem_mb in MB for the router."""
     out = {}
-    for k, env in (("timeout_s", "CFDT_MAX_TIMEOUT"), ("mem", "CFDT_MAX_MEM"), ("procs", "CFDT_MAX_PROCS")):
-        v = os.environ.get(env, "").strip()
+    for k, name in (("timeout_s", "MAX_TIMEOUT"), ("mem", "MAX_MEM"), ("procs", "MAX_PROCS")):
+        v = RT.env(name, "").strip()
         if v:
             out[k] = v
     nc = node_cores()
-    if nc and (not out.get("procs") or int(out["procs"]) > nc):
-        out["procs"] = str(nc)
-        out["procs_from"] = "a node's cores (SLURM, one rank per core)"
+    if nc:
+        try:
+            given = int(float(out["procs"])) if out.get("procs") else None
+        except ValueError:
+            given = None
+        if given is None or given > nc:
+            out["procs"] = str(nc)
+            out["procs_from"] = "a node's cores (SLURM, one rank per core)"
     nm = node_mem_mb()
     if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
-        out["mem"] = _fmt_mem(nm)
+        out["mem"] = S.mem_text(nm)
         out["mem_from"] = "a node's memory (SLURM RealMemory)"
     if out.get("mem") and mem_mb(out["mem"]):
         out["mem_mb"] = int(mem_mb(out["mem"]))
@@ -328,9 +299,7 @@ def run_errors(st: dict) -> list[str]:
     return errs
 
 
-def queue_of(study: dict):
-    r = (study.get("run") or {}).get("queue")
-    return r if r is not None else study.get("queue")
+queue_of = S.queue_of      # run.queue, then the study's queue; None: decided by the time estimate
 
 
 def mem_estimate_mb(cells: float | None) -> float | None:
@@ -339,45 +308,32 @@ def mem_estimate_mb(cells: float | None) -> float | None:
     return None if not cells else 2048.0 + 4096.0 * cells / 1e6
 
 
-def _strip_mem(args: list[str]) -> tuple[list[str], float | None]:
-    """args without memory requests, and the --mem they held (MB)."""
-    out, mem, skip = [], None, None
-    for a in args:
-        if skip:
-            if skip == "--mem":
-                mem = mem_mb(a)
-            skip = None
-            continue
-        if a in ("--mem", "--mem-per-cpu"):
-            skip = a
-            continue
-        if a.startswith("--mem="):
-            mem = mem_mb(a.split("=", 1)[1])
-            continue
-        if a.startswith("--mem-per-cpu="):
-            continue
-        out.append(a)
-    return out, mem
-
-
 def mem_setting() -> str:
     """CFDT_SLURM_MEM (llm-translators docs/EXECUTION.md): auto (default: from the study's cell estimate) | a size
     (e.g. 16G) | none (SLURM's default)."""
-    return os.environ.get("CFDT_SLURM_MEM", "").strip() or "auto"
+    return RT.env("SLURM_MEM", "").strip() or "auto"
+
+
+def _cap_mb() -> float | None:
+    c = caps()
+    return mem_mb(c["mem"]) if c.get("mem") else None
 
 
 def mem_plan(study: dict, cells: float | None = None) -> tuple[float | None, str]:
     """(MB the job asks for, or None for SLURM's default; where it came from). In order: the study's run.mem (a size;
     'auto': the estimate); a --mem in CFDT_SLURM_ARGS (it wins over CFDT_SLURM_MEM); CFDT_SLURM_MEM: auto (2 GB +
-    4 GB per million estimated cells; 8 GB when the cells cannot be told), a size, or none. Within CFDT_MAX_MEM."""
-    cap = mem_mb(caps()["mem"]) if caps().get("mem") else None
+    4 GB per million estimated cells; 8 GB when the cells cannot be told), a size, or none. Within CFDT_MAX_MEM and
+    the node's memory. cells: the study's estimate (None: unknown). The job's own --mem is llmt-runtime's mem_plan with
+    cfdt's mem_auto (job_mem); this one names the source and sizes the validation estimate."""
+    cap = _cap_mb()
 
     def capped(mb):
         return float(min(mb, cap) if cap else mb)
     rm = (study.get("run") or {}).get("mem")
     if rm and str(rm).lower() != "auto":
         return float(mem_mb(rm) or 0), "study"
-    _, args_mem = _strip_mem(shlex.split(os.environ.get("CFDT_SLURM_ARGS", "")))
+    a = S.opt_value(slurm_args(), ("--mem",))
+    args_mem = mem_mb(a) if a else None
     if args_mem is not None and str(rm).lower() != "auto":
         return float(args_mem), "CFDT_SLURM_ARGS"
     setting = "auto" if str(rm).lower() == "auto" else mem_setting()
@@ -390,17 +346,45 @@ def mem_plan(study: dict, cells: float | None = None) -> tuple[float | None, str
     return (capped(mb), "CFDT_SLURM_MEM") if mb else (None, "none")
 
 
+def _mem_text(mb: float, cap: float | None = None) -> str:
+    """MB as cfdt asks for memory: whole GB rounded up (MB below 1 GB), but never above the cap (then the cap exactly:
+    a node's 64000M, not 63G = 64512 MB)."""
+    t = f"{int(math.ceil(mb / 1024))}G" if mb >= 1024 else f"{int(math.ceil(mb))}M"
+    if cap and (mem_mb(t) or 0) > cap:
+        t = S.mem_text(cap)
+    return t
+
+
+def mem_auto(study: dict, cells: float | None = None) -> str:
+    """CFDT_SLURM_MEM=auto (and run.mem 'auto'): the job's --mem from the cell estimate, 2 GB + 4 GB per million
+    cells, 8G when the cells cannot be told; within CFDT_MAX_MEM and the node's memory. The runtime's hooks.mem_auto."""
+    if cells is None:
+        cells = _cells(study)
+    cap = _cap_mb()
+    need = mem_estimate_mb(cells) or 8192.0
+    return _mem_text(min(need, cap) if cap else need, cap)
+
+
+def _for_job(study: dict) -> dict:
+    """The study as llmt-runtime sizes its job: run.mem 'auto' (cfdt's: the estimate, whatever CFDT_SLURM_MEM and a
+    --mem in CFDT_SLURM_ARGS say) becomes that size."""
+    r = S.run_of(study)
+    if str(r.get("mem", "")).strip().lower() == "auto":
+        return dict(study, run=dict(r, mem=mem_auto(study)))
+    return study
+
+
+def job_mem(study: dict) -> str | None:
+    """The --mem in a study's job.sh (llmt-runtime's mem_plan: run.mem, else nothing when CFDT_SLURM_ARGS has a --mem,
+    else CFDT_SLURM_MEM none | a size | auto: mem_auto); None: SLURM's default or CFDT_SLURM_ARGS's own."""
+    return S.mem_for(RT, _for_job(study))
+
+
 def sbatch_args(study: dict, cells: float | None = None) -> tuple[list[str], str | None]:
-    """CFDT_SLURM_ARGS (split as a shell does: several options in one value) with the job's --mem from mem_plan.
-    Returns (args, where the memory came from)."""
-    args = shlex.split(os.environ.get("CFDT_SLURM_ARGS", ""))
-    rest, _ = _strip_mem(args)
-    mb, src = mem_plan(study, cells)
-    if src == "CFDT_SLURM_ARGS":
-        return args, src
-    if mb is None:
-        return rest, src
-    return rest + [f"--mem={int(math.ceil(mb / 1024))}G" if mb >= 1024 else f"--mem={int(math.ceil(mb))}M"], src
+    """(sbatch's arguments from CFDT_SLURM_ARGS, where the job's memory comes from: mem_plan's source). With a
+    study's run.mem, a --mem/--mem-per-cpu in CFDT_SLURM_ARGS is dropped. From 2026.11.09.4 the job's --mem is in
+    job.sh (job_mem), not on sbatch's command line: `sbatch job.sh` by hand lost it."""
+    return S.sbatch_args(RT, study), mem_plan(study, cells)[1]
 
 
 def cell_estimate(study: dict) -> float | None:
@@ -580,7 +564,7 @@ def snappy_estimate(study: dict) -> float | None:
 def procs_for_job(study: dict, est: float | None = None) -> int:
     """The ranks a SLURM job asks for: the study's (or CFDT_PROCS), but no more than the cell estimate allows
     at CFDT_CELLS_PER_RANK, so small studies do not hold cores they cannot use (the benchmarks on mochi held
-    18 CPUs each for 1-3 ranks)."""
+    18 CPUs each for 1-3 ranks). The runtime's hooks.procs."""
     procs = procs_of(study)
     nc = node_cores()
     if nc:
@@ -688,12 +672,14 @@ def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs
 
 
 def mem_needed_mb(study: dict, cells: float | None = None) -> float:
-    """The memory the job asks for (mem_plan, as its --mem; rounded up as sbatch_args writes it); SLURM's default
-    ('none'): the estimate's need, for the router."""
-    mb, _ = mem_plan(study, cells)
+    """The memory the job asks for (mem_plan, as its --mem: a size as given, the estimate rounded up as mem_auto
+    writes it); SLURM's default ('none'): the estimate's need, for the router."""
+    mb, src = mem_plan(study, cells)
     if mb is None:
         return float(mem_estimate_mb(cells) or 8192.0)
-    return float(math.ceil(mb / 1024) * 1024) if mb >= 1024 else float(math.ceil(mb))
+    if src in ("study", "CFDT_SLURM_ARGS", "CFDT_SLURM_MEM"):
+        return float(mb)
+    return float(mem_mb(_mem_text(mb, _cap_mb())) or mb)
 
 
 def estimate(study: dict, solver: str) -> dict | None:
@@ -716,106 +702,122 @@ def estimate(study: dict, solver: str) -> dict | None:
 
 
 def use_slurm(study: dict, solver: str) -> bool:
+    """Whether a study becomes a SLURM job: only with CFDT_EXECUTOR=slurm; then "queue" decides if given, else the
+    time estimate (none: SLURM). llmt-runtime's use_slurm; the estimate is made only when it decides."""
     if kind() != "slurm":
         return False
-    q = queue_of(study)
-    if q is True:
-        return True
-    if q is False:
-        return False
-    est = estimate_minutes(study, solver)
-    return est is None or est >= min_minutes()
+    if queue_of(study) is not None:
+        return S.use_slurm(RT, study, None)
+    return S.use_slurm(RT, study, estimate_minutes(study, solver))
 
 
 def status() -> dict:
-    """The 'executor' key of tool_status (read by llmt status)."""
+    """The 'executor' key of tool_status (read by llmt status and the router): cfdt's keys (args, nodes, node,
+    cores_shared; in local mode kind, workers, procs, timeout_s, caps, runtime), with llmt-runtime's time, slurm_time
+    (CFDT_SLURM_TIME as read) and node_cores in SLURM mode."""
     if kind() == "slurm":
+        _, nl, info = S.node_pin(RT)
+        node = {"setting": node_setting(), "nodelist": nl, "cluster_nodes": cluster_nodes()}
+        if info.get("warning"):
+            node["warning"] = info["warning"]
+        ts = S.time_setting(RT)
+        ca = core_accounting()
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
-                "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "time_limit_min": time_limit_min(),
-                "args": os.environ.get("CFDT_SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
+                "procs": S.default_procs(RT), "time_limit_min": time_limit_min(), "time": ts, "slurm_time": ts,
+                "args": RT.env("SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
                 "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
-                "node": {"setting": node_setting(), "nodelist": effective_nodelist(),
-                         "cluster_nodes": cluster_nodes()},
-                **({"cores_shared": ca["why"]} if (ca := core_accounting()) and ca.get("shared") else {}),
+                "node": node, "node_cores": node_cores(),
+                **({"cores_shared": ca["why"]} if ca and ca.get("shared") else {}),
                 "mem": mem_setting(), "runtime": _runtime_version()}
     return {"kind": "local", "workers": int(os.environ.get("CFDT_WORKERS", "2")),
-            "procs": int(os.environ.get("CFDT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps(),
+            "procs": S.default_procs(RT), "timeout_s": timeout_s(), "caps": caps(),
             "runtime": _runtime_version()}
 
 
 def _runtime_version() -> str:
     """llmt-runtime's version (machines() and llmt status show it)."""
-    from llmt_runtime import __version__ as v
+    return RT.runtime_version
+
+
+# ---- submitting (llmt-runtime's) ---------------------------------------------------------------------
+write_atomic = J.write_atomic      # a file written whole or not at all (a temporary file, then rename)
+
+_CELLS: dict = {}
+CELLS_TTL = 30.0
+
+
+def _cells(study: dict) -> float | None:
+    """cell_estimate, kept CELLS_TTL s per study: one submission asks for it in several hooks (ranks, memory,
+    job.json)."""
+    try:
+        key = json.dumps(study, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return cell_estimate(study)
+    hit = _CELLS.get(key)
+    if hit is not None and time.time() - hit[0] < CELLS_TTL:
+        return hit[1]
+    v = cell_estimate(study)
+    _CELLS[key] = (time.time(), v)
+    while len(_CELLS) > 32:
+        _CELLS.pop(next(iter(_CELLS)))
     return v
 
 
-# ---- submitting --------------------------------------------------------------------------------
-def write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+def job_extra(study: dict) -> dict:
+    """cfdt's keys in job.json (the runtime's hooks.job_extra): cells_estimate (api._progress shows it next to the
+    meshed count)."""
+    est = _cells(study)
+    return {"cells_estimate": int(est) if est else None}
 
 
 def job_script(request: Path, name: str, procs: int, study: dict | None = None) -> str:
-    d = request / name
-    return "\n".join([
-        "#!/bin/bash",
-        f"#SBATCH --job-name={CLI}:{request.name}:{name}",
-        f"#SBATCH --chdir={d}",
-        f"#SBATCH --output={d / 'job.log'}",
-        f"#SBATCH --ntasks={procs}",
-        "#SBATCH --nodes=1",                    # one node: the case is in one directory, on one machine
-        "#SBATCH --ntasks-per-core=1",          # a whole core per rank (OpenMPI 5 maps ranks by core)
-        *([f"#SBATCH --nodelist={node_list()}"] if node_list() else []),
-        f"#SBATCH --time={time_limit_min(study)}",
-        "#SBATCH --export=ALL",
-        f"exec {shlex.quote(sys.executable)} -m cfd_translator.cli run-study {shlex.quote(str(request))} {shlex.quote(name)}",
-        ""])
+    """job.sh (llmt-runtime's job_script): the job's name cfdt:<request>:<name>, folder, log, --ntasks=N --nodes=1
+    --ntasks-per-core=1, --time (CFDT_SLURM_TIME), --mem (job_mem; in job.sh from 2026.11.09.4), --nodelist
+    (node_list), --export=ALL, then `python -m cfd_translator.cli run-study REQUEST NAME`."""
+    st = study or {}
+    return J.job_script(RT, Path(request), name, st, int(procs), job_time(st)[0], job_mem(st), node_list())
+
+
+def _solver_of(request: Path) -> str:
+    try:
+        return json.loads((Path(request) / "request.json").read_text()).get("solver") or "foam"
+    except (OSError, ValueError):
+        return "foam"
 
 
 def submit(request: Path, name: str, study: dict, after: str | None = None, segment: int | None = None) -> dict:
-    """Writes <request>/<name>/job.sh, submits it, writes job.json. On failure writes the study's result
-    {"ok": false, "why": "could not submit: ..."} (never falls back to local). after: a job this one waits for
-    (a transient study's next job: --dependency=afterany), segment: its number."""
+    """Writes <request>/<name>/job.sh, submits it, writes job.json (llmt-runtime's submit, with cfdt's hooks). On
+    failure writes the study's result {"ok": false, "why": "could not submit: ..."} (never falls back to local).
+    after: a job this one waits for (a transient study's next job, a chained study's source: --dependency=afterany),
+    segment: its number (job.json segment, previous_jobs). job.json: the runtime's keys and cfdt's (cells_estimate,
+    mem_from as cfdt names it, run as the study gave it, segment, previous_jobs)."""
+    request = Path(request)
     d = request / name
-    prev = None
-    if after and (d / "job.json").is_file():
-        try:
-            prev = json.loads((d / "job.json").read_text())
-        except json.JSONDecodeError:
-            prev = None
-    d.mkdir(parents=True, exist_ok=True)
-    est = cell_estimate(study)
-    procs = procs_for_job(study, est)
-    script = d / "job.sh"
-    script.write_text(job_script(request, name, procs, study))
-    script.chmod(0o755)
-    sargs, mem_from = sbatch_args(study, est)
-    cmd = ["sbatch", "--parsable"] + sargs + ([f"--dependency=afterany:{after}"] if after else []) + [str(script)]
-    try:
-        r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60)
-        ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        ok, msg = False, str(exc)
-    if not ok:
-        res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}",
-               "execution": {"executor": "slurm", "slurm_job": None}}
-        if not segment:                  # a continuation that fails leaves the running job to write its result
-            write_atomic(d / f"{name}.json", json.dumps(res, indent=1))
-        return res
-    job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
-    info = {"executor": "slurm", "job_id": job_id, "submitted": time.time(), "procs": procs,
-            "time_min": time_limit_min(study), "command": cmd,
-            "run": dict(study.get("run") or {}), "cells_estimate": int(est) if est else None, "mem_from": mem_from}
+    prev = J.read_job(d) if after and (d / "job.json").is_file() else None
+    est_min = None
+    if S.time_setting(RT) == "estimate" and not S.run_of(study).get("timeout_s"):
+        try:                                   # CFDT_SLURM_TIME=estimate: the limit from the study's time estimate
+            est_min = estimate_minutes(study, _solver_of(request))
+        except Exception:  # noqa: BLE001 (no estimate: the timeouts)
+            est_min = None
+    extra = {"run": dict(S.run_of(study)), "mem_from": mem_plan(study, _cells(study))[1]}
     if segment:
-        info["segment"] = segment
-        info["previous_jobs"] = list((prev or {}).get("previous_jobs", [])) + ([str(prev["job_id"])] if prev else [])
-    write_atomic(d / "job.json", json.dumps(info, indent=1))
-    return info
+        extra["segment"] = segment
+        extra["previous_jobs"] = list((prev or {}).get("previous_jobs", [])) + \
+            ([str(prev["job_id"])] if prev and prev.get("job_id") else [])
+    info = J.submit(RT, request, name, _for_job(study), estimate_min=est_min,
+                    after=[str(after)] if after else None, extra=extra)
+    if info.get("job_id"):
+        return info
+    if not segment:                  # a continuation that fails leaves the running job to write its result
+        return J.failed_submission(RT, request, name, info)
+    return {"name": name, "ok": False, "state": "failed", "why": info.get("why", "could not submit"),
+            "execution": {"executor": "slurm", "slurm_job": None}}
 
 
 def run_study_job(request: str, name: str) -> int:
-    """`cfdt run-study REQUEST NAME`: what a SLURM job (or a person) runs. Exit 0 when a result was written."""
+    """`cfdt run-study REQUEST NAME`: what a SLURM job (or a person) runs. Exit 0 when a result was written. The
+    study's timeout is the one its job was sized with (job.json timeout_s: shorter with CFDT_SLURM_TIME=estimate)."""
     from .runner import run_study
 
     req = Path(request).expanduser().resolve()
@@ -837,7 +839,7 @@ def run_study_job(request: str, name: str) -> int:
         except Exception:  # noqa: BLE001
             reaped = []
     t0 = time.perf_counter()
-    r = run_study(name, study, req / name, meta.get("solver", "foam"), timeout_s(study))
+    r = run_study(name, study, req / name, meta.get("solver", "foam"), J.job_timeout_s(req / name, timeout_s(study)))
     if reaped:
         jobs_ = sorted({x["job"] for x in reaped})
         r.setdefault("warnings", []).append(
@@ -866,50 +868,30 @@ def job_active(job_id: str) -> bool:
     return bool(out.strip())
 
 
-# ---- the queue ---------------------------------------------------------------------------------
+# ---- the queue (llmt-runtime's) ----------------------------------------------------------------------
 def _run(cmd: list[str], timeout: float = 20):
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, r.stdout, r.stderr
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, "", str(exc)
+    """(returncode, stdout, stderr) of a SLURM (or system) command, through llmt-runtime's slurm.run (within an MCP
+    call's deadline when one is set); (1, '', why) when the command is missing or does not answer."""
+    p = S.run(cmd, timeout)
+    if p is None:
+        return 1, "", f"{cmd[0]}: not found or no answer"
+    return p.returncode, p.stdout or "", p.stderr or ""
 
 
-def _minutes(t: str) -> float | None:
-    """SLURM elapsed time [d-]hh:mm:ss or mm:ss -> minutes."""
-    t = t.strip()
-    if not t or t in ("N/A", "INVALID"):
-        return None
-    days = 0
-    if "-" in t:
-        dd, t = t.split("-", 1)
-        days = int(dd)
-    parts = [int(x) for x in t.split(":")]
-    while len(parts) < 3:
-        parts.insert(0, 0)
-    h, m, s = parts[-3:]
-    return round(days * 1440 + h * 60 + m + s / 60, 1)
+_minutes = S.elapsed_minutes   # squeue's elapsed time ([D-]HH:MM:SS, MM:SS) in minutes
 
 
-def squeue(ids: list[str]) -> dict:
-    """One squeue call for these job ids: {id: {state, reason, start, elapsed_min}}; None when squeue fails."""
-    if not ids:
-        return {}
-    rc, out, err = _run(["squeue", "-h", "-j", ",".join(ids), "-o", "%i|%T|%r|%S|%M"])
-    if rc != 0 and "Invalid job id" not in err:
-        return None
-    q = {}
-    for line in out.splitlines():
-        f = (line.split("|") + [""] * 5)[:5]
-        q[f[0].strip()] = {"state": f[1].strip(), "reason": f[2].strip(), "start": f[3].strip(),
-                           "elapsed_min": _minutes(f[4])}
-    return q
+def squeue(ids: list[str]) -> dict | None:
+    """One squeue call for these job ids: {id: {state, reason, start, elapsed_min, node}}; None when SLURM does not
+    answer. Ended jobs squeue still lists (MinJobAge) are among them, in their final state."""
+    return J.squeue([str(i) for i in ids])
 
 
 def pending_ahead() -> dict:
     """Pending jobs ahead of each pending job: higher priority (or the same and an older id) and able to run on the
     same node: no requested nodes on either side, or requested node lists that share a node (%n). On the sparks
-    (one controller, jobs pinned with --nodelist) spark1's job 506 counted spark2's 469-471 (2026.11.08)."""
+    (one controller, jobs pinned with --nodelist) spark1's job 506 counted spark2's 469-471 (2026.11.08). Applied
+    on top of llmt-runtime's `ahead` (by priority, every node's)."""
     rc, out, _ = _run(["squeue", "-h", "-t", "PD", "-o", "%i|%Q|%n"])
     jobs = []
     for line in out.splitlines() if rc == 0 else []:
@@ -925,32 +907,23 @@ def pending_ahead() -> dict:
             for p, i, n in jobs}
 
 
-def sacct(ids: list[str]) -> dict | None:
-    """{id: state} from accounting, or None when sacct fails or knows nothing."""
-    if not ids:
-        return {}
-    rc, out, _ = _run(["sacct", "-n", "-P", "-X", "-j", ",".join(ids), "-o", "JobID,State,NodeList"])
-    if rc != 0:
-        return None
-    st = {}
-    for line in out.splitlines():
-        f = line.split("|")
-        i = f[0].strip()
-        if i and "." not in i:
-            st[i] = f[1].strip() if len(f) > 1 else ""
-            if len(f) > 2 and f[2].strip() and f[2].strip() != "None assigned":
-                _JOB_NODE[i] = f[2].strip()
-    return st or None
-
-
 _JOB_NODE: dict = {}
 
 
+def sacct(ids: list[str]) -> dict | None:
+    """{id: state} from accounting, or None when sacct fails or knows nothing (llmt-runtime's sacct_rows; the node
+    each job ran on is kept in _JOB_NODE)."""
+    if not ids:
+        return {}
+    rows = J.sacct_rows([str(i) for i in ids])
+    for i, r in rows.items():
+        if r.get("node"):
+            _JOB_NODE[i] = r["node"]
+    return {i: r["state"] for i, r in rows.items()} or None
+
+
 def _tail(path: Path, n: int = 30) -> str:
-    try:
-        return "\n".join(path.read_text(errors="replace").splitlines()[-n:])
-    except OSError:
-        return "(no job.log)"
+    return J.tail(path, n) if Path(path).is_file() else "(no job.log)"
 
 
 def final_state(acct: str | None, log: str, folder: Path | None = None) -> tuple[str, str]:
@@ -958,88 +931,82 @@ def final_state(acct: str | None, log: str, folder: Path | None = None) -> tuple
     job.log)' when there is none): llmt-runtime's rules (jobs.classify_end), with cfdt's out-of-memory advice when the
     study folder is given. SLURM's out-of-memory wording 'Detected N oom_kill events' counts whatever sacct says
     (before 2026.11.09.2 only 'oom-kill', and only without accounting: such jobs came back as 'failed')."""
-    from llmt_runtime import jobs as J
-
-    from .runtime import RT
     has_log = log != "(no job.log)"
-    job = {}
-    if folder is not None:
-        try:
-            job = json.loads((Path(folder) / "job.json").read_text())
-        except (OSError, ValueError):
-            pass
+    job = J.read_job(Path(folder)) if folder is not None else {}
     return J.classify_end(RT, acct, log if has_log else "", has_log=has_log, folder=folder, job=job)
 
 
 def slurm_states(request: Path, names: list[str], studies: dict | None = None, write: bool = True) -> dict:
-    """{name: {"state", ...}} for the request's studies that have job.json and no result. Finished
-    failures become the study's result file (when write)."""
+    """{name: {"state", ...}} for the request's studies that have job.json and no result: llmt-runtime's job_states
+    (one squeue call; sacct, else job.log, for jobs that left the queue or that squeue lists in a final state; a job
+    lost on another node), with cfdt's additions: the queue position per node (pending_ahead), a sooner start from
+    the running jobs' own ETAs (eta_start), the progress kept between a transient study's jobs, the solver's progress
+    of running ones. Finished failures become the study's result file (when write)."""
     from .api import _progress
 
+    request = Path(request)
     jobs = {}
     for n in names:
-        jf = request / n / "job.json"
-        if jf.is_file() and not (request / n / f"{n}.json").is_file():
-            try:
-                jobs[n] = json.loads(jf.read_text())
-            except json.JSONDecodeError:
-                pass
+        if (request / n / "job.json").is_file() and not (request / n / f"{n}.json").is_file():
+            j = J.read_job(request / n)
+            if j.get("job_id"):
+                jobs[n] = j
     if not jobs:
         return {}
-    ids = [str(j["job_id"]) for j in jobs.values()]
-    q = squeue(ids)
-    gone = [n for n, j in jobs.items() if q is not None and str(j["job_id"]) not in q]
-    acct = sacct([str(jobs[n]["job_id"]) for n in gone]) if gone else {}
-    ahead = pending_ahead() if q and any(v["state"] == "PENDING" for v in q.values()) else {}
+    states = J.job_states(RT, request, list(jobs))
+    ahead = None
     out = {}
     for n, j in jobs.items():
+        s = states.get(n) or {}
         jid = str(j["job_id"])
         base = {"job_id": jid, "procs": j.get("procs")}
-        if (request / n / f"{n}.json").is_file():               # finished between the calls
+        state = s.get("state")
+        if state == "done" or (request / n / f"{n}.json").is_file():       # finished between the calls
             continue
-        if q is None:
-            out[n] = {"state": "unknown", **base, "why": "squeue failed (is slurmctld running?)"}
+        if state == "unknown":
+            out[n] = {"state": "unknown", **base, "why": s.get("why")}
             continue
-        if jid in q:
-            s = q[jid]
-            if s["state"] in ("PENDING", "CONFIGURING", "REQUEUED", "SUSPENDED"):
-                st = {"state": "queued", **base, "reason": s["reason"], "ahead": ahead.get(jid)}
-                if s["start"] and s["start"] not in ("N/A", "Unknown"):
-                    st["expected_start"] = s["start"]
+        if state == "queued":
+            if ahead is None:
+                ahead = pending_ahead()
+            st = {"state": "queued", **base, "reason": s.get("reason"), "ahead": ahead.get(jid, s.get("ahead"))}
+            if s.get("expected_start"):
+                st["expected_start"] = s["expected_start"]
+            try:
+                es = eta_start(j, s.get("reason") or "", st.get("expected_start"))
+            except Exception:  # noqa: BLE001
+                es = None
+            if es:
+                st.update({k: v for k, v in es.items() if v is not None})
+            if j.get("segment") or (request / n / "mesh.json").is_file():
+                # a later segment (or a job that meshed before): where the run got to, kept between jobs
                 try:
-                    es = eta_start(j, s["reason"], st.get("expected_start"))
+                    prog = _progress(request / n, (studies or {}).get(n, {}))
                 except Exception:  # noqa: BLE001
-                    es = None
-                if es:
-                    st.update({k: v for k, v in es.items() if v is not None})
-                if j.get("segment") or (request / n / "mesh.json").is_file():
-                    # a later segment (or a job that meshed before): where the run got to, kept between jobs
-                    try:
-                        prog = _progress(request / n, (studies or {}).get(n, {}))
-                    except Exception:  # noqa: BLE001
-                        prog = {}
-                    keep = {k: prog[k] for k in ("time", "end_time", "eta_min_max", "mesh", "iteration",
-                                                 "max_iterations") if k in prog}
-                    if keep:
-                        st.update(keep)
-                        st["stage"] = (f"between jobs: segment {j.get('segment')} queued" if j.get("segment")
-                                       else "queued again")
-                        if "eta_min_max" in keep:
-                            st["note"] = "eta_min_max: the simulated time left at the last job's pace, once running"
-            else:
-                prog = _progress(request / n, (studies or {}).get(n, {}))
-                st = {**prog, "state": "running", **base, "job_elapsed_min": s["elapsed_min"]}
+                    prog = {}
+                keep = {k: prog[k] for k in ("time", "end_time", "eta_min_max", "mesh", "iteration",
+                                             "max_iterations") if k in prog}
+                if keep:
+                    st.update(keep)
+                    st["stage"] = (f"between jobs: segment {j.get('segment')} queued" if j.get("segment")
+                                   else "queued again")
+                    if "eta_min_max" in keep:
+                        st["note"] = "eta_min_max: the simulated time left at the last job's pace, once running"
             out[n] = st
             continue
-        state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"), request / n)
-        node, here = _JOB_NODE.get(jid), local_node()
-        if (state in ("failed", "cancelled") and " by " not in why and not (request / n / "job.log").exists()
-                and node and here and node != here):
-            state, why = "failed", (f"the job went to node {node} and left no job.log: that node cannot see {request} "
-                                    "(its filesystem is not shared with this one). Keep jobs on this node "
-                                    "(CFDT_SLURM_NODE=local, the default, in config/env) or share the home folders")
-        if state == "failed" and (request / n / "cancel").exists():
-            state, why = "cancelled", "cancelled with cancel(request) (it left the queue before running)"
+        if state == "running":
+            try:
+                prog = _progress(request / n, (studies or {}).get(n, {}))
+            except Exception:  # noqa: BLE001
+                prog = {}
+            st = {**prog, "state": "running", **base, "job_elapsed_min": s.get("job_elapsed_min")}
+            if s.get("node"):
+                st["node"] = s["node"]
+            out[n] = st
+            continue
+        why = s.get("why") or "the job left the queue without a result"
+        if state not in FINAL:
+            state = "failed"
         res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid,
                "execution": {"executor": "slurm", "slurm_job": jid}}
         if write:
@@ -1050,14 +1017,10 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
 
 # ---- jobs and cancel ---------------------------------------------------------------------------
 def _expand_nodes(spec: str | None) -> set[str]:
-    """SLURM node names in a list such as 'spark-5da5,node[01-03]' (scontrol show hostnames when brackets)."""
+    """SLURM node names in a list such as 'spark-5da5,node[01-03]' (llmt-runtime's expand_nodelist)."""
     if not spec or spec in ("(null)", "None assigned", "N/A"):
         return set()
-    if "[" in spec:
-        rc, out, _ = _run(["scontrol", "show", "hostnames", spec])
-        if rc == 0 and out.strip():
-            return set(out.split())
-    return {x for x in spec.split(",") if x}
+    return set(S.expand_nodelist(spec))
 
 
 def _my_nodes() -> set[str]:
@@ -1066,10 +1029,13 @@ def _my_nodes() -> set[str]:
 
 
 def queue_summary() -> dict:
-    """This translator's jobs in the queue. On a cluster where jobs are pinned to a node (CFDT_SLURM_NODE=local on
-    the sparks), 'queue' counts the jobs of this machine's node only (running there, or pending with --nodelist
-    naming it) and 'cluster_queue' every node's; 'machine' gives the node's CPUs and 'starts_now' whether a job
-    would start at once (all CPUs of the node idle and nothing pending for it, from any user)."""
+    """This translator's jobs in the queue and the machine's CPUs. 'machine' is llmt-runtime's (sinfo -N: each node
+    once, where summing per-partition rows counted a node in two partitions twice), with 'node' when jobs are pinned.
+    cfdt's on top: on a cluster where jobs are pinned to a node (CFDT_SLURM_NODE=local on the sparks), 'queue' counts
+    this user's jobs of this machine's node only (running there, or pending with --nodelist naming it) and
+    'cluster_queue' every node's; 'starts_now' says whether a job would start at once (all CPUs of the node idle and
+    nothing pending for it, from any user), 'pending_for_node' how many are pending for it."""
+    base = J.queue_summary(RT)
     mine = _my_nodes()
     rc, out, _ = _run(["squeue", "-h", "-o", "%i|%j|%T|%C|%N|%n|%u"])
     q = {"running": 0, "queued": 0, "cpus_in_use": 0}
@@ -1081,27 +1047,21 @@ def queue_summary() -> dict:
         st = f[2]
         nodes = _expand_nodes(f[4].strip()) or _expand_nodes(f[5].strip())
         here = not mine or bool(nodes & mine) or (st not in ("RUNNING", "COMPLETING") and not nodes)
-        if st not in ("RUNNING", "COMPLETING") and here:
+        if st in J.QUEUED and here:
             pending_here_any += 1
         if not f[1].startswith(f"{CLI}:") or (user and f[6] and f[6] != user):
+            continue
+        if st not in J.QUEUED and st not in J.ACTIVE:      # ended, still listed (MinJobAge): not in the queue
             continue
         for d, take in ((cq, True), (q, here)):
             if not take:
                 continue
-            if st in ("RUNNING", "COMPLETING"):
+            if st in J.ACTIVE:
                 d["running"] += 1
                 d["cpus_in_use"] += int(f[3]) if f[3].isdigit() else 0
             else:
                 d["queued"] += 1
-    machine = {}
-    cmd = ["sinfo", "-h", "-o", "%C"] + (["-n", ",".join(sorted(mine))] if mine else [])
-    rc2, out2, _ = _run(cmd)
-    if rc2 == 0 and out2.strip():
-        a, i, o, t = (out2.strip().splitlines()[0].split("/") + ["0"] * 4)[:4]
-        try:
-            machine = {"cpus": int(t), "cpus_allocated": int(a), "cpus_idle": int(i)}
-        except ValueError:
-            pass
+    machine = dict(base.get("machine") or {})
     res = {"queue": q, "machine": machine}
     if mine:
         machine["node"] = ",".join(sorted(mine))
@@ -1133,8 +1093,7 @@ def running_etas(max_age_s: float = 20.0) -> dict:
         if len(parts) != 3 or parts[0] != CLI:
             continue
         try:
-            from .api import out_root
-            req = out_root() / parts[1]
+            req = RT.out_root() / parts[1]
             meta = json.loads((req / "request.json").read_text())
             pr = _progress_of(req / parts[2], (meta.get("studies") or {}).get(parts[2], {}))
         except Exception:  # noqa: BLE001
@@ -1175,11 +1134,53 @@ def eta_start(job: dict, reason: str, slurm_start: str | None) -> dict | None:
 
 
 def cancel_slurm(request: Path, names: list[str]) -> list[str]:
+    """scancel for the SLURM jobs of these studies that have no result yet; returns their ids."""
+    request = Path(request)
     ids = []
     for n in names:
-        jf = request / n / "job.json"
-        if jf.is_file() and not (request / n / f"{n}.json").is_file():
-            ids.append(str(json.loads(jf.read_text())["job_id"]))
+        if (request / n / "job.json").is_file() and not (request / n / f"{n}.json").is_file():
+            jid = J.read_job(request / n).get("job_id")
+            if jid:
+                ids.append(str(jid))
     if ids:
-        _run(["scancel"] + ids)
+        J.scancel(ids)
     return ids
+
+
+def queued_note(request: Path) -> str | None:
+    """What to tell someone who interrupted a command that was waiting for a request's SLURM jobs (`cfdt bench`,
+    `cfdt run`): the jobs still in the queue and how to stop them. They are not cancelled: they run without the
+    command, and their results are collected later. None when no job of the request is left in the queue."""
+    request = Path(request)
+    try:
+        names = json.loads((request / "request.json").read_text()).get("names", [])
+    except (OSError, ValueError):
+        names = [p.name for p in request.iterdir() if (p / "job.json").is_file()] if request.is_dir() else []
+    ids = []
+    for n in names:
+        if not (request / n / f"{n}.json").is_file():
+            jid = J.read_job(request / n).get("job_id")
+            if jid:
+                ids.append(str(jid))
+    if not ids:
+        return None
+    q = J.squeue(ids)
+    if q is not None:                       # SLURM did not answer: name them all
+        ids = [i for i in ids if i in q and (q[i]["state"] in J.QUEUED or q[i]["state"] in J.ACTIVE)]
+    if not ids:
+        return None
+    return (f"interrupted: SLURM job{'s' if len(ids) > 1 else ''} {', '.join(ids)} of {request} "
+            f"{'are' if len(ids) > 1 else 'is'} still in the queue and will run without this command (nothing was "
+            f"cancelled). Collect the results later with `{CLI} status {request}`; to stop "
+            f"{'them' if len(ids) > 1 else 'it'}: `{CLI} cancel {request}` (cancel(request) from the MCP tools) or "
+            f"`scancel {' '.join(ids)}`")
+
+
+def print_queued_note(request: Path) -> None:
+    """queued_note on stderr (stdout stays JSON); never raises."""
+    try:
+        note = queued_note(request)
+    except Exception:  # noqa: BLE001
+        note = None
+    if note:
+        print(f"[{CLI}] {note}", file=sys.stderr, flush=True)

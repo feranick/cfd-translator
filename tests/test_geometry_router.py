@@ -1,6 +1,8 @@
 """Tests of 2026.11.06.1: mesh geometry (STL/OBJ/PLY) with groups, region selectors, several solids, goal files and
 get_case refs, window averages, init_from, per-node queues, request names, image NaN guard, local cancel state.
-pytest -q"""
+pytest -q
+Version: 2026.11.09.4 (the queue and node-memory tests answer llmt-runtime's SLURM commands)
+"""
 from __future__ import annotations
 
 import json
@@ -386,20 +388,31 @@ def test_init_from_maps_fields(tmp_path, monkeypatch):
 
 # ---- per-node queue ---------------------------------------------------------------------------------------------------
 def test_queue_counts_this_node_only(monkeypatch):
+    """The SLURM commands are llmt-runtime's slurm.run (cfdt's own and the runtime's queue_summary, whose machine CPUs
+    come from `sinfo -N -o %N|%C`: each node once); the jobs go to spark-5da5 (CFDT_SLURM_NODE, the runtime's pin)."""
+    import subprocess
+
+    from llmt_runtime import slurm as S
+
     from cfd_translator import executor
     out = {"squeue": "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n"
                      "444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
                      "450|cfdt:r3:c|RUNNING|4|spark-5da5|spark-5da5|me\n",
-           "sinfo": "4/16/0/20\n"}
+           "sinfo": "spark-5da5|4/16/0/20\n"}
     monkeypatch.setenv("USER", "me")
-    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, out[cmd[0]], ""))
-    monkeypatch.setattr(executor, "effective_nodelist", lambda: "spark-5da5")
+    monkeypatch.setenv("CFDT_SLURM_NODE", "spark-5da5")
+
+    def run(cmd, timeout=15):
+        if cmd[0] not in out:             # scontrol: no answer
+            return None
+        return subprocess.CompletedProcess(cmd, 0, out[cmd[0]], "")
+    monkeypatch.setattr(S, "run", run)
     q = executor.queue_summary()
     assert q["queue"] == {"running": 1, "queued": 0, "cpus_in_use": 4}
     assert q["cluster_queue"]["running"] == 2 and q["cluster_queue"]["queued"] == 1
     assert q["machine"]["node"] == "spark-5da5" and q["starts_now"] is False      # 4 CPUs in use
     out["squeue"] = "443|cfdt:r1:a|RUNNING|20|spark-0808|spark-0808|me\n444|cfdt:r2:b|PENDING|20||spark-0808|me\n"
-    out["sinfo"] = "0/20/0/20\n"
+    out["sinfo"] = "spark-5da5|0/20/0/20\n"
     q = executor.queue_summary()
     assert q["queue"]["running"] == 0 and q["starts_now"] is True and q["pending_for_node"] == 0
 
@@ -522,27 +535,38 @@ def test_chained_study_reuses_the_mesh(tmp_path, monkeypatch):
 
 def test_run_mem_checked_against_the_node(monkeypatch):
     """mochi, 2026.11.07: run.mem 90G passed validation and failed at sbatch ('Memory specification can not be
-    satisfied'): a node's RealMemory is now a cap, reported in caps.mem / mem_mb for the router."""
+    satisfied'): a node's RealMemory is now a cap, reported in caps.mem / mem_mb for the router. The node's memory is
+    llmt-runtime's (`scontrol -o show node` RealMemory, through its slurm.run)."""
+    import subprocess
+
+    from llmt_runtime import slurm as S
+
     from cfd_translator import executor
     executor._NODES.clear()
     monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
     monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
-    monkeypatch.setattr(executor, "effective_nodelist", lambda: None)
     monkeypatch.setattr(executor, "node_cores", lambda: 20)
+    node = {"mem": 64000}
 
-    def run(cmd, timeout=20):
-        return (0, "mochi 64000\n", "") if cmd[:2] == ["sinfo", "-h"] and "%N %m" in cmd else (1, "", "")
-    monkeypatch.setattr(executor, "_run", run)
+    def run(cmd, timeout=15):
+        if cmd[:4] == ["scontrol", "-o", "show", "node"]:
+            return subprocess.CompletedProcess(cmd, 0, f"NodeName=mochi CPUTot=40 ThreadsPerCore=2 "
+                                                       f"RealMemory={node['mem']} State=IDLE\n", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+    monkeypatch.setattr(S, "run", run)
     c = executor.caps()
-    assert c["mem"] == "62G" and c["mem_mb"] == 62 * 1024 and "RealMemory" in c["mem_from"]
+    # llmt-runtime's fix (2026.11.09.4): the node's memory exactly, 64000M (it read '62G', 63488 MB, and refused a
+    # run.mem of 64000M)
+    assert c["mem"] == "64000M" and c["mem_mb"] == 64000 and "RealMemory" in c["mem_from"]
     e = executor.run_errors({"run": {"mem": "90G"}})
-    assert e and "at most 62G" in e[0] and "machines()" in e[0]
+    assert e and "at most 64000M" in e[0] and "machines()" in e[0]
     assert executor.run_errors({"run": {"mem": "48G"}}) == []
-    assert executor.mem_plan({"run": {"mem": "auto"}}, 30e6)[0] <= 62 * 1024          # the estimate is capped too
+    assert executor.mem_plan({"run": {"mem": "auto"}}, 30e6)[0] <= 64000             # the estimate is capped too
+    assert executor.mem_auto({}, 30e6) == "64000M"                                    # and its --mem: the node's
     monkeypatch.setenv("CFDT_MAX_MEM", "32G")                                          # a lower setting wins
     assert executor.caps()["mem"] == "32G" and executor.caps()["mem_mb"] == 32768
     executor._NODES.clear()
-    monkeypatch.setattr(executor, "_run", lambda cmd, timeout=20: (0, "mochi 1\n", ""))   # memory not configured
+    node["mem"] = 1                                                                     # memory not configured
     monkeypatch.delenv("CFDT_MAX_MEM", raising=False)
     assert "mem" not in executor.caps()
     executor._NODES.clear()

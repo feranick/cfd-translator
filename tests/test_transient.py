@@ -1,6 +1,8 @@
 """Transient runs (transient.py): settings, the case files, the steady start becoming time 0, time averages and
 frequencies (average.py), continuing over SLURM jobs (runner, executor). OpenFOAM is not needed; the benchmarks
-cylinder_2d2, cylinder_2d2_restart and ahmed*_des run it."""
+cylinder_2d2, cylinder_2d2_restart and ahmed*_des run it.
+Version: 2026.11.09.4 (a continuation's submission is llmt-runtime's: the test patches its sbatch call)
+"""
 from __future__ import annotations
 
 import json
@@ -166,6 +168,8 @@ def test_runs_continue_in_the_next_job(tmp_path, monkeypatch):
 
 
 def test_continuation_job_waits_for_the_running_one(tmp_path, monkeypatch):
+    from llmt_runtime import jobs as J
+    from llmt_runtime.testing import fake_slurm
     req = tmp_path / "req"
     (req / "s").mkdir(parents=True)
     (req / "s" / "job.json").write_text(json.dumps({"job_id": "555", "previous_jobs": ["444"]}))
@@ -177,7 +181,8 @@ def test_continuation_job_waits_for_the_running_one(tmp_path, monkeypatch):
     def fake(cmd, **k):
         seen["cmd"] = cmd
         return R()
-    monkeypatch.setattr(executor.subprocess, "run", fake)
+    fake_slurm(tmp_path, monkeypatch)                  # an sbatch on PATH: llmt-runtime's submit looks for one first
+    monkeypatch.setattr(J.subprocess, "run", fake)     # llmt-runtime's submit runs sbatch (from 2026.11.09.4)
     monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
     info = executor.submit(req, "s", CH, after="555", segment=2)
     assert "--dependency=afterany:555" in seen["cmd"] and info["job_id"] == "556"
