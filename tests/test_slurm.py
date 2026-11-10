@@ -50,12 +50,13 @@ def _job(state: Path, i) -> dict:
     return json.loads((state / "jobs" / f"{i}.json").read_text())
 
 
-def _set(state: Path, i, **kw):
+def _set(state_dir: Path, i, **kw):
     """Changes a job's record in the fake: state=None takes it out of PENDING (with final=...: it left the queue in
-    that state, as squeue and sacct then say), pid=999999 a job that ran (sacct names its node) and has ended."""
-    r = _job(state, i)
+    that state, as squeue and sacct then say), pid=999999 a job that ran (sacct names its node) and has ended.
+    (state_dir: the fake's folder; a record's own 'state' is one of the keywords.)"""
+    r = _job(state_dir, i)
     r.update(kw)
-    (state / "jobs" / f"{i}.json").write_text(json.dumps(r))
+    (state_dir / "jobs" / f"{i}.json").write_text(json.dumps(r))
 
 
 def _script(rec: dict) -> Path:
