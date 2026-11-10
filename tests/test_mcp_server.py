@@ -1,5 +1,7 @@
 """The MCP server's contract with llm-translators (docs/SHARED.md): stale servers after a deploy, errors as
-ToolError messages, and that tools called in-process (tests, scripts) never refuse or end the process."""
+ToolError messages, and that tools called in-process (tests, scripts) never refuse or end the process.
+Version: 2026.11.09.6 (the stale handling is llmt-runtime's Server, mcp_server.GUARD: the exit is patched there)
+"""
 from __future__ import annotations
 
 import json
@@ -51,7 +53,8 @@ def test_in_process_tools_never_refuse_or_exit(monkeypatch):
     monkeypatch.setitem(M._STATE, "shared", True)
     monkeypatch.setenv("CFDT_EXIT_WHEN_STALE", "1")
     exits = []
-    monkeypatch.setattr(M, "_exit_soon", lambda why, delay: exits.append(why))
+    # 2026.11.09.6: GUARD.enter_call calls GUARD.exit_soon (llmt-runtime's), not the module's _exit_soon wrapper
+    monkeypatch.setattr(M.GUARD, "exit_soon", lambda why, delay: exits.append(why))
     assert M._enter_call() is None
     M._leave_call()
     r = _call("guide", {"topic": ""})
@@ -66,8 +69,11 @@ def test_a_serving_stale_server_refuses_when_idle(monkeypatch):
     monkeypatch.setitem(M._STATE, "shared", True)
     monkeypatch.setitem(M._STATE, "exiting", False)
     monkeypatch.setitem(M._STATE, "inflight", 0)
+    monkeypatch.setitem(M._STATE, "background", 0)
+    monkeypatch.setattr(M, "_pool_busy", lambda: False)            # idle, whatever an earlier test left in the pools
     exits = []
-    monkeypatch.setattr(M, "_exit_soon", lambda why, delay: exits.append((why, delay)))
+    # 2026.11.09.6: GUARD.enter_call calls GUARD.exit_soon (llmt-runtime's), not the module's _exit_soon wrapper
+    monkeypatch.setattr(M.GUARD, "exit_soon", lambda why, delay: exits.append((why, delay)))
     msg = M._enter_call()
     assert msg and msg.startswith(M.STALE_MARK) and exits == [("release X is installed; this server runs Y", 1.0)]
     with pytest.raises(Exception) as e:

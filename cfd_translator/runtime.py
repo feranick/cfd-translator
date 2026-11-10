@@ -1,5 +1,5 @@
 """runtime.py — cfdt's llmt-runtime: the executor code the translators share, with cfdt's settings and hooks.
-Version: 2026.11.09.4
+Version: 2026.11.09.6
 
     RT                 llmt_runtime.Runtime for cfdt (CFDT_ settings, the `cfdt` CLI, MPI: --ntasks, one node)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
@@ -12,8 +12,9 @@ sizing as hooks: the ranks (executor.procs_for_job: the cell cap), the memory (e
 million cells), job.json's cells_estimate (executor.job_extra), the progress of running jobs (api.job_progress), the
 out-of-memory advice and the timeout hint. The job's time limit with CFDT_SLURM_TIME=timeout is the runtime's default
 (ceil(timeout / 60) + 10 minutes, as cfdt had it), and its resource lines are the runtime's MPI lines with one_node
-(--ntasks=N, --nodes=1, --ntasks-per-core=1, as cfdt wrote them). The MCP server's stale handling stays in
-mcp_server.py until phase 3.
+(--ntasks=N, --nodes=1, --ntasks-per-core=1, as cfdt wrote them). Phase 3 (2026.11.09.6): the MCP server's stale
+handling, tool wrapper (worker thread, 48 s deadline, ToolError text), log and signal handlers are llmt-runtime's
+Server (mcp_server.GUARD, with cfdt's busy and shutdown).
 
 The hooks are small wrappers that import executor and api when called: executor imports RT from here.
 """

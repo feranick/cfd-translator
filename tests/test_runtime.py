@@ -1,12 +1,14 @@
 """cfdt on llmt-runtime: the shared pieces are the runtime's, configured for cfdt (2026.11.09.2, phase 1: workers,
-out of memory, final_state, versions; 2026.11.09.4, phase 2: the SLURM layer, with cfdt's sizing as hooks).
-Version: 2026.11.09.4
+out of memory, final_state, versions; 2026.11.09.4, phase 2: the SLURM layer, with cfdt's sizing as hooks;
+2026.11.09.6, phase 3: the MCP server's stale handling and tool wrapper).
+Version: 2026.11.09.6
 """
 import json
 import os
 import subprocess
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ import pytest
 import llmt_runtime
 from llmt_runtime import jobs as J
 from llmt_runtime import memory as M
+from llmt_runtime import server as LS
 from llmt_runtime import slurm as S
 from llmt_runtime import workers as W
 from llmt_runtime.testing import fake_slurm
@@ -280,3 +283,197 @@ def test_an_interrupted_wait_says_which_jobs_are_left(slurm, tmp_path, monkeypat
         api.run({"r": dict(COUETTE, queue=True)}, "ref")
     err = capsys.readouterr().err
     assert "scancel 1002" in err and "cfdt status" in err
+
+
+# ---- 2026.11.09.6, phase 3: the MCP server's stale handling, tool wrapper, log and signal handlers are llmt-runtime's
+# Server (mcp_server.GUARD, with cfdt's busy and shutdown). No test here may end the process: every exit is recorded
+# (GUARD.exit_soon patched) or its thread never started (llmt_runtime.server's threading patched).
+
+@pytest.fixture()
+def ms():
+    """cfd_translator.mcp_server (needs the MCP SDK)."""
+    pytest.importorskip("mcp")
+    from cfd_translator import mcp_server
+    return mcp_server
+
+
+def _call(ms, name, args):
+    import anyio                                          # (with the MCP SDK)
+
+    async def go():
+        return await ms.server.call_tool(name, args)
+    return anyio.run(go)
+
+
+def _answer(r) -> dict:
+    """A tool's JSON answer from call_tool (SDK 2.x: a CallToolResult; 1.x: content blocks, or (content, structured))."""
+    if isinstance(r, tuple):
+        r = r[0]
+    return json.loads(getattr(r, "content", r)[0].text)
+
+
+STALE_WHY = f"version 2000.01.01.1 is installed; this server runs {__version__}"
+
+
+def _serving_stale(ms, monkeypatch, root: Path, busy: bool) -> list:
+    """GUARD as a server started by main() whose cfdt on disk is another version (a checkout updated in place), with
+    CFDT_EXIT_WHEN_STALE=1; busy: a study in its pools. Returns the list its exits are recorded in (none is run)."""
+    pkg = root / "checkout" / "cfd_translator"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text('__version__ = "2000.01.01.1"\n')
+    monkeypatch.setattr(ms.GUARD, "pkg_dir", pkg)
+    for k, v in (("serving", True), ("checked", 0.0), ("why", None), ("shared", False), ("exiting", False),
+                 ("inflight", 0), ("background", 0)):
+        monkeypatch.setitem(ms._STATE, k, v)
+    monkeypatch.setenv("CFDT_EXIT_WHEN_STALE", "1")
+    monkeypatch.setattr(ms, "_pool_busy", lambda: busy)
+    exits = []
+    monkeypatch.setattr(ms.GUARD, "exit_soon", lambda why, delay: exits.append((why, delay)))
+    return exits
+
+
+def test_the_mcp_server_is_llmt_runtimes(ms, monkeypatch):
+    g = ms.GUARD
+    assert isinstance(g, LS.Server) and g.rt is RT and g.pkg_dir == Path(api.__file__).resolve().parent
+    assert ms._STATE is g.state and ms._LOCK is g.lock and ms.STALE_MARK == LS.STALE_MARK == "STALE_SERVER"
+    assert ms.stale_reason is LS.stale_reason
+    # the install is looked at every 10 s (cfdt's own: 20 s); CFDT_STALE_CHECK_S sets it
+    monkeypatch.delenv("CFDT_STALE_CHECK_S", raising=False)
+    assert LS.Server(RT, api.__file__).period == 10.0
+    monkeypatch.setenv("CFDT_STALE_CHECK_S", "3")
+    assert LS.Server(RT, api.__file__).period == 3.0
+    # busy: studies in the pools (the module's _pool_busy, looked up when asked)
+    monkeypatch.setitem(ms._STATE, "inflight", 0)
+    monkeypatch.setitem(ms._STATE, "background", 0)
+    monkeypatch.setattr(ms, "_pool_busy", lambda: True)
+    assert not g.idle()
+    monkeypatch.setattr(ms, "_pool_busy", lambda: False)
+    assert g.idle()
+    # the exit (and SIGTERM/SIGHUP/SIGINT) stops the study pool, the aux pool and this process's OpenFOAM runs
+    stopped = []
+    monkeypatch.setattr(api._POOL, "pool", "study pool")
+    monkeypatch.setitem(api._AUX, "pool", "aux pool")
+    monkeypatch.setattr(W, "stop_pool", lambda pool, *a, **k: stopped.append(pool))
+    monkeypatch.setattr(foam, "kill_all", lambda: stopped.append("foam"))
+    g.shutdown()
+    assert stopped == ["study pool", "aux pool", "foam"]
+
+
+def test_a_tools_error_reaches_the_caller_as_tool_error_text(ms, monkeypatch):
+    monkeypatch.setitem(ms._STATE, "serving", False)
+
+    def boom(topic=None):
+        raise ValueError("no guide 'x'")
+    monkeypatch.setattr(api, "guide", boom)
+    with pytest.raises(Exception) as e:
+        _call(ms, "guide", {"topic": "x"})
+    assert type(e.value).__name__ == "ToolError" and "ValueError: no guide 'x'" in str(e.value)
+
+
+def test_a_stale_idle_server_refuses_and_exits(ms, tmp_path, monkeypatch):
+    exits = _serving_stale(ms, monkeypatch, tmp_path, busy=False)
+    with pytest.raises(Exception) as e:
+        _call(ms, "guide", {"topic": ""})
+    assert type(e.value).__name__ == "ToolError"
+    assert f"STALE_SERVER: {STALE_WHY}. This server is exiting so that the next one runs the installed version: " \
+           "call again." in str(e.value)
+    assert exits == [(STALE_WHY, 1.0)] and ms._STATE["inflight"] == 0
+    # without CFDT_EXIT_WHEN_STALE a checkout's server keeps serving (by default only shared installs exit)
+    monkeypatch.delenv("CFDT_EXIT_WHEN_STALE")
+    exits.clear()
+    r = _answer(_call(ms, "guide", {"topic": ""}))
+    assert "topics" in r and r["server_stale"] == f"{STALE_WHY}: this answer comes from the old code; restart the " \
+                                                  "MCP server" and not exits
+
+
+def test_a_stale_busy_server_answers_with_the_note(ms, tmp_path, monkeypatch):
+    exits = _serving_stale(ms, monkeypatch, tmp_path, busy=True)          # a study in the pool: it would die
+    r = _answer(_call(ms, "guide", {"topic": ""}))
+    assert "topics" in r and not exits
+    assert r["server_stale"] == f"{STALE_WHY}: this answer comes from the old code; the server restarts when idle"
+
+
+def test_a_changed_runtime_on_disk_counts_as_stale(ms, tmp_path, monkeypatch):
+    """New with llmt-runtime's Server: in a checkout, llmt-runtime's __init__.py with another version (pulled in place)
+    makes the server stale too."""
+    pkg = tmp_path / "checkout" / "cfd_translator"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(f'__version__ = "{__version__}"\n')
+    rt = tmp_path / "rt" / "llmt_runtime"
+    rt.mkdir(parents=True)
+    (rt / "__init__.py").write_text('__version__ = "2000.01.01.1"\n')
+    monkeypatch.setattr(ms.GUARD, "pkg_dir", pkg)
+    monkeypatch.setattr(LS, "__file__", str(rt / "server.py"))
+    for k, v in (("checked", 0.0), ("why", None), ("shared", False)):
+        monkeypatch.setitem(ms._STATE, k, v)
+    assert ms._stale() == ("llmt-runtime 2000.01.01.1 is installed; this server runs llmt-runtime "
+                           f"{llmt_runtime.__version__}")
+    assert not ms._STATE["shared"]
+
+
+def test_the_stale_exit_says_so_on_stderr(ms, monkeypatch, capsys):
+    """The line llmt's router and `llmt servers` look for; the exit's thread is never started here."""
+    started = []
+
+    class _NoThread:
+        def __init__(self, target=None, **kw):
+            self.target = target
+
+        def start(self):
+            started.append(self.target)
+    monkeypatch.setattr(LS, "threading", types.SimpleNamespace(Thread=_NoThread))
+    monkeypatch.setitem(ms._STATE, "exiting", False)
+    ms._exit_soon("version X is installed; this server runs Y", 1.0)
+    assert capsys.readouterr().err == ("cfdt: STALE_SERVER: exiting to pick up the new code: version X is installed; "
+                                       "this server runs Y\n")
+    assert ms._STATE["exiting"] and len(started) == 1
+    ms._exit_soon("again", 0.0)                                            # once only
+    assert len(started) == 1 and not capsys.readouterr().err
+
+
+def test_a_tool_runs_under_the_48_s_deadline(ms, monkeypatch):
+    """cfdt's tools had no deadline: SLURM commands and submissions now keep to 48 s (slurm.deadline)."""
+    monkeypatch.setitem(ms._STATE, "serving", False)
+    monkeypatch.setattr(api, "guide", lambda topic=None: {"topics": [], "left": S.remaining()})
+    assert S.remaining() is None                                           # outside a call: no limit
+    r = _answer(_call(ms, "guide", {"topic": ""}))
+    assert 40 < r["left"] <= LS.BUDGET_S == 48.0
+
+
+def test_waits_keep_to_the_calls_deadline(ms, tmp_path, monkeypatch):
+    """study_status, run_studies, bench_status and run_benchmarks wait in api.status; get_case, render_images and
+    reprocess in api.in_worker. Both end with 3 s of the call's deadline left (llmt_runtime.requests.until), whatever
+    wait_s says (up to 50 s, more than the 48 s deadline)."""
+    req = tmp_path / "run_deadline"
+    (req / "s").mkdir(parents=True)
+    (req / "request.json").write_text(json.dumps({"names": ["s"], "solver": "ref", "started": time.time(),
+                                                  "studies": {"s": COUETTE}}))
+
+    class _Running:                                       # a study still running in this server's pool
+        def ready(self):
+            return False
+
+        def wait(self, t):
+            waits.append(t)
+    waits = []
+    monkeypatch.setitem(api._POOL.jobs, str(req), {"s": _Running()})
+    monkeypatch.setattr(api, "_progress", lambda d, study: {})
+
+    def study_status_like(request: str) -> dict:
+        return api.status(request, 50.0, "summary")
+    tool = LS.Server(RT, api.__file__).tool(ms.ToolError, budget_s=6)(study_status_like)
+
+    async def go():
+        return await tool(request=str(req))
+    import anyio                                          # (with the MCP SDK)
+    t0 = time.time()
+    r = anyio.run(go)
+    assert time.time() - t0 < 5.5 and r["pending"] == ["s"] and r["progress"]["s"]["state"] == "queued"
+    # in_worker: the wait is cut to the deadline; outside a call it is wait_s (at most 50)
+    monkeypatch.setattr(api, "_aux_pool", lambda: types.SimpleNamespace(apply_async=lambda fn, args: _Running()))
+    monkeypatch.setitem(api._AUX, "pending", {})
+    with S.deadline(10):
+        r = api.in_worker("meshing", "case", {"study": {}, "name": "d"}, 50)
+    assert r["state"] == "running" and 6 < waits[0] <= 7
+    api.in_worker("meshing", "case", {"study": {}, "name": "d"}, 30)
+    assert 29 < waits[1] <= 30

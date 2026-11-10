@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.4
+Version: 2026.11.09.6
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -212,13 +212,15 @@ def aux_busy() -> bool:
 
 
 def in_worker(what: str, fn_name: str, kwargs: dict, wait: float) -> dict:
-    """fn_name(**kwargs) in a worker; waits at most `wait` s (<= 50). Unfinished: {state: running, ...}; the same
-    call again waits for the same work."""
+    """fn_name(**kwargs) in a worker; waits at most `wait` s (<= 50), and within an MCP call's deadline (3 s left
+    for the answer: llmt_runtime.requests.until). Unfinished: {state: running, ...}; the same call again waits for the
+    same work."""
+    from llmt_runtime.requests import until
     key = f"{fn_name}:{json.dumps(kwargs, sort_keys=True, default=str)}"
     if key not in _AUX["pending"]:
         _AUX["pending"][key] = (_aux_pool().apply_async(_aux_run, (fn_name, kwargs)), time.time())
     h, t0 = _AUX["pending"][key]
-    h.wait(max(0.0, min(float(wait), 50.0)))
+    h.wait(max(0.0, until(min(float(wait), 50.0)) - time.time()))
     if not h.ready():
         return {"state": "running", "what": what, "elapsed_s": round(time.time() - t0, 1),
                 "next": f"still {what}: call {fn_name if fn_name != 'case' else 'get_case'} again with the same arguments "
@@ -562,8 +564,10 @@ def status(request: str, wait: float = 0.0, detail: str = "full", window: list |
         return {"error": f"no request {folder}"}
     if window is not None:
         return _window(folder, window)
+    from llmt_runtime.requests import until
     t0 = time.time()
-    t_end = t0 + max(0.0, float(wait))
+    # within an MCP call's deadline (48 s): the last look starts with 3 s left for the answer (outside a call: wait)
+    t_end = until(wait)
     while True:
         res = _collect(folder)
         if res["done"] or time.time() >= t_end:
@@ -572,7 +576,7 @@ def status(request: str, wait: float = 0.0, detail: str = "full", window: list |
         prog = res.get("progress", {})
         if prog and all("job_id" in v for v in prog.values()) and time.time() - t0 >= 15:
             return _detail(res, detail)
-        time.sleep(2.0)
+        time.sleep(max(0.0, min(2.0, t_end - time.time())))
 
 
 def _window(folder: Path, window) -> dict:
