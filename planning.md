@@ -40,16 +40,55 @@ openmodelica-translator (omct), print3d-translator (p3dt).
 - **Do not edit, commit or push llm-translators** (or its submodules): the user syncs all tools and updates llmt
   at the end. Changes for other tools go to the user as prompts or doc lines.
 
+## llmt-runtime (since 2026.11.09; the user's TRANSLATOR_CHATS.md)
+
+The code the translators used to copy is **llmt-runtime** (`~/Software/llmt-runtime`, package `llmt_runtime`, a
+submodule of llm-translators; read its README.md and PLANNING.md): workers (parent watch, solver runs, SIGTERM,
+stopping pools), memory and out of memory (cgroups, job vs node, wording), the SLURM layer (settings `CFDT_EXECUTOR`,
+`_SLURM_ARGS`, `_SLURM_NODE`, `_SLURM_MEM`, `_SLURM_TIME`, caps; nodes, pinning, cores, node memory; job.sh / job.json,
+submit with dependencies and late-sbatch adoption, job states, `queue_summary`, `list_jobs`, cancel, extend), requests
+(folders, `request_name`, `request_meta`, `ran_with`, `read_file`), the MCP server (`server.Server`: stale installs,
+the tool wrapper with the 48 s deadline, server log in `$CFDT_OUT/.server`) and the fake SLURM for tests
+(`llmt_runtime.testing.fake_slurm`, `FAKE_*`).
+
+- cfdt's side: `runtime.py` makes `RT = Runtime(prefix="CFDT", ...)` with cfdt's sizing as hooks (`study_procs` =
+  solve.procs, `procs` = procs_for_job with the cells cap, `mem_auto` 2 GB + 4 GB per million cells, `job_extra`
+  cells_estimate, `running_progress`, `oom_advice`, `timeout_hint`; `one_node`, `min_minutes=0`,
+  `slurm_time_default="timeout"`). `executor.py` keeps its public names as thin wrappers over `RT.slurm.*` /
+  `RT.jobs.*` (keep them: callers and tests use them). `mcp_server.py`: `GUARD = Server(RT, ...)`, every tool
+  `@GUARD.tool(ToolError)`, `main()` -> `GUARD.serve()`. `workers.py` wraps the runtime's with `foam.kill_all` as the
+  orphan cleanup.
+- Stays cfdt's: `eta_start` / `running_etas`, `pending_ahead` (per node), transient segments (`RT.jobs.submit(...,
+  after=[ids])`), `queue_summary`'s extras (`cluster_queue`, `starts_now`, `pending_for_node`), `cores_shared`
+  (cpushare), failures written as the study's result; and all the CFD (sizing, meshing, solver, progress, results,
+  rendering, benchmarks, advice texts).
+- **Shared behaviour is fixed once, in llmt-runtime** (SLURM, job states, memory/OOM, workers, requests, the MCP
+  server's common code), never by patching cfdt's wrappers. This chat does not edit llmt-runtime: such fixes go to the
+  user as a prompt for the runtime's chat (additions only, backward compatible; the runtime bumps its version, adds a
+  test and tags the release).
+- `pyproject.toml` declares a floor only, `llmt-runtime>=2026.11.09.5` (also requirements-standalone.txt's tag and
+  the README install line); raise it only when cfdt needs something newer. Order: runtime pushed, then cfdt, then the
+  user pins (`./llmt pin runtime cfdt`).
+- Tests use the runtime's fake SLURM; patch the runtime's names where its code runs (`llmt_runtime.slurm.*`), not
+  cfdt's wrappers; a helper taking a folder plus `**kwargs` must not name the folder `state`; MCP answer tests pin
+  `GUARD.stale` to None.
+- Open (cfdt): two tests fail only on macOS (tool errors: SDK version; the Ahmed snappy benchmark); the bench test
+  depends on timing; `pending_ahead`'s extra `squeue` call; `extend` (runtime PLANNING.md, section 2). An explicit
+  `CFDT_SLURM_MEM` size is no longer cut to `CFDT_MAX_MEM`.
+
 ## Conventions
 
 - Versions `YYYY.MM.DD.x` (x increments within a day) in every changed module's docstring, `__init__.py`,
   `pyproject.toml`, and a README "Versions" row saying what happened and why (the run that showed it).
 - Author: Nicola Ferralis <ferralis@generalflash.com>. The user commits from the Mac; give only the cfdt command:
   `cd ~/Software/cfd-translator && rm -f .git/index.lock && git add -A && git commit -m "..." && git push`
-- Tests in the sandbox: `export TMPDIR=/tmp; python3 -m pytest -q -p no:cacheprovider --basetemp=/tmp/ptb`
-  (the sandbox has no OpenFOAM or Gmsh: stand-ins and synthetic fields; say what is unverified on OpenFOAM).
-- `study_format` must stay under 12,000 characters (test; local models): it is at **11,954** (2026.11.03). New
-  keywords get one short line there; the how-to goes into `guides.py` (`guide('vehicle_aero')`, `guide('pumps')`).
+- Tests in the sandbox: copy llm-translators/llmt-runtime to /tmp/rt (the sandbox disk is too full for pip), then
+  `PYTHONPATH=/tmp/rt CFDT_OUT=/tmp/h/out TMPDIR=/tmp/h python3 -m pytest -q -p no:cacheprovider` (no OpenFOAM or
+  Gmsh here: stand-ins and synthetic fields; say what is unverified on OpenFOAM). 247 passed, 5 skipped (2026.11.09.6).
+  On servers the user runs `$R/llmt test cfdt` (or `runtime` too when the runtime changed) in tmux.
+- `study_format` without its machine-dependent `status` must stay under 12,300 characters (test; local models): it
+  is at 12,054 (2026.11.09.1). New keywords get one short line there; the how-to goes into `guides.py`
+  (`guide('vehicle_aero')`, `guide('pumps')`).
 - Before writing any OpenFOAM keyword, read it in the v14 source or tutorials (github.com/OpenFOAM/OpenFOAM-14,
   cpp.openfoam.org/v14): bad keys are fatal at startup.
 
