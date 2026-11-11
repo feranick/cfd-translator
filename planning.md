@@ -66,7 +66,7 @@ the tool wrapper with the 48 s deadline, server log in `$CFDT_OUT/.server`) and 
   server's common code), never by patching cfdt's wrappers. This chat does not edit llmt-runtime: such fixes go to the
   user as a prompt for the runtime's chat (additions only, backward compatible; the runtime bumps its version, adds a
   test and tags the release).
-- `pyproject.toml` declares a floor only, `llmt-runtime>=2026.11.11.1` (also requirements-standalone.txt's tag and
+- `pyproject.toml` declares a floor only, `llmt-runtime>=2026.11.11.2` (also requirements-standalone.txt's tag and
   the README install line); raise it only when cfdt needs something newer. Order: runtime pushed, then cfdt, then the
   user pins (`./llmt pin runtime cfdt`).
 - Tests use the runtime's fake SLURM; patch the runtime's names where its code runs (`llmt_runtime.slurm.*`), not
@@ -385,6 +385,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.11.3**: llmt-runtime>=2026.11.11.2 (`--nodes=1` for every one-node MPI job); job.sh test updated.
 
 **2026.11.11.2**: multi-node jobs (not one_node; CFDT_SLURM_NODES; ranks capped at S.max_job_procs; caps from the
 runtime when jobs span nodes); clusters.md: Perlmutter 4 x 128 with CFDT_JOB_SETUP; Engaging one node.

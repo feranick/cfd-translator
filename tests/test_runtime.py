@@ -174,7 +174,7 @@ def test_job_sh_and_job_json(slurm, monkeypatch):
     sh = text.splitlines()
     assert [ln for ln in sh if ln.startswith("#SBATCH")] == [
         "#SBATCH --job-name=cfdt:run_j:a", f"#SBATCH --chdir={req / 'a'}", f"#SBATCH --output={req / 'a' / 'job.log'}",
-        "#SBATCH --ntasks=1", "#SBATCH --ntasks-per-core=1", "#SBATCH --time=20",
+        "#SBATCH --ntasks=1", "#SBATCH --nodes=1", "#SBATCH --ntasks-per-core=1", "#SBATCH --time=20",
         "#SBATCH --mem=3G", "#SBATCH --export=ALL"]                       # 200 cells: 2 GB + 0.8 MB, in whole GB
     assert sh[-1].endswith(f"-m cfd_translator.cli run-study {req} a") and sh[-1].startswith("exec ")
     assert text == executor.job_script(req, "a", 1, COUETTE)
