@@ -24,25 +24,46 @@ cd $WM_PROJECT_DIR && ./Allwmake -j $SLURM_CPUS_PER_TASK -s -l
 - QoS mit_normal per user: **cpu=96, mem=386G** running at once; MaxSubmitPU=448
 - Use 1 node × 96 ranks; never `--mem=0` (1.5 TB nodes exceed the 386G cap)
 
-### Job script
+### Production job script (1 full node, 96 ranks, 12 h)
+Save as `run_openfoam.sh` inside the case directory and submit with `sbatch run_openfoam.sh`.
 ```bash
 #!/bin/bash
+#SBATCH -J of-mycase
 #SBATCH -p mit_normal
 #SBATCH -N 1
-#SBATCH --ntasks-per-node=96
-#SBATCH --mem=360G
-#SBATCH -t 12:00:00
+#SBATCH --ntasks-per-node=96          # = per-user cap (cpu=96); one full 96-core node
+#SBATCH --mem=360G                    # under the 386G per-user cap; never --mem=0
+#SBATCH -t 12:00:00                   # partition max
+#SBATCH -o %x-%j.out
+##SBATCH --mail-type=END,FAIL
+##SBATCH --mail-user=<kerb>@mit.edu
+
+SOLVER=simpleFoam                     # change to your solver
+CASE=$SLURM_SUBMIT_DIR                # run from the case dir in ~/orcd/scratch/runs/...
 
 module purge
 module use /orcd/software/community/001/modulefiles
 module load gcc/12.2.0 openmpi/5.0.8
 source ~/software/openfoam/OpenFOAM-v2506/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=SYSTEMOPENMPI
 
-cd ~/orcd/scratch/runs/mycase
-decomposePar -force
-mpirun -n $SLURM_NTASKS simpleFoam -parallel > log.simpleFoam 2>&1
-reconstructPar -latestTime
+cd $CASE
+foamDictionary -entry numberOfSubdomains -set $SLURM_NTASKS system/decomposeParDict
+
+# First job: decompose. Restart jobs (processor dirs already there): continue from latest time.
+if [ ! -d processor0 ]; then
+    decomposePar > log.decomposePar 2>&1
+else
+    foamDictionary -entry startFrom -set latestTime system/controlDict
+fi
+
+mpirun -n $SLURM_NTASKS $SOLVER -parallel > log.$SOLVER.$SLURM_JOB_ID 2>&1
+
+reconstructPar -latestTime > log.reconstructPar 2>&1
 ```
+Notes:
+- 96 ranks → good for meshes of ~1–10 M cells (aim ≥10k cells/rank).
+- Runs >12 h: set `writeInterval` so results are saved regularly, then just `sbatch` the same script again — it restarts from the latest time. Chain jobs with `sbatch --dependency=afterany:<jobid> run_openfoam.sh`.
+- Changing rank count mid-run requires `reconstructPar` + `decomposePar -force` first.
 
 ### SLURM test run (2 nodes × 8 ranks, pitzDaily)
 ```bash
@@ -126,24 +147,48 @@ rsync -a \
   ./ /global/homes/f/feranick/software/openfoam/
 ```
 
-### Job script
+### Production job script (2 full CPU nodes, 256 ranks, 12 h)
+Save as `run_openfoam.sh` inside the case directory and submit with `sbatch run_openfoam.sh`.
 ```bash
 #!/bin/bash
+#SBATCH -J of-mycase
 #SBATCH -A m526
 #SBATCH -C cpu
 #SBATCH -q regular
-#SBATCH -N 2
-#SBATCH --ntasks-per-node=128
-#SBATCH -t 01:00:00
+#SBATCH -N 2                          # scale nodes with mesh size (~10k+ cells/rank)
+#SBATCH --ntasks-per-node=128         # 128 physical cores per node (2x AMD EPYC 7763)
+#SBATCH -c 2                          # 2 hyperthreads per rank -> 1 rank per physical core
+#SBATCH -t 12:00:00                   # regular QoS allows longer (check NERSC queue policy)
+#SBATCH -o %x-%j.out
+##SBATCH --mail-type=END,FAIL
+##SBATCH --mail-user=<email>
+# Memory: nodes are allocated exclusively (512 GB each) - no --mem needed.
+
+SOLVER=simpleFoam                     # change to your solver
+CASE=$SLURM_SUBMIT_DIR                # run from the case dir in $PSCRATCH/runs/...
 
 module load PrgEnv-gnu cray-mpich
 source /global/homes/f/feranick/software/openfoam/OpenFOAM-v2506/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=CRAY-MPICH
 
-cd $PSCRATCH/runs/mycase
-decomposePar -force
-srun -n $SLURM_NTASKS --cpu-bind=cores simpleFoam -parallel > log.simpleFoam 2>&1
-reconstructPar -latestTime
+cd $CASE
+foamDictionary -entry numberOfSubdomains -set $SLURM_NTASKS system/decomposeParDict
+
+# First job: decompose. Restart jobs (processor dirs already there): continue from latest time.
+if [ ! -d processor0 ]; then
+    decomposePar > log.decomposePar 2>&1
+else
+    foamDictionary -entry startFrom -set latestTime system/controlDict
+fi
+
+srun -n $SLURM_NTASKS --cpu-bind=cores $SOLVER -parallel > log.$SOLVER.$SLURM_JOB_ID 2>&1
+
+reconstructPar -latestTime > log.reconstructPar 2>&1
 ```
+Notes:
+- 256 ranks → meshes of ~2.5–25 M cells. Use `-N 1` for smaller cases; add nodes for bigger ones.
+- For ≥ a few hundred ranks, add `-fileHandler collated` to decomposePar/solver/reconstructPar to avoid thousands of processor dirs.
+- Restart: just `sbatch` the same script again (or chain with `--dependency=afterany:<jobid>`).
+- Use `-q debug -t 00:30:00` for quick tests.
 
 ### SLURM test run (2 nodes × 8 ranks, pitzDaily)
 ```bash
