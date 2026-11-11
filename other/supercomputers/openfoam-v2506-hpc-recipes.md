@@ -405,7 +405,10 @@ git clone https://github.com/OpenFOAM/OpenFOAM-14.git
 git clone https://github.com/OpenFOAM/ThirdParty-14.git
 git -C OpenFOAM-14  checkout a4867fc914c10ee10c2f6f83c294c3d3160dd573
 git -C ThirdParty-14 checkout 6f75cb6aa1a3d8f1ba768840f9ee535244b4c70a
-wget -O ThirdParty-14/metis-5.1.0.tar.gz http://glaros.dtc.umn.edu/gkhome/fetch/sw/metis/metis-5.1.0.tar.gz
+# METIS 5.1.0: the original glaros.dtc.umn.edu link is dead (404); use the Spack source mirror (keyed by sha256)
+wget -O ThirdParty-14/metis-5.1.0.tar.gz \
+  https://mirror.spack.io/_source-cache/archive/76/76faebe03f6c963127dbb73c13eab58c9a3faeae48779f049066a21c087c5db2.tar.gz
+echo "76faebe03f6c963127dbb73c13eab58c9a3faeae48779f049066a21c087c5db2  ThirdParty-14/metis-5.1.0.tar.gz" | sha256sum -c
 tar xzf ThirdParty-14/metis-5.1.0.tar.gz -C ThirdParty-14 && rm ThirdParty-14/metis-5.1.0.tar.gz
 ls -d ThirdParty-14/{scotch_7.0.12,Zoltan-3.90,metis-5.1.0}     # all three must exist
 
@@ -554,7 +557,10 @@ git clone https://github.com/OpenFOAM/OpenFOAM-14.git
 git clone https://github.com/OpenFOAM/ThirdParty-14.git
 git -C OpenFOAM-14  checkout a4867fc914c10ee10c2f6f83c294c3d3160dd573
 git -C ThirdParty-14 checkout 6f75cb6aa1a3d8f1ba768840f9ee535244b4c70a
-wget -O ThirdParty-14/metis-5.1.0.tar.gz http://glaros.dtc.umn.edu/gkhome/fetch/sw/metis/metis-5.1.0.tar.gz
+# METIS 5.1.0: the original glaros.dtc.umn.edu link is dead (404); use the Spack source mirror (keyed by sha256)
+wget -O ThirdParty-14/metis-5.1.0.tar.gz \
+  https://mirror.spack.io/_source-cache/archive/76/76faebe03f6c963127dbb73c13eab58c9a3faeae48779f049066a21c087c5db2.tar.gz
+echo "76faebe03f6c963127dbb73c13eab58c9a3faeae48779f049066a21c087c5db2  ThirdParty-14/metis-5.1.0.tar.gz" | sha256sum -c
 tar xzf ThirdParty-14/metis-5.1.0.tar.gz -C ThirdParty-14 && rm ThirdParty-14/metis-5.1.0.tar.gz
 ls -d ThirdParty-14/{scotch_7.0.12,Zoltan-3.90,metis-5.1.0}     # all three must exist
 
