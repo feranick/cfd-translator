@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.1
+Version: 2026.11.12.2
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -69,6 +69,14 @@ GUIDES = {
             "Each point: results.cavitation (vapour_volume_mm3, vapour_region, walls with vapour, min_pressure_Pa, "
             "npsh_inlet_m from the flow-weighted inlet total pressure, sigma_tip) and pump.head_m, power_W averaged "
             "over the last quarter. images: a 'vapour' slice (field vapour) shows where it forms.",
+            "Air coming out of solution (a self-priming pump whose head falls gradually from NPSHa ~7 m): "
+            "cavitation.inlet_gas_fraction (0-0.2, e.g. 0.01-0.05) runs liquid + air entering with it (OpenFOAM "
+            "compressibleVoF: water at constant density, air a perfect gas that expands where the pressure falls, "
+            "isothermal), with the same NPSH sweep, mass-flow outlet and results. No vapour in the same run: the "
+            "pressure is held at the vapour pressure, and cells reaching it are reported (cavitation.at_vapour_"
+            "pressure). Compare its NPSH curve with the vapour-only one; results.cavitation gives gas_volume_mm3, "
+            "gas_holdup (the air held in the pump against the inlet's fraction), gas_region, walls, and the air's "
+            "mass in and out (flows.gas_in_kg_s, gas_out_kg_s).",
             "Mesh: the blades' leading edges and suction sides need fine cells (refine there, 0.2-0.5 mm on a "
             "small pump); vapour sheets thinner than a few cells are not resolved. Each NPSH point meshes again, "
             "except in a chain (below), where each point takes the previous point's mesh.",

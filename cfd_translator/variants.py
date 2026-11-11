@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.06.2
+Version: 2026.11.12.2
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -325,7 +325,8 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
 # ---- comparison --------------------------------------------------------------------------------------
 QUANTITIES = ("coefficients.cd", "coefficients.cl", "pressure_drop", "total_pressure_drop", "head_loss_m",
               "y_plus_part_mean", "pump.head_m", "pump.efficiency", "age.mean_residence_time_s",
-              "cavitation.npsh_inlet_m", "cavitation.vapour_volume_mm3")
+              "cavitation.npsh_inlet_m", "cavitation.vapour_volume_mm3", "cavitation.gas_volume_mm3",
+              "cavitation.gas_holdup")
 
 
 def _get(d: dict, path: str):

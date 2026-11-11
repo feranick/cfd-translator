@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.12.1
+Version: 2026.11.12.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -165,8 +165,8 @@ STUDY_KEYS = {
     "conditions": "{p (Pa absolute, 101325), T (C, 20)}: operating pressure, initial/ambient temperature (energy)",
     "gravity": "[gx, gy, gz] m/s2 (energy): buoyancy, natural convection (e.g. [0, 0, -9.81])",
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
-    "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3; chain: each point from the previous), temperature C | p_vapour Pa, model, iterations}: liquid + "
-                  "vapour (VoF); guide('pumps')",
+    "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3; chain: each point from the previous), temperature C | p_vapour Pa, model, iterations, "
+                  "inlet_gas_fraction (air, no vapour)}: liquid + vapour (VoF); guide('pumps')",
     "run": "{timeout_s, mem ('8G'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
     "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
                    "'variants'); or variants: {suffix: {changes}}",

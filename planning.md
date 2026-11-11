@@ -386,6 +386,12 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.12.2**: cavitation.inlet_gas_fraction: liquid + compressible air (compressibleVoF, isothermal, no vapour).
+Verify on a machine: the first run (S50 or the self-priming pump at NPSH 7 m with 0.02): that `thermophysics no` keeps
+T fixed and the air compressible, that LTS settles, the air's mass in = out, and gas_holdup. Next if needed: vapour and
+air together (three phases: multiphaseEuler, or an effective vapour pressure raised by the gas's partial pressure as
+a cheap approximation).
+
 **2026.11.12.1**: fixed time step (`max_co: null`), Courant numbers per segment; clusters.md: sliding7 as the first
 real cluster run, Engaging queueing, no strict mode around CFDT_JOB_SETUP.
 Open (clusters, from the hand-built S50 runs on Perlmutter):

@@ -211,3 +211,79 @@ def test_mass_balance_and_vapour_formed(tmp_path):
            {"name": "c", "npsh": 3, "head": 17.42, "reliable": True, "flow_error": -0.121}]
     out = npsh_curve(pts)
     assert [p["name"] for p in out["left_out"]] == ["a", "c"] and any("left out of NPSH3" in x for x in out["warnings"])
+
+
+GAS = dict(DUCT, cavitation={"npsh": 7, "inlet_gas_fraction": 0.02})
+
+
+def test_gas_validation():
+    assert validate_study(GAS)["ok"], validate_study(GAS)
+    for bad in (0.0, 0.5, "x"):
+        e = validate_study(dict(GAS, cavitation={"npsh": 7, "inlet_gas_fraction": bad}))["errors"]
+        assert any("inlet_gas_fraction" in x for x in e), bad
+    e = validate_study(dict(GAS, cavitation={"npsh": 7, "inlet_gas_fraction": 0.02, "model": "Kunz"}))["errors"]
+    assert any("liquid + air only" in x for x in e)
+
+
+def test_gas_case_files(tmp_path):
+    """inlet_gas_fraction: OpenFOAM 14 compressibleVoF, water (rhoConst) + perfect-gas air, no phase change; the
+    energy equation off (isothermal), p bounded at the vapour pressure, LTS and the mass-flow outlet as before."""
+    mesh, patches, sel, plan, w = prepare(GAS, tmp_path)
+    c = tmp_path / "case"
+    vf = plan["vof"]
+    pv = water_vapour(20)["p"]
+    gas = vf["gas"]
+    assert vf["solver"] == "compressibleVoF" and vf["phase2"] == "air"
+    assert gas["rho_inlet"] == pytest.approx(vf["p0_Pa"] / (8.314462618 / 0.0289 * 293.15), rel=1e-6)
+    cd = (c / "system" / "controlDict").read_text()
+    assert "solver          compressibleVoF;" in cd and "maxAlphaCo      1;" in cd and "maxDeltaT" in cd
+    ph = (c / "constant" / "phaseProperties").read_text()
+    assert "phases          (water air);" in ph and "pSat" not in ph
+    air = (c / "constant" / "physicalProperties.air").read_text()
+    assert "equationOfState perfectGas;" in air and "molWeight   28.9;" in air and "heRhoThermo" in air
+    wat = (c / "constant" / "physicalProperties.water").read_text()
+    assert "equationOfState rhoConst;" in wat and "rho         998.2;" in wat and "thermo          hConst;" in wat
+    assert not (c / "constant" / "fvModels").exists() and not (c / "constant" / "physicalProperties.vapour").exists()
+    fc = (c / "system" / "fvConstraints").read_text()
+    assert "type            bound;" in fc and "field           p;" in fc and f"min             {pv:.10g};" in fc
+    fv = (c / "system" / "fvSolution").read_text()
+    assert "thermophysics   no;" in fv and '".*(rho|rhoFinal)"' in fv and "|T).*" in fv and "localEuler" not in fv
+    fs = (c / "system" / "fvSchemes").read_text()
+    assert "localEuler" in fs and "div(rhoPhi,k)" in fs and "div(alphaRhoPhi,e)" in fs and "div(phi,p)" in fs
+    a = foamio.read_foam((c / "0" / "alpha.water").read_text())["boundaryField"]
+    assert a["inlet"]["type"] == "fixedValue" and "0.98" in str(a["inlet"]["value"])
+    assert (c / "0" / "p").exists() and (c / "0" / "T").exists()
+    T = foamio.read_foam((c / "0" / "T").read_text())["boundaryField"]
+    assert T["inlet"]["type"] == "fixedValue" and T["outlet"]["type"] == "inletOutlet"
+    # the outlet draws the liquid's mass flow plus the air's entering with it
+    m = 0.002 * 998.2 + 0.002 * 0.02 / 0.98 * gas["rho_inlet"]
+    assert gas["mass_flow_kg_s"] == pytest.approx(m, rel=1e-9) and f"(400 {m:.10g})" in (c / "0" / "U").read_text()
+
+
+def test_gas_results(tmp_path):
+    mesh, patches, sel, plan, w = prepare(GAS, tmp_path)
+    vf = plan["vof"]
+    gas = vf["gas"]
+    n_in, n_out = vf["inlet"], vf["outlet"]
+    nf = {P["name"]: P["n"] for P in mesh.patches}
+    q = 0.002 / 0.98                                         # liquid 0.002 + 2 % air at the inlet
+    p_in, p_out = vf["p0_Pa"], vf["p0_Pa"] + 5e4              # the air is compressed through the pump
+    kin = lambda pa: (pa - vf["p_ref_Pa"]) / 998.2            # noqa: E731 (post's kinematic gauge layout)
+    q_air_out = q * 0.02 * p_in / p_out
+    a_out = 1 - q_air_out / (0.002 + q_air_out)
+    fields = {"patches": {n_in: {"phi": np.full(nf[n_in], -q / nf[n_in]), "alpha": np.full(nf[n_in], 0.98),
+                                 "p": np.full(nf[n_in], kin(p_in))},
+                          n_out: {"phi": np.full(nf[n_out], (0.002 + q_air_out) / nf[n_out]),
+                                  "alpha": np.full(nf[n_out], a_out), "p": np.full(nf[n_out], kin(p_out))}},
+              "alpha": np.full(mesh.ncells, 0.97), "p_abs": np.full(mesh.ncells, p_in)}
+    fields["p_abs"][0] = vf["p_min_Pa"]                      # one cell at the bound: vapour would form there
+    res = {"pressure": {}, "checks": {"momentum_balance": {"error": 0.0}}}
+    cav, warns = results(GAS, mesh, plan, fields, res)
+    fl = cav["flows"]
+    assert cav["phases"] == ["water", "air"] and "vapour_volume_mm3" not in cav and cav["gas_volume_mm3"] > 0
+    assert cav["inlet_gas_fraction"] == 0.02 and cav["gas_holdup"] == pytest.approx(0.03 / 0.02, rel=1e-3)
+    assert fl["gas_in_kg_s"] == pytest.approx(fl["gas_out_kg_s"], rel=1e-6)      # air neither forms nor condenses
+    assert abs(fl["liquid_flow_error"]) < 1e-6 and res["checks"]["mass_balance"]["error"] < 1e-6
+    assert fl["volume_source_m3s"] < 0                                           # compressed: less volume leaves
+    assert cav["at_vapour_pressure"]["cells"] == 1 and any("vapour would form" in x for x in warns)
+    assert "not judged" in res["checks"]["momentum_balance"]["note"]
