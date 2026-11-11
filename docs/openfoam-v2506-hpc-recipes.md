@@ -1,7 +1,3 @@
-<!-- Reference for building and running OpenFOAM on HPC clusters (MIT Engaging, NERSC Perlmutter). Note: these
-     recipes are for ESI's OpenFOAM v2506 (openfoam.com: simpleFoam, ...). cfd-translator targets OpenFOAM 14 from
-     openfoam.org (foamRun with modules): cases it writes do not run on v2506 as they are. -->
-
 # OpenFOAM v2506 (ESI) — HPC build recipes
 
 ## MIT Engaging (ORCD)
@@ -23,14 +19,19 @@ foamSystemCheck
 cd $WM_PROJECT_DIR && ./Allwmake -j $SLURM_CPUS_PER_TASK -s -l
 ```
 
+### Limits (mit_normal)
+- MaxTime 12:00:00 per job; 62 nodes (mostly 96-core, some 192/64)
+- QoS mit_normal per user: **cpu=96, mem=386G** running at once; MaxSubmitPU=448
+- Use 1 node × 96 ranks; never `--mem=0` (1.5 TB nodes exceed the 386G cap)
+
 ### Job script
 ```bash
 #!/bin/bash
 #SBATCH -p mit_normal
-#SBATCH -N 2
+#SBATCH -N 1
 #SBATCH --ntasks-per-node=96
-#SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH --mem=360G
+#SBATCH -t 12:00:00
 
 module purge
 module use /orcd/software/community/001/modulefiles
@@ -42,6 +43,49 @@ decomposePar -force
 mpirun -n $SLURM_NTASKS simpleFoam -parallel > log.simpleFoam 2>&1
 reconstructPar -latestTime
 ```
+
+### SLURM test run (2 nodes × 8 ranks, pitzDaily)
+```bash
+mkdir -p ~/orcd/scratch/runs && cd ~/orcd/scratch/runs
+cat > test_pitzDaily.sh << 'EOF'
+#!/bin/bash
+#SBATCH -J of-test
+#SBATCH -p mit_normal
+#SBATCH -N 2
+#SBATCH --ntasks-per-node=8
+#SBATCH --mem=16G
+#SBATCH -t 00:15:00
+#SBATCH -o %x-%j.out
+
+module purge
+module use /orcd/software/community/001/modulefiles
+module load gcc/12.2.0 openmpi/5.0.8
+source ~/software/openfoam/OpenFOAM-v2506/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=SYSTEMOPENMPI
+
+srun hostname | sort | uniq -c
+
+CASE=~/orcd/scratch/runs/pitzDaily_$SLURM_JOB_ID
+cp -r $FOAM_TUTORIALS/incompressible/simpleFoam/pitzDaily $CASE
+cd $CASE
+cp $FOAM_TUTORIALS/incompressible/simpleFoam/pitzDailyExptInlet/system/decomposeParDict system/
+foamDictionary -entry numberOfSubdomains -set $SLURM_NTASKS system/decomposeParDict
+foamDictionary -entry method -set scotch system/decomposeParDict
+
+blockMesh > log.blockMesh 2>&1
+decomposePar > log.decomposePar 2>&1
+mpirun -n $SLURM_NTASKS simpleFoam -parallel > log.simpleFoam 2>&1
+reconstructPar -latestTime > log.reconstructPar 2>&1
+
+grep -E "nProcs|Hosts" -A3 log.simpleFoam | head
+tail -n 5 log.simpleFoam
+EOF
+
+sbatch test_pitzDaily.sh
+squeue -u $USER
+cat of-test-<jobid>.out      # when finished
+```
+Success = 2 nodes × 8 tasks in hostname count, `nProcs : 16`, both hosts listed, log ends with `End`.
+If mpirun complains about slots/PMIx: use `srun --mpi=pmix simpleFoam -parallel`.
 
 ---
 
@@ -100,6 +144,51 @@ decomposePar -force
 srun -n $SLURM_NTASKS --cpu-bind=cores simpleFoam -parallel > log.simpleFoam 2>&1
 reconstructPar -latestTime
 ```
+
+### SLURM test run (2 nodes × 8 ranks, pitzDaily)
+```bash
+mkdir -p $PSCRATCH/runs && cd $PSCRATCH/runs
+cat > test_pitzDaily.sh << 'EOF'
+#!/bin/bash
+#SBATCH -J of-test
+#SBATCH -A m526
+#SBATCH -C cpu
+#SBATCH -q debug
+#SBATCH -N 2
+#SBATCH --ntasks-per-node=8
+#SBATCH -t 00:15:00
+#SBATCH -o %x-%j.out
+
+module load PrgEnv-gnu cray-mpich
+source /global/homes/f/feranick/software/openfoam/OpenFOAM-v2506/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=CRAY-MPICH
+
+srun hostname | sort | uniq -c
+
+CASE=$PSCRATCH/runs/pitzDaily_$SLURM_JOB_ID
+mkdir -p $CASE && tar xzf ~/software/openfoam-tutorials.tgz -C $CASE --strip-components=4 \
+    tutorials/incompressible/simpleFoam/pitzDaily
+cd $CASE
+cat > system/decomposeParDict << 'DICT'
+FoamFile { version 2.0; format ascii; class dictionary; object decomposeParDict; }
+numberOfSubdomains 16;
+method scotch;
+DICT
+foamDictionary -entry numberOfSubdomains -set $SLURM_NTASKS system/decomposeParDict
+
+blockMesh > log.blockMesh 2>&1
+decomposePar > log.decomposePar 2>&1
+srun -n $SLURM_NTASKS --cpu-bind=cores simpleFoam -parallel > log.simpleFoam 2>&1
+reconstructPar -latestTime > log.reconstructPar 2>&1
+
+grep -E "nProcs|Hosts" -A3 log.simpleFoam | head
+tail -n 5 log.simpleFoam
+EOF
+
+sbatch test_pitzDaily.sh
+```
+Note: the Perlmutter home install has no `tutorials/` — this uses `~/software/openfoam-tutorials.tgz`
+(created with `tar czf ~/software/openfoam-tutorials.tgz -C $PSCRATCH/openfoam/OpenFOAM-v2506 tutorials`
+before scratch was cleaned). If that archive doesn't exist, copy pitzDaily from Engaging or re-download the tarball.
 
 ---
 
