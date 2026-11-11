@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.09.7
+Version: 2026.11.11.1
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -998,6 +998,8 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
             st = {"state": "queued", **base, "reason": s.get("reason"), "ahead": ahead.get(jid, s.get("ahead"))}
             if s.get("expected_start"):
                 st["expected_start"] = s["expected_start"]
+            elif s.get("expected_start_note"):     # SLURM's one-year placeholder: no start time (llmt-runtime)
+                st["expected_start_note"] = s["expected_start_note"]
             try:
                 es = eta_start(j, s.get("reason") or "", st.get("expected_start"))
             except Exception:  # noqa: BLE001

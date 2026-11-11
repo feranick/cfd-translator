@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.09.2
+Version: 2026.11.11.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -739,7 +739,7 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         if not (case / "log.checkMesh").exists():            # the conformal mesh, before it is split
             foam._step(fm, "checkMesh", "log.checkMesh", case, 900, raise_on_error=False)
         notes = to_sliding(case, plan, mesh, lambda cmd, log: foam._step(fm, cmd, log, case, 3600), procs,
-                           foam.mpirun_command(procs) if procs > 1 else None)
+                           foam.launch(procs) if procs > 1 else None)
         write_transient(case, study, plan)
         state.update(sliding_done=True, sliding_notes=notes)
         save()

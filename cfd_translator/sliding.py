@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.04.6
+Version: 2026.11.11.1
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -522,7 +522,10 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
                 if not (src / nm).is_file():
                     raise SlidingError(f"decomposePar wrote no {src / nm}")
                 shutil.copyfile(src / nm, dst / nm)
-        par = f"{mpirun or 'mpirun'} -np {procs} "
+        # launcher: foam.launch(procs) ('mpirun -np N', or CFDT_LAUNCH's 'srun -n N ...'); a bare 'mpirun' (older
+        # callers) gets its rank count
+        lp = (mpirun or "mpirun").strip()
+        par = (lp if re.search(r"(^|\s)(-np|-n)\s+\d+", lp) else f"{lp} -np {procs}") + " "
     run_step(f"{par}createBaffles" + (" -parallel" if par else ""), "log.createBaffles")
     run_step(f"{par}splitBaffles" + (" -parallel" if par else ""), "log.splitBaffles")
     # the side with the smaller cells second (the neighbour): OpenFOAM's stitcher puts the volume error of the

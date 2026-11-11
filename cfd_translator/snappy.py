@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.06.1
+Version: 2026.11.11.1
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -1092,7 +1092,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                     for sub in ("geometry", "extendedFeatureEdgeMesh"):
                         if (sd / "constant" / sub).is_dir() and not (pd / "constant" / sub).exists():
                             shutil.copytree(sd / "constant" / sub, pd / "constant" / sub)
-                rc = foam._step(fm, f"{foam.mpirun_command(procs)} -np {procs} snappyHexMesh -parallel",
+                rc = foam._step(fm, f"{foam.launch(procs)} snappyHexMesh -parallel",
                                 "log.snappyHexMesh", sd, tmo, raise_on_error=False)
                 log = parse_log(_read(sd / "log.snappyHexMesh"))
                 if rc == 0:

@@ -1,10 +1,12 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.09.4
+Version: 2026.11.11.1
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
     cfdt validate studies.json           static checks
-    cfdt run studies.json [--solver S]   mesh, solve, check (S: auto | foam | ref); waits for all
+    cfdt run studies.json [--solver S] [--wait SEC]
+                                         mesh, solve, check (S: auto | foam | ref); waits for all, or SEC seconds
+                                         (--wait 0 on a cluster's login node: submit and return the request)
     cfdt status REQUEST                  results of a request folder (finished and pending studies)
     cfdt case studies.json NAME          write the OpenFOAM case of one study (no solve)
     cfdt bench [NAMES...] [--solver S]   the benchmark studies with known answers
@@ -14,6 +16,8 @@ Version: 2026.11.09.4
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
     cfdt reprocess REQUEST [NAMES...]    results again from finished cases (current post-processing, no solve)
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
+    cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (docs/clusters.md)
+    cfdt import PATH [--name N]          a packed request (.tgz or folder) as a request of this machine
 
 '-' reads the studies from stdin. Interrupted (Ctrl-C) while `run` or `bench` waits for SLURM jobs, the command says
 which jobs are left in the queue and how to cancel them (it cancels nothing), then exits with 130.
@@ -44,6 +48,7 @@ def main(argv=None) -> None:
     p = sub.add_parser("run")
     p.add_argument("studies")
     p.add_argument("--solver", default=None)
+    p.add_argument("--wait", type=float, default=None, help="seconds to wait (default: until all finish)")
     p = sub.add_parser("case")
     p.add_argument("studies")
     p.add_argument("name")
@@ -62,6 +67,13 @@ def main(argv=None) -> None:
     p = sub.add_parser("run-study")
     p.add_argument("request")
     p.add_argument("name")
+    p = sub.add_parser("pack", help="a request's results as a .tgz (on a cluster), to import elsewhere")
+    p.add_argument("request")
+    p.add_argument("--state", action="store_true", help="add the mesh and fields (state.npz) for render_images")
+    p.add_argument("--out", default=None)
+    p = sub.add_parser("import", help="a packed request (.tgz or folder) as a request of this machine")
+    p.add_argument("path")
+    p.add_argument("--name", default=None)
     p = sub.add_parser("bench")
     p.add_argument("names", nargs="*")
     p.add_argument("--solver", default=None)
@@ -85,7 +97,7 @@ def _command(a) -> dict:
     elif a.cmd == "validate":
         out = api.validate(_load(a.studies))
     elif a.cmd == "run":
-        out = api.run(_load(a.studies), a.solver)
+        out = api.run(_load(a.studies), a.solver, wait=a.wait)
     elif a.cmd == "case":
         st = _load(a.studies)
         out = api.case(st[a.name], a.name)
@@ -95,6 +107,10 @@ def _command(a) -> dict:
         out = api.cancel(a.request, a.names or None)
     elif a.cmd == "reprocess":
         out = api.reprocess(a.request, a.names or None)
+    elif a.cmd == "pack":
+        out = api.pack(a.request, a.state, a.out)
+    elif a.cmd == "import":
+        out = api.import_results(a.path, a.name)
     elif a.cmd == "images":
         out = api.render_images(a.folder, _load(a.images) if a.images else True)
     else:

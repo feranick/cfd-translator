@@ -66,7 +66,7 @@ the tool wrapper with the 48 s deadline, server log in `$CFDT_OUT/.server`) and 
   server's common code), never by patching cfdt's wrappers. This chat does not edit llmt-runtime: such fixes go to the
   user as a prompt for the runtime's chat (additions only, backward compatible; the runtime bumps its version, adds a
   test and tags the release).
-- `pyproject.toml` declares a floor only, `llmt-runtime>=2026.11.09.5` (also requirements-standalone.txt's tag and
+- `pyproject.toml` declares a floor only, `llmt-runtime>=2026.11.10.1` (also requirements-standalone.txt's tag and
   the README install line); raise it only when cfdt needs something newer. Order: runtime pushed, then cfdt, then the
   user pins (`./llmt pin runtime cfdt`).
 - Tests use the runtime's fake SLURM; patch the runtime's names where its code runs (`llmt_runtime.slurm.*`), not
@@ -386,6 +386,10 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.11.1**: clusters (Perlmutter, Engaging): cfdt installed there and run from its CLI (docs/clusters.md),
+CFDT_LAUNCH, `cfdt run --wait 0`, `cfdt pack` / `import_results`. Open: multi-node jobs (llmt-runtime), then cfdt's
+rank caps over nodes; verify the OpenFOAM 14 builds and docs/clusters.md section 5 on both clusters.
+
 **2026.11.08.2**: queued jobs' `ahead` counts only pending jobs that can run on the same node.
 
 **2026.11.08.1**: init_from transient runs no longer reported as steady iterations (they were running); mapping
@@ -547,3 +551,4 @@ Open ideas:
 - `converge: true`; 3D prism layers; cyclic patches;
 - heat transfer/CHT with feat; transient (PIMPLE, sliding mesh for impellers); snappyHexMesh; porous zones and tracers (plan above);
 - a pump example (volute + impeller goal) once MRF is confirmed.
+

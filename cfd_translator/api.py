@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.6
+Version: 2026.11.11.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -598,6 +598,22 @@ def _window(folder: Path, window) -> dict:
         except Exception as exc:  # noqa: BLE001
             out[n] = {"error": f"{type(exc).__name__}: {exc}"}
     return {"request": str(folder), "translator": __version__, "window": list(window), "studies": out}
+
+
+def pack(request: str, state: bool = False, out: str | None = None) -> dict:
+    """On a cluster: a .tgz of a request's results to bring back (transfer.pack; docs/clusters.md)."""
+    from .transfer import pack as _pack
+    return _pack(request, state, out)
+
+
+def import_results(path: str, name: str | None = None) -> dict:
+    """A request packed on a cluster (cfdt pack), as a request of this machine: then study_status and the rest."""
+    from .transfer import import_request
+    r = import_request(path, name)
+    if "error" in r:
+        return r
+    st = status(r["request"], 0.0, "summary")
+    return {**r, "status": {k: st[k] for k in ("done", "studies", "variants") if k in st}}
 
 
 def reprocess(request: str, studies: list[str] | None = None) -> dict:

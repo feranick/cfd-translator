@@ -218,14 +218,21 @@ def test_queue_summary_counts_each_node_once_with_cfdts_extras(slurm, monkeypatc
 
 def test_eta_start_still_applied_to_queued_jobs(slurm, monkeypatch):
     """A queued job's start from the running jobs' own ETAs (cfdt's), on top of llmt-runtime's states."""
-    monkeypatch.setenv("FAKE_START", "2099-01-01T00:00:00")          # SLURM's: from the whole time limits ahead
+    import time as _t
+    later = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.localtime(_t.time() + 3 * 86400))
+    monkeypatch.setenv("FAKE_START", later)                          # SLURM's: from the whole time limits ahead
     _fake_job(slurm, "1002", state="PENDING")
     req = _request(slurm, "1002", job={"segment": 2, "previous_jobs": ["1001"]})
     monkeypatch.setattr(executor, "running_etas", lambda: {"1001": {"node": "fake1", "cpus": 1, "eta_min": 30.0,
                                                                      "name": "r/a"}})
     st = executor.slurm_states(req, ["s"], {"s": COUETTE})["s"]
-    assert st["state"] == "queued" and st["ahead"] == 0 and st["expected_start_slurm"] == "2099-01-01T00:00:00"
-    assert st["expected_start"] < "2099" and "own progress" in st["expected_start_note"]
+    assert st["state"] == "queued" and st["ahead"] == 0 and st["expected_start_slurm"] == later
+    assert st["expected_start"] < later and "own progress" in st["expected_start_note"]
+    # SLURM's one-year placeholder (a job ahead without a time limit, carbonio 2026.11.10): no start, the runtime's note
+    monkeypatch.setenv("FAKE_START", _t.strftime("%Y-%m-%dT%H:%M:%S", _t.localtime(_t.time() + 365 * 86400)))
+    monkeypatch.setattr(executor, "running_etas", lambda: {})
+    st = executor.slurm_states(req, ["s"], {"s": COUETTE})["s"]
+    assert "expected_start" not in st and "no time limit" in st["expected_start_note"]
 
 
 def test_bench_runs_a_case_once_as_a_slurm_job(slurm, tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.09.2
+Version: 2026.11.11.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -270,10 +270,10 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
                 "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
                 f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
             _step(foam, "decomposePar -force" + (" -latestTime" if resume else ""), "log.decomposePar", case, timeout)
-        launch = f"{mpirun_command(procs)} -np {procs}"
-        out["launch"] = launch
-        out["binding"] = "hwthread" if "--map-by hwthread" in launch else "default"
-        solve = (f"{launch} foamRun -parallel", "log.foamRun")
+        lp = launch(procs)
+        out["launch"] = lp
+        out["binding"] = "hwthread" if "--map-by hwthread" in lp else "default"
+        solve = (f"{lp} foamRun -parallel", "log.foamRun")
     else:
         solve = ("foamRun", "log.foamRun")
     stop = None
@@ -434,12 +434,30 @@ def physical_cores() -> int:
 def mpirun_command(procs: int) -> str:
     """CFDT_MPIRUN, or mpirun. Inside a SLURM job, OpenMPI 5 places ranks by core and refuses more ranks
     than cores ('allocation-overload'); when the job's CPUs are hardware threads of fewer cores, map by
-    hardware thread instead."""
+    hardware thread instead. A job over several nodes compares the ranks of one node with its cores."""
     if os.environ.get("CFDT_MPIRUN"):
         return os.environ["CFDT_MPIRUN"]
-    if os.environ.get("SLURM_JOB_ID") and physical_cores() < procs:
+    if os.environ.get("SLURM_JOB_ID") and physical_cores() < ranks_per_node(procs):
         return "mpirun --map-by hwthread"
     return "mpirun"
+
+
+def ranks_per_node(procs: int) -> int:
+    """The ranks this node runs of a job of procs ranks (SLURM_JOB_NUM_NODES nodes; one node outside SLURM)."""
+    nn = os.environ.get("SLURM_JOB_NUM_NODES", "") or os.environ.get("SLURM_NNODES", "")
+    n = int(nn) if nn.isdigit() and int(nn) > 0 else 1
+    return -(-int(procs) // n)
+
+
+def launch(procs: int) -> str:
+    """The command prefix that starts an MPI program on procs ranks: CFDT_LAUNCH, a template with {n} (clusters:
+    'srun -n {n} --cpu-bind=cores' on Perlmutter's cray-mpich, 'srun --mpi=pmix -n {n}' or 'mpirun -n {n}' on
+    Engaging), else mpirun_command(procs) + ' -np {n}' as before. Used for foamRun, snappyHexMesh and the sliding
+    mesh's utilities (docs/clusters.md)."""
+    t = os.environ.get("CFDT_LAUNCH", "").strip()
+    if t:
+        return t.replace("{n}", str(int(procs))) if "{n}" in t else f"{t} {int(procs)}"
+    return f"{mpirun_command(procs)} -np {int(procs)}"
 
 
 def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
