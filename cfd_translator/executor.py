@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.11.1
+Version: 2026.11.11.2
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -236,21 +236,35 @@ def caps() -> dict:
         v = RT.env(name, "").strip()
         if v:
             out[k] = v
-    nc = node_cores()
-    if nc:
+    rc = S.caps(RT) if kind() == "slurm" else {}
+    if rc.get("nodes"):
+        # jobs may span nodes (CFDT_SLURM_NODES): llmt-runtime's cap, a node's cores x the nodes
         try:
             given = int(float(out["procs"])) if out.get("procs") else None
         except ValueError:
             given = None
-        if given is None or given > nc:
-            out["procs"] = str(nc)
-            out["procs_from"] = "a node's cores (SLURM, one rank per core)"
+        if given is None or given > int(rc["procs"]):
+            out["procs"] = str(int(rc["procs"]))
+            out["procs_from"] = rc.get("procs_from")
+        out["nodes"] = rc["nodes"]
+    else:
+        nc = node_cores()
+        if nc:
+            try:
+                given = int(float(out["procs"])) if out.get("procs") else None
+            except ValueError:
+                given = None
+            if given is None or given > nc:
+                out["procs"] = str(nc)
+                out["procs_from"] = "a node's cores (SLURM, one rank per core)"
     nm = node_mem_mb()
     if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
         out["mem"] = S.mem_text(nm)
         out["mem_from"] = "a node's memory (SLURM RealMemory)"
     if out.get("mem") and mem_mb(out["mem"]):
         out["mem_mb"] = int(mem_mb(out["mem"]))
+        if rc.get("mem_per"):
+            out["mem_per"] = rc["mem_per"]         # SLURM's --mem is per node
     return out
 
 
@@ -562,13 +576,15 @@ def snappy_estimate(study: dict) -> float | None:
 
 
 def procs_for_job(study: dict, est: float | None = None) -> int:
-    """The ranks a SLURM job asks for: the study's (or CFDT_PROCS), but no more than the cell estimate allows
+    """The ranks a SLURM job asks for: the study's (or CFDT_PROCS), at most a node's cores times the nodes a job may
+    use (CFDT_SLURM_NODES, default 1), and no more than the cell estimate allows
     at CFDT_CELLS_PER_RANK, so small studies do not hold cores they cannot use (the benchmarks on mochi held
     18 CPUs each for 1-3 ranks). The runtime's hooks.procs."""
     procs = procs_of(study)
-    nc = node_cores()
-    if nc:
-        procs = min(procs, nc)                 # one node, one rank per core (CFDT_PROCS may say more)
+    if kind() == "slurm" and S.cluster_nodes():
+        # one rank per core, on one node or, with CFDT_SLURM_NODES, on several (llmt-runtime: a node's cores x nodes;
+        # CFDT_PROCS may say more)
+        procs = min(procs, S.max_job_procs(RT))
     est = cell_estimate(study) if est is None else est
     if est is None:
         return procs

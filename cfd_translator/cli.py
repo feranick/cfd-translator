@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.11.1
+Version: 2026.11.11.2
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -16,7 +16,7 @@ Version: 2026.11.11.1
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
     cfdt reprocess REQUEST [NAMES...]    results again from finished cases (current post-processing, no solve)
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
-    cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (docs/clusters.md)
+    cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (other/supercomputers/clusters.md)
     cfdt import PATH [--name N]          a packed request (.tgz or folder) as a request of this machine
 
 '-' reads the studies from stdin. Interrupted (Ctrl-C) while `run` or `bench` waits for SLURM jobs, the command says

@@ -28,7 +28,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_runtime_configured_for_cfdt(monkeypatch):
-    assert (RT.prefix, RT.cli, RT.package, RT.kind, RT.one_node) == ("CFDT", "cfdt", "cfd_translator", "mpi", True)
+    # not one_node since 2026.11.11.2: CFDT_SLURM_NODES lets an MPI job span nodes (llmt-runtime 2026.11.11.1)
+    assert (RT.prefix, RT.cli, RT.package, RT.kind, RT.one_node) == ("CFDT", "cfdt", "cfd_translator", "mpi", False)
     monkeypatch.setenv("CFDT_OUT", "/tmp/cfdt-x")
     assert RT.out_root() == Path("/tmp/cfdt-x") == api.out_root()
     assert RT.hooks.study_procs({"solve": {"procs": 6}}) == 6
@@ -173,7 +174,7 @@ def test_job_sh_and_job_json(slurm, monkeypatch):
     sh = text.splitlines()
     assert [ln for ln in sh if ln.startswith("#SBATCH")] == [
         "#SBATCH --job-name=cfdt:run_j:a", f"#SBATCH --chdir={req / 'a'}", f"#SBATCH --output={req / 'a' / 'job.log'}",
-        "#SBATCH --ntasks=1", "#SBATCH --nodes=1", "#SBATCH --ntasks-per-core=1", "#SBATCH --time=20",
+        "#SBATCH --ntasks=1", "#SBATCH --ntasks-per-core=1", "#SBATCH --time=20",
         "#SBATCH --mem=3G", "#SBATCH --export=ALL"]                       # 200 cells: 2 GB + 0.8 MB, in whole GB
     assert sh[-1].endswith(f"-m cfd_translator.cli run-study {req} a") and sh[-1].startswith("exec ")
     assert text == executor.job_script(req, "a", 1, COUETTE)

@@ -1,6 +1,6 @@
 """transfer.py — a request run on a cluster cfdt's servers cannot reach (NERSC Perlmutter, MIT Engaging), brought
-back for study_status, window averages, render_images and comparisons (docs/clusters.md).
-Version: 2026.11.11.1
+back for study_status, window averages, render_images and comparisons (other/supercomputers/clusters.md).
+Version: 2026.11.11.2
 
     pack(request, state=False, out=None)   on the cluster: a .tgz of the request's results, without the case's fields
     import_request(path)                   on a cfdt machine: the .tgz (or the folder) as a request under CFDT_OUT

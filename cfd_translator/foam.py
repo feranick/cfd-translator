@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.11.1
+Version: 2026.11.11.2
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -453,7 +453,7 @@ def launch(procs: int) -> str:
     """The command prefix that starts an MPI program on procs ranks: CFDT_LAUNCH, a template with {n} (clusters:
     'srun -n {n} --cpu-bind=cores' on Perlmutter's cray-mpich, 'srun --mpi=pmix -n {n}' or 'mpirun -n {n}' on
     Engaging), else mpirun_command(procs) + ' -np {n}' as before. Used for foamRun, snappyHexMesh and the sliding
-    mesh's utilities (docs/clusters.md)."""
+    mesh's utilities (other/supercomputers/clusters.md)."""
     t = os.environ.get("CFDT_LAUNCH", "").strip()
     if t:
         return t.replace("{n}", str(int(procs))) if "{n}" in t else f"{t} {int(procs)}"

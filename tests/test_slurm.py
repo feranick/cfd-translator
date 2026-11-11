@@ -450,7 +450,7 @@ def test_ranks_are_capped_at_a_nodes_cores_and_jobs_stay_on_this_node(slurm, tmp
     monkeypatch.setenv("CFDT_PROCS", "36")
     assert executor.procs_for_job(COUETTE, 1e6) == 20
     js = executor.job_script(tmp_path, "s", 20, COUETTE)
-    assert "#SBATCH --nodelist=spark-5da5" in js and "#SBATCH --nodes=1" in js
+    assert "#SBATCH --nodelist=spark-5da5" in js          # one node by its nodelist (no --nodes=1 since 2026.11.11.2)
     node = executor.status()["node"]
     assert node == {"setting": "local", "nodelist": "spark-5da5", "cluster_nodes": 2}
     # any: SLURM chooses; a node list: those; a --nodelist in CFDT_SLURM_ARGS wins

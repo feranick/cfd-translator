@@ -6,19 +6,22 @@ mochi and the sparks. Only the router and the MCP server stay at home. When the 
 small archive of the results; `import_results` (or `cfdt import`) turns it into a request on a cfdt machine, where
 `study_status`, `window`, `variants` and `render_images` work as usual.
 
-What is not there yet: **jobs over several nodes**. A job is one node today (Perlmutter: up to 128 ranks; Engaging:
-96, the per-user cap anyway). Multi-node jobs (`--nodes`, ranks per node) are llmt-runtime's to add; until then the
-S50 sliding case runs on 128 ranks on Perlmutter (about 107k cells a rank), not 512.
+Jobs may span several nodes (llmt-runtime 2026.11.11.1, cfdt 2026.11.11.2): with `CFDT_SLURM_NODES` a study whose
+ranks exceed a node's cores runs on `--nodes=K` with the ranks balanced (`--ntasks-per-node`), its memory estimate
+split per node. On Perlmutter the S50 sliding case runs on 4 nodes x 128 ranks (about 27k cells a rank), as the
+hand-built run did. Engaging's per-user cap (96 CPUs) keeps jobs on one node there.
 
-Unverified (2026.11.11): the OpenFOAM 14 builds below, Gmsh's wheel on the clusters, and `sbatch` from inside a job
-(the transient segments resubmit themselves) on Engaging. Check them in that order with the steps at the end.
+OpenFOAM 14 is built on both clusters (build 14-a4867fc914c1; `env-of14-perlmutter.sh`, `env-of14-engaging.sh` here,
+installed as `~/software/openfoam/env-of14.sh`). Unverified (2026.11.11): Gmsh's wheel on the clusters, `sbatch` from
+inside a job (the transient segments resubmit themselves) on Engaging, and multi-node jobs on Perlmutter. Check them
+with the steps at the end.
 
 ---
 
 ## 1. OpenFOAM 14 (openfoam.org)
 
-The Foundation's release, the one cfdt writes cases for (`foamRun` with modules). ESI's v2506 (docs/openfoam-v2506-
-hpc-recipes.md) runs other solvers and does not read cfdt's cases.
+The Foundation's release, the one cfdt writes cases for (`foamRun` with modules). ESI's v2506 (openfoam-v2506-hpc-recipes.md, next to
+this file) runs other solvers and does not read cfdt's cases.
 
 ### MIT Engaging (ORCD)
 
@@ -70,8 +73,8 @@ rsync -a --exclude 'OpenFOAM-14/applications/' --exclude 'OpenFOAM-14/src/' --ex
   --exclude 'ThirdParty-14/*' ./ $HOME/software/openfoam14/
 ```
 
-The four `MPI_*` variables must be set again before sourcing the bashrc in every shell (put them in the env file
-below). If `foamSystemCheck` or the Pstream build complains about MPI, check `$MPICH_DIR` with `module show cray-mpich`.
+The four `MPI_*` variables must be set again before sourcing the bashrc in every shell: `env-of14-perlmutter.sh`
+(here; installed as `~/software/openfoam/env-of14.sh`) does it, with the values the build used. If `foamSystemCheck` or the Pstream build complains about MPI, check `$MPICH_DIR` with `module show cray-mpich`.
 
 ## 2. Python and cfdt
 
@@ -85,40 +88,45 @@ pip install gmsh            # only for STEP or goal geometry; STL geometry needs
 
 ## 3. Settings
 
-Put them in `~/cfdt.env` and source it, with the modules, the OpenFOAM bashrc and the venv, before any `cfdt`
-command. Jobs inherit that environment (`--export=ALL`), and so do the later transient segments they submit.
+Put them in `~/cfdt.env` and source it before any `cfdt` command. `CFDT_JOB_SETUP` writes the module loads, the
+OpenFOAM environment and the venv into every job script, so the jobs (and the transient segments they submit) do not
+depend on the shell that submitted them.
 
 **Perlmutter**
 
 ```bash
-module load PrgEnv-gnu cray-mpich python
-export MPI_ROOT=$MPICH_DIR MPI_ARCH_FLAGS="-DMPICH_SKIP_MPICXX" MPI_ARCH_INC="-I$MPICH_DIR/include" \
-       MPI_ARCH_LIBS="-L$MPICH_DIR/lib -lmpich"
-source $HOME/software/openfoam14/OpenFOAM-14/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=SYSTEMMPI
+module load python
+source ~/software/openfoam/env-of14.sh        # PrgEnv-gnu, cray-mpich, SYSTEMMPI, the OpenFOAM 14 bashrc
 source ~/venvs/cfdt/bin/activate
 export CFDT_FOAM=PATH                         # OpenFOAM is already in the environment
+export CFDT_JOB_SETUP="module load python\nsource ~/software/openfoam/env-of14.sh\nsource ~/venvs/cfdt/bin/activate"
 export CFDT_EXECUTOR=slurm
 export CFDT_OUT=$PSCRATCH/cfdt_runs           # scratch is purged on a schedule: pack results soon
-export CFDT_SLURM_ARGS="-A m526 -C cpu -q regular"
-export CFDT_SLURM_NODE=any                    # SLURM chooses the node (the login node is not one)
+export CFDT_SLURM_ARGS="-A m526 -C cpu -q regular"   # -C cpu: the 128-core CPU nodes size the jobs
+export CFDT_SLURM_NODE=any                    # SLURM chooses the nodes (the login node is not one)
+export CFDT_SLURM_NODES=4                     # a job may span up to 4 nodes
 export CFDT_LAUNCH="srun -n {n} --cpu-bind=cores"
-export CFDT_PROCS=128                         # one node; a study's solve.procs may ask for fewer
-export CFDT_TIMEOUT=42600                     # s per job: with cfdt's 10 min, the 12 h of 'regular'
+export CFDT_PROCS=512                         # 4 x 128; studies with fewer cells get fewer (5000 cells a rank)
+export CFDT_TIMEOUT=42600                     # s per job: with cfdt's 10 min, 12 h
 ```
+
+A study's `run.procs` (or `solve.procs`) up to 512 is accepted (`caps.procs`); 512 ranks run as 4 nodes x 128, 300 as
+3 x 100, up to 128 on one node. The memory estimate (2 GB + 4 GB per million cells) is the job's; SLURM's `--mem` is
+per node, so llmt-runtime divides it (job.json: `mem`, `mem_total`, `mem_per: node`).
 
 **Engaging**
 
 ```bash
-module purge
-module use /orcd/software/community/001/modulefiles
-module load gcc/12.2.0 openmpi/5.0.8 miniforge
-source $HOME/software/openfoam14/OpenFOAM-14/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=SYSTEMOPENMPI
+source ~/software/openfoam/env-of14.sh        # module purge; gcc 12.2.0, openmpi 5.0.8; the OpenFOAM 14 bashrc
+module load miniforge
 source ~/venvs/cfdt/bin/activate
 export CFDT_FOAM=PATH
+export CFDT_JOB_SETUP="source ~/software/openfoam/env-of14.sh\nmodule load miniforge\nsource ~/venvs/cfdt/bin/activate"
 export CFDT_EXECUTOR=slurm
 export CFDT_OUT=$HOME/orcd/scratch/cfdt_runs
 export CFDT_SLURM_ARGS="-p mit_normal"
 export CFDT_SLURM_NODE=any
+# no CFDT_SLURM_NODES: the per-user cap on mit_normal (cpu=96) is one 96-core node
 export CFDT_LAUNCH="mpirun -n {n}"            # if mpirun refuses (slots, PMIx): "srun --mpi=pmix -n {n}"
 export CFDT_PROCS=96                          # the per-user cap: cpu=96
 export CFDT_MAX_MEM=360G                      # the per-user cap is 386G; never --mem=0 (1.5 TB nodes)
@@ -158,7 +166,10 @@ build123d goal needs build123d-translator there, or export it as STL first.
    launcher with several ranks, snappyHexMesh in parallel, the environment in jobs, scratch).
 3. `cfdt bench cylinder_2d2_restart`: a transient run in 2-minute jobs that must stop, resubmit itself (sbatch from
    inside a job) and give the same answers. Needs Gmsh.
-4. Then the real case, at most one node's ranks.
+4. Perlmutter: a short multi-node job before the real one, e.g. `pipe_poiseuille_mpi` with `"run": {"procs": 256}`
+   and a mesh fine enough for 256 ranks: job.sh has `--nodes=2 --ntasks-per-node=128`, and `log.foamRun` shows
+   `nProcs : 256` on two hosts.
+5. Then the real case: on Perlmutter up to 4 x 128 ranks; on Engaging one node (96).
 
 ## 6. What the hand-built S50 run on Perlmutter needed, and where cfdt does it
 

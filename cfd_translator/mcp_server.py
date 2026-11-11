@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.11.1
+Version: 2026.11.11.2
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -314,7 +314,7 @@ def reprocess(request: str, studies: list[str] | None = None, wait_s: float = 45
 @GUARD.tool(ToolError)
 def import_results(path: str, name: str | None = None) -> dict:
     """A request run on a cluster this server cannot reach (NERSC Perlmutter, MIT Engaging: cfdt runs there from its
-    command line, docs/clusters.md), brought back: path is the .tgz made there with `cfdt pack REQUEST` (a local
+    command line, other/supercomputers/clusters.md), brought back: path is the .tgz made there with `cfdt pack REQUEST` (a local
     file: the router copies it to the machine), or the request folder copied back. It becomes a request of this
     machine: study_status (results, reliable, averages, revolution averages, drift), window averages, variants and
     render_images (when packed with --state) work on it as on any other."""

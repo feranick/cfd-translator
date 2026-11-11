@@ -1,7 +1,7 @@
 """runtime.py — cfdt's llmt-runtime: the executor code the translators share, with cfdt's settings and hooks.
-Version: 2026.11.09.6
+Version: 2026.11.11.2
 
-    RT                 llmt_runtime.Runtime for cfdt (CFDT_ settings, the `cfdt` CLI, MPI: --ntasks, one node)
+    RT                 llmt_runtime.Runtime for cfdt (CFDT_ settings, the `cfdt` CLI, MPI: --ntasks, CFDT_SLURM_NODES nodes)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
 
 Phase 1 (2026.11.09.2): workers, out of memory (the classification, the job's memory limit), how a job that left the
@@ -11,8 +11,9 @@ submission with --dependency, states, the queue's CPUs, cancel's flags and scanc
 sizing as hooks: the ranks (executor.procs_for_job: the cell cap), the memory (executor.mem_auto: 2 GB + 4 GB per
 million cells), job.json's cells_estimate (executor.job_extra), the progress of running jobs (api.job_progress), the
 out-of-memory advice and the timeout hint. The job's time limit with CFDT_SLURM_TIME=timeout is the runtime's default
-(ceil(timeout / 60) + 10 minutes, as cfdt had it), and its resource lines are the runtime's MPI lines with one_node
-(--ntasks=N, --nodes=1, --ntasks-per-core=1, as cfdt wrote them). Phase 3 (2026.11.09.6): the MCP server's stale
+(ceil(timeout / 60) + 10 minutes, as cfdt had it), and its resource lines are the runtime's MPI lines (--ntasks=N,
+--ntasks-per-core=1; 2026.11.11.2: no longer one_node, so CFDT_SLURM_NODES lets a job span nodes: --nodes=K and a
+balanced --ntasks-per-node, mem auto split per node; the ranks capped at a node's cores x those nodes). Phase 3 (2026.11.09.6): the MCP server's stale
 handling, tool wrapper (worker thread, 48 s deadline, ToolError text), log and signal handlers are llmt-runtime's
 Server (mcp_server.GUARD, with cfdt's busy and shutdown).
 
@@ -72,7 +73,7 @@ def _running_progress(folder: Path, study: dict) -> dict:
 
 RT = Runtime(prefix="CFDT", cli="cfdt", package="cfd_translator", version=__version__, kind="mpi",
              out_default="~/cfdt_runs", min_minutes=0.0, timeout_default=3600.0, slurm_time_default="timeout",
-             one_node=True, hooks=Hooks(study_procs=_study_procs, procs=_procs, mem_auto=_mem_auto,
+             hooks=Hooks(study_procs=_study_procs, procs=_procs, mem_auto=_mem_auto,
                                         job_extra=_job_extra, oom_advice=oom_advice,
                                         timeout_hint="or lower the study's solve.iterations or coarsen its mesh",
                                         running_progress=_running_progress))

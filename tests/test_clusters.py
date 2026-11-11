@@ -102,3 +102,66 @@ def test_import_refuses_odd_archives(tmp_path, monkeypatch):
         tar.add(str(f), arcname="../evil")
     assert "error" in import_request(str(bad))
     assert "error" in import_request(str(tmp_path / "missing.tgz"))
+
+
+PERLMUTTER = "\n".join(
+    f"NodeName=nid{i:03d} CoresPerSocket=64 CPUAlloc=0 CPUTot=256 NodeAddr=nid{i:03d} NodeHostName=nid{i:03d} "
+    f"RealMemory=512000 Sockets=2 State=IDLE ThreadsPerCore=2 AvailableFeatures=cpu" for i in range(1, 7))
+
+
+def test_512_ranks_on_128_core_nodes(tmp_path, monkeypatch):
+    """Perlmutter (S50 sliding mesh): CFDT_SLURM_NODES=4 and -C cpu give a 512-rank job 4 nodes x 128 ranks, the
+    caps say so, and the cell estimate's memory is the job's total, split per node by llmt-runtime."""
+    from llmt_runtime import slurm as S
+    from llmt_runtime.testing import fake_slurm
+
+    from cfd_translator import executor
+    fake_slurm(tmp_path, monkeypatch)
+    f = tmp_path / "nodes.txt"
+    f.write_text(PERLMUTTER)
+    monkeypatch.setenv("FAKE_SCONTROL_NODES", str(f))
+    monkeypatch.setenv("FAKE_SBATCH_PENDING", "1")
+    monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
+    monkeypatch.setenv("CFDT_SLURM_NODE", "any")
+    monkeypatch.setenv("CFDT_SLURM_NODES", "4")
+    monkeypatch.setenv("CFDT_SLURM_ARGS", "-A m526 -C cpu -q regular")
+    monkeypatch.setenv("CFDT_PROCS", "512")
+    monkeypatch.setenv("CFDT_LAUNCH", "srun -n {n} --cpu-bind=cores")
+    S.forget()
+    c = executor.caps()
+    assert c["procs"] == "512" and c["nodes"] == 4 and "128 x 4 nodes" in c["procs_from"] and c["mem_per"] == "node"
+    big = dict(COUETTE, run={"procs": 512, "queue": True})
+    monkeypatch.setattr(executor, "_cells", lambda st: 13.7e6)        # the S50 mesh: 13.7 M cells
+    assert executor.procs_for_job(big, 13.7e6) == 512
+    assert executor.procs_for_job(dict(big, run={"procs": 1000, "queue": True}), 13.7e6) == 512   # 4 x 128 at most
+    r = api.run({"s50": big}, "ref", wait=0)
+    req = Path(r["request"])
+    sh = (req / "s50" / "job.sh").read_text()
+    ln = [x[len("#SBATCH "):] for x in sh.splitlines() if x.startswith("#SBATCH")]
+    assert {"--ntasks=512", "--nodes=4", "--ntasks-per-node=128", "--ntasks-per-core=1"} <= set(ln)
+    j = json.loads((req / "s50" / "job.json").read_text())
+    assert j["nodes"] == 4 and j["ntasks_per_node"] == 128 and j["mem_per"] == "node"
+    total = executor.mem_auto(big)                                      # 2 GB + 4 GB per million cells, the job's
+    assert j["mem_total"] == total and j["mem"] != total
+    assert foam.launch(512) == "srun -n 512 --cpu-bind=cores"
+    # a study that fits one node stays on one
+    r = api.run({"small": dict(big, run={"procs": 100, "queue": True})}, "ref", wait=0)
+    ln = [x for x in (Path(r["request"]) / "small" / "job.sh").read_text().splitlines() if x.startswith("#SBATCH")]
+    assert "#SBATCH --ntasks=100" in ln and "#SBATCH --nodes=1" in ln
+    S.forget()
+
+
+def test_job_setup_lines_in_job_sh(tmp_path, monkeypatch):
+    """CFDT_JOB_SETUP: module loads and the OpenFOAM bashrc in job.sh, so jobs do not depend on the submitting shell."""
+    from llmt_runtime import slurm as S
+    from llmt_runtime.testing import fake_slurm
+    fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBATCH_PENDING", "1")
+    monkeypatch.setenv("CFDT_EXECUTOR", "slurm")
+    monkeypatch.setenv("CFDT_JOB_SETUP", "module load PrgEnv-gnu cray-mpich\\nsource $HOME/of14/etc/bashrc")
+    S.forget()
+    r = api.run({"c": dict(COUETTE, queue=True)}, "ref", wait=0)
+    sh = (Path(r["request"]) / "c" / "job.sh").read_text()
+    assert "module load PrgEnv-gnu cray-mpich\nsource $HOME/of14/etc/bashrc\n" in sh
+    assert sh.index("module load") < sh.index("run-study")
+    S.forget()
