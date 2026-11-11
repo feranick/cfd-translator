@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.12.2
+Version: 2026.11.12.3
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -276,10 +276,17 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
                 errs[name] = ["cavitation.npsh: 2-12 different NPSH values (m, > 0), e.g. [10, 6, 4, 3, 2.5, 2]; the "
                               "highest should be free of cavitation (the reference head)"]
                 continue
+            gl = cv.get("inlet_gas_fraction")
+            if isinstance(gl, list) and len(gl) != len(vals):
+                errs[name] = [f"cavitation.inlet_gas_fraction: {len(gl)} values for {len(vals)} NPSH points (one per point, "
+                              "in the order of npsh)"]
+                continue
             names = []
-            for x in vals:
+            for i, x in enumerate(vals):
                 n = f"{name}_npsh{float(x):g}"
                 out[n] = merge(st, {"cavitation": {"npsh": float(x)}})
+                if isinstance(gl, list):              # one air fraction per point
+                    out[n]["cavitation"]["inlet_gas_fraction"] = gl[i]
                 if cv.get("chain") and names:
                     # each point starts from the previous one's fields (solve.init_from in the same request: it runs
                     # after it); the first keeps the study's own init_from, if any

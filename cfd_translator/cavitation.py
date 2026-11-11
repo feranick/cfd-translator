@@ -1,6 +1,6 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel; or liquid
 with air entering at the inlet (inlet_gas_fraction): compressibleVoF, water + perfect-gas air, no vapour.
-Version: 2026.11.12.2
+Version: 2026.11.12.3
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -42,6 +42,11 @@ R_GAS = 8.314462618
 AIR = {"molWeight": 28.9, "Cp": 1007.0, "mu": 1.84e-05, "Pr": 0.7}
 R_AIR = R_GAS / (AIR["molWeight"] * 1e-3)        # J/(kg K)
 GAS_MAX = 0.2
+# air's solubility in water, Henry's law H^cp (mol m-3 Pa-1) at 25 C from N2 6.4e-6 and O2 1.3e-5 (Sander's
+# compilation) in air's proportions, with a van 't Hoff temperature factor of 1500 K: 20 C gives 8.5e-6, about 24 mg/L
+# (19 mL/L at 0 C, 1 atm) of air dissolved at 1 atm, as the tables give
+H_AIR_25C = 0.79 * 6.4e-6 + 0.21 * 1.3e-5
+H_AIR_VANTHOFF_K = 1500.0
 
 
 def _num(x) -> bool:
@@ -101,14 +106,41 @@ def errors(st: dict) -> list[str]:
         e.append("cavitation.head_drop: the head drop that defines the NPSH curve's critical point (0.03: NPSH3)")
     if "max_co" in cv and (not _num(cv["max_co"]) or not 0.2 <= cv["max_co"] <= 20):
         e.append("cavitation.max_co: the local time step's Courant number, 0.2-20 (default 2)")
-    if "inlet_gas_fraction" in cv and (not _num(cv["inlet_gas_fraction"])
-                                       or not 0 < cv["inlet_gas_fraction"] <= GAS_MAX):
-        e.append(f"cavitation.inlet_gas_fraction: the volume fraction of air (non-condensable gas) entering with the "
-                 f"liquid, > 0 and at most {GAS_MAX:g} (e.g. 0.02); a run with it solves liquid + compressible air "
-                 "(OpenFOAM compressibleVoF), without vapour")
-    if _num(cv.get("inlet_gas_fraction")) and any(k in cv for k in ("model", "vapour")):
-        e.append("cavitation: model and vapour are for vapour cavitation; with inlet_gas_fraction the run is liquid + "
-                 "air only (no vapour): leave them out")
+    if "inlet_gas_fraction" in cv:
+        f = cv["inlet_gas_fraction"]
+        if isinstance(f, list):
+            if not isinstance(cv.get("npsh"), list):
+                e.append("cavitation.inlet_gas_fraction: a list gives one value per NPSH point, so it goes with an npsh "
+                         "list of the same length")
+        elif isinstance(f, dict):
+            bad = set(f) - {"saturated_at", "release"}
+            if bad or not _num(f.get("saturated_at")) or f["saturated_at"] <= 0:
+                e.append("cavitation.inlet_gas_fraction: {saturated_at: Pa absolute (the liquid saturated with air at that "
+                         "pressure, e.g. 101325 for an open tank), release: 0-1 (the part of the excess that comes out; 1)}")
+            elif "release" in f and (not _num(f["release"]) or not 0 < f["release"] <= 1):
+                e.append("cavitation.inlet_gas_fraction.release: the part of the air above saturation that comes out of "
+                         "solution, > 0 and at most 1")
+        elif not _num(f) or not 0 <= f <= GAS_MAX:
+            e.append(f"cavitation.inlet_gas_fraction: the volume fraction of air (non-condensable gas) entering with the "
+                     f"liquid, 0 to {GAS_MAX:g} (e.g. 0.02); a list (one per NPSH point); or {{saturated_at: Pa}} (the air "
+                     "coming out of solution at each point's inlet pressure, Henry's law). A run with it solves liquid + "
+                     "compressible air (OpenFOAM compressibleVoF), without vapour")
+        if "inlet_gas_fraction" in cv and any(k in cv for k in ("model", "vapour")):
+            e.append("cavitation: model and vapour are for vapour cavitation; with inlet_gas_fraction the run is liquid + "
+                     "air only (no vapour): leave them out")
+        if isinstance(f, dict) and not e and _num(n):
+            from .format import fluid_props
+            try:
+                rho = float(fluid_props(st.get("fluid", "water"))["rho"])
+            except Exception:  # noqa: BLE001
+                rho = 998.2
+            T = float(cv.get("temperature", 20.0))
+            pv = float(cv.get("p_vapour", water_vapour(T)["p"]))
+            g_, info = gas_fraction(f, pv + rho * G0 * float(n), pv, T)
+            if g_ > GAS_MAX:
+                e.append(f"cavitation.inlet_gas_fraction: {g_:.3g} of air by volume comes out at NPSH {n:g} m "
+                         f"({info['inlet_pressure_Pa']:.0f} Pa): more than {GAS_MAX:g}, beyond what a VoF run with "
+                         "dispersed air represents; use higher NPSH points, or release < 1")
     if "chain" in cv and not isinstance(cv["chain"], bool):
         e.append("cavitation.chain: true makes each NPSH point of a sweep start from the previous point's fields")
     if "sigma" in cv and (not _num(cv["sigma"]) or cv["sigma"] < 0):
@@ -140,6 +172,30 @@ def errors(st: dict) -> list[str]:
     return e
 
 
+def henry_air(T_C: float) -> float:
+    """Air's solubility in water (mol m-3 Pa-1) at T (C): Henry's law H^cp with a van 't Hoff factor."""
+    return H_AIR_25C * float(np.exp(H_AIR_VANTHOFF_K * (1.0 / (float(T_C) + 273.15) - 1.0 / 298.15)))
+
+
+def gas_fraction(spec, p_in: float, p_v: float, T_C: float) -> tuple[float, dict]:
+    """The air's volume fraction entering at an inlet at p_in (Pa absolute): a number as given; {saturated_at: p_s,
+    release: r} the air a liquid saturated at p_s (with the vapour pressure p_v above it) cannot hold at p_in, coming
+    out at equilibrium into bubbles of air at p_in - p_v (Henry's law, isothermal): released volume per volume of
+    liquid V = r H R T (p_s - p_in) / (p_in - p_v), about 0.02 (p_s / p_in - 1) at 20 C; fraction V / (1 + V).
+    Returns (fraction, how)."""
+    if not isinstance(spec, dict):
+        return float(spec), {"from": "given"}
+    ps, r = float(spec["saturated_at"]), float(spec.get("release", 1.0))
+    T = float(T_C) + 273.15
+    H = henry_air(T_C)
+    pa_in, pa_s = max(p_in - p_v, 1.0), max(ps - p_v, 0.0)
+    V = r * max(H * (pa_s - pa_in), 0.0) * R_GAS * T / pa_in
+    return V / (1.0 + V), {"from": f"saturation at {ps:.6g} Pa, {T_C:g} C (Henry, H {H:.3g} mol/(m3 Pa))"
+                                   + (f", release {r:g}" if r != 1 else ""),
+                           "inlet_pressure_Pa": round(p_in, 1), "released_per_liquid_volume": float(f"{V:.4g}"),
+                           "dissolved_at_saturation_mg_per_L": float(f"{H * pa_s * 28.96e-3 * 1e3:.4g}")}
+
+
 def settings(study: dict, rho_l: float, mu_l: float) -> dict:
     cv = study["cavitation"]
     T = float(cv.get("temperature", 20.0))
@@ -155,7 +211,15 @@ def settings(study: dict, rho_l: float, mu_l: float) -> dict:
             "ramp": float(cv.get("ramp", 0.3)), "head_drop": float(cv.get("head_drop", 0.03)),
             "sigma": float(cv.get("sigma", 0.07)), "max_co": float(cv.get("max_co", 2.0)),
             "p_vapour_from": "given" if "p_vapour" in cv else f"water at {T:g} C (Antoine)",
-            **({"gas_fraction": float(cv["inlet_gas_fraction"])} if _num(cv.get("inlet_gas_fraction")) else {})}
+            **_gas_settings(cv, pv + float(rho_l) * G0 * npsh, pv, T)}
+
+
+def _gas_settings(cv: dict, p0: float, pv: float, T: float) -> dict:
+    f = cv.get("inlet_gas_fraction")
+    if f is None or isinstance(f, list):
+        return {}
+    g, info = gas_fraction(f, p0, pv, T)
+    return {"gas_fraction": g, "gas_from": info}
 
 
 def _fmt(x: float) -> str:
@@ -217,7 +281,8 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
                    "ramp_iterations": n_ramp, "flow_ramp_iterations": n_flow, "u_tip": u_tip,
                    "p0_table": p0_tab, "m_table": m_tab, "iterations_total": iters}
     gas = cv.get("gas_fraction")
-    if gas:
+    gas_mode = gas is not None                 # air in the run (0 at a point where none comes out of solution)
+    if gas_mode:
         # liquid + air (non-condensable), compressible: the air expands where the pressure falls (isothermal, the
         # energy equation off); no vapour. The air's density at the inlet's total pressure, and the mixture's mass
         # flow the outlet draws: the liquid's (the study's flow) plus the air entering with it
@@ -227,7 +292,8 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
         m_tot = Q * rho_l + Qg * rho_g0
         m_tab = _table([(0, 0.05 * m_tot), (n_flow, m_tot), (10 * iters + 1e6, m_tot)])
         plan["vof"].update(m_table=m_tab, gas={"inlet_fraction": gas, "T_K": T_K, "R": R_AIR, "rho_inlet": rho_g0,
-                                               "Q_gas_inlet_m3s": Qg, "mass_flow_kg_s": m_tot},
+                                               "Q_gas_inlet_m3s": Qg, "mass_flow_kg_s": m_tot,
+                                               "from": cv.get("gas_from", {}).get("from", "given")},
                            rho_v=rho_g0, phase2="air", solver="compressibleVoF")
     else:
         plan["vof"].update(phase2="vapour", solver="incompressibleVoF")
@@ -280,7 +346,7 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     (z / "U").write_text(_field("volVectorField", "U", "[0 1 -1 0 0 0 0]", _uniform([0, 0, 0]), Ub))
     (z / "p_rgh").write_text(_field("volScalarField", "p_rgh", "[1 -1 -2 0 0 0 0]", _uniform(p_start), pb))
     (z / "alpha.water").write_text(_field("volScalarField", "alpha.water", "[0 0 0 0 0 0 0]", _uniform(1), ab))
-    if gas:
+    if gas_mode:
         # compressibleVoF reads p (absolute; = p_rgh with g = 0) and T (fixed: the energy equation is off)
         pf, tf = {}, {}
         for p in patches:
@@ -301,7 +367,7 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     # constant
     c = case / "constant"
     (c / "physicalProperties").unlink(missing_ok=True)
-    if gas:
+    if gas_mode:
         # OpenFOAM 14 compressibleVoF (tutorials/compressibleVoF/angledDuct: phases (water air), heRhoThermo); the
         # liquid at constant density (rhoConst, forLiquids.H), the air a perfect gas
         (c / "phaseProperties").write_text(_dict("phaseProperties", "constant",
@@ -335,7 +401,7 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     mt = ("simulationType  RAS;\n\nRAS\n{\n    model           kOmegaSST;\n\n    turbulence      on;\n\n"
           "    printCoeffs     on;\n}") if turb else "simulationType  laminar;"
     (c / "momentumTransport").write_text(_dict("momentumTransport", "constant", mt))
-    if gas:
+    if gas_mode:
         (c / "fvModels").unlink(missing_ok=True)                 # no phase change: air does not condense
     else:
         (c / "fvModels").write_text(_dict("fvModels", "constant", fv_models(cv, u_ref, l_ref)))
@@ -367,7 +433,7 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
           f"writeInterval   {W};\n\npurgeWrite      2;\n\nwriteFormat     ascii;\n\nwritePrecision  10;\n\n"
           "writeCompression off;\n\ntimeFormat      general;\n\ntimePrecision   8;\n\nrunTimeModifiable false;\n\n"
           # compressibleVoF's VoFSolver::maxDeltaT looks maxAlphaCo up in controlDict
-          + (f"maxCo           {cv['max_co']:g};\n\nmaxAlphaCo      1;\n\nmaxDeltaT       {dt_max:.6g};\n\n" if gas else "")
+          + (f"maxCo           {cv['max_co']:g};\n\nmaxAlphaCo      1;\n\nmaxDeltaT       {dt_max:.6g};\n\n" if gas_mode else "")
           + "functions\n{\n" + "\n".join(funcs) + "\n}")
     sy = case / "system"
     (sy / "controlDict").write_text(_dict("controlDict", "system", cd))
@@ -378,13 +444,13 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
           + ("    div(rhoPhi,k)   Gauss linearUpwind limitedGrad;\n    div(rhoPhi,omega) Gauss linearUpwind limitedGrad;\n"
              # compressibleVoF (angledDuct's list): energy, kinetic energy and the pressure's compressibility terms
              "    div(alphaRhoPhi,e) Gauss upwind;\n    div(alphaRhoPhi,T) Gauss upwind;\n"
-             "    div(rhoPhi,K)   Gauss upwind;\n    div(phi,p)      Gauss upwind;\n" if gas else
+             "    div(rhoPhi,K)   Gauss upwind;\n    div(phi,p)      Gauss upwind;\n" if gas_mode else
              "    div(phi,k)      Gauss linearUpwind limitedGrad;\n    div(phi,omega)  Gauss linearUpwind limitedGrad;\n")
           + "    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;\n}\n\n"
           f"laplacianSchemes\n{{\n    default         {lap};\n}}\n\ninterpolationSchemes\n{{\n    default         linear;\n}}\n\n"
           f"snGradSchemes\n{{\n    default         {sn};\n}}\n\nwallDist\n{{\n    method          meshWave;\n}}")
     (sy / "fvSchemes").write_text(_dict("fvSchemes", "system", fs))
-    fields = ("U|k|omega" if turb else "U") + ("|T" if gas else "")
+    fields = ("U|k|omega" if turb else "U") + ("|T" if gas_mode else "")
     fv = ("solvers\n{\n    \"alpha.water.*\"\n    {\n        nCorrectors     2;\n        nSubCycles      1;\n"
           "        MULESCorr       yes;\n        MULES\n        {\n            nIter           5;\n        }\n"
           "        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n"
@@ -392,13 +458,13 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
           "    p_rgh\n    {\n        solver          GAMG;\n        smoother        DIC;\n        tolerance       1e-7;\n"
           "        relTol          0.01;\n    }\n\n    p_rghFinal\n    {\n        $p_rgh;\n        relTol          0;\n    }\n\n"
           "    \"pcorr.*\"\n    {\n        $p_rgh;\n        tolerance       1e-5;\n        relTol          0;\n    }\n\n"
-          + ("    \".*(rho|rhoFinal)\"\n    {\n        solver          diagonal;\n    }\n\n" if gas else "") +
+          + ("    \".*(rho|rhoFinal)\"\n    {\n        solver          diagonal;\n    }\n\n" if gas_mode else "") +
           f"    \"({fields}).*\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-7;\n        relTol          0.1;\n        minIter         1;\n    }\n}\n\n"
           "PIMPLE\n{\n    momentumPredictor yes;\n    nOuterCorrectors 1;\n    nCorrectors     2;\n"
           # air: isothermal, no energy equation (foamRun runs the thermophysics only with pimple.thermophysics());
           # the air's density still follows the pressure (psi = 1/(R T))
-          + ("    thermophysics   no;\n    transonic       no;\n" if gas else "") +
+          + ("    thermophysics   no;\n    transonic       no;\n" if gas_mode else "") +
           f"    nNonOrthogonalCorrectors {nonorth};\n\n    maxCo           {cv['max_co']:g};\n    maxAlphaCo      1;\n"
           "    rDeltaTSmoothingCoeff 0.05;\n    rDeltaTDampingCoeff 0.5;\n    nAlphaSpreadIter 0;\n"
           f"    nAlphaSweepIter 0;\n    maxDeltaT       {dt_max:.6g};\n}}\n\n"
@@ -406,7 +472,7 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
     (sy / "fvSolution").write_text(_dict("fvSolution", "system", fv))
     for f in ("fvConstraints",):
         (sy / f).unlink(missing_ok=True)
-    if gas:
+    if gas_mode:
         # no vapour in this model: the pressure must not fall below the vapour pressure (the air's density would go
         # to zero); compressibleVoF bounds p with an fvConstraint (tutorials ballValve, throttle: type bound)
         p_min = max(cv["p_vapour_Pa"], 100.0)
@@ -466,8 +532,9 @@ def results(study: dict, mesh, plan: dict, fields: dict, res: dict) -> tuple[dic
            f"{ph}_volume_mm3": float(f"{Vv / SCALE ** 3:.5g}"), f"{ph}_fraction": float(f"{Vv / Vt:.4g}") if Vt else 0.0}
     if gas:
         out.update(phases=["water", "air"], model="liquid + air (compressibleVoF, isothermal), no vapour",
-                   inlet_gas_fraction=gas["inlet_fraction"],
-                   gas_holdup=float(f"{(Vv / Vt) / gas['inlet_fraction']:.4g}") if Vt else None)
+                   inlet_gas_fraction=float(f"{gas['inlet_fraction']:.4g}"), inlet_gas_from=gas.get("from", "given"),
+                   gas_holdup=float(f"{(Vv / Vt) / gas['inlet_fraction']:.4g}") if Vt and gas["inlet_fraction"] > 0
+                   else None)
     else:
         out.update(model=vf["model"], cavitating=bool(Vv > 1e-7 * Vt))
     cells = np.nonzero(a < 0.5)[0]

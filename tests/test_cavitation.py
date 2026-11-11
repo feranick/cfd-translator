@@ -218,7 +218,7 @@ GAS = dict(DUCT, cavitation={"npsh": 7, "inlet_gas_fraction": 0.02})
 
 def test_gas_validation():
     assert validate_study(GAS)["ok"], validate_study(GAS)
-    for bad in (0.0, 0.5, "x"):
+    for bad in (-0.01, 0.5, "x"):                       # 0 is allowed (a point where no air comes out)
         e = validate_study(dict(GAS, cavitation={"npsh": 7, "inlet_gas_fraction": bad}))["errors"]
         assert any("inlet_gas_fraction" in x for x in e), bad
     e = validate_study(dict(GAS, cavitation={"npsh": 7, "inlet_gas_fraction": 0.02, "model": "Kunz"}))["errors"]
@@ -287,3 +287,49 @@ def test_gas_results(tmp_path):
     assert fl["volume_source_m3s"] < 0                                           # compressed: less volume leaves
     assert cav["at_vapour_pressure"]["cells"] == 1 and any("vapour would form" in x for x in warns)
     assert "not judged" in res["checks"]["momentum_balance"]["note"]
+
+
+def test_gas_fraction_from_saturation():
+    """{saturated_at}: the air a liquid saturated at 1 atm cannot hold at the inlet (Henry's law), about
+    0.02 (p_s / p_inlet - 1) at 20 C: none at 1 atm, about 1 % at NPSH 7 m, 3 % at 4 m."""
+    from cfd_translator.cavitation import gas_fraction, henry_air
+    pv = water_vapour(20)["p"]
+    f0, info = gas_fraction({"saturated_at": 101325}, 101325, pv, 20)
+    assert f0 == 0 and 22 < info["dissolved_at_saturation_mg_per_L"] < 26            # ~24 mg/L of air at 20 C
+    assert henry_air(20) > henry_air(40)                                               # less soluble when warmer
+    for npsh in (7, 4, 2):
+        p_in = pv + 998.2 * G0 * npsh
+        f, info = gas_fraction({"saturated_at": 101325}, p_in, pv, 20)
+        rough = 0.02 * (101325 / p_in - 1)
+        assert f == pytest.approx(rough / (1 + rough), rel=0.15), npsh
+    f7 = gas_fraction({"saturated_at": 101325}, pv + 998.2 * G0 * 7, pv, 20)[0]
+    assert 0.007 < f7 < 0.011
+    half = gas_fraction({"saturated_at": 101325, "release": 0.5}, pv + 998.2 * G0 * 7, pv, 20)[0]
+    assert half == pytest.approx(f7 / 2, rel=0.02)
+    assert gas_fraction(0.03, 5e4, pv, 20) == (0.03, {"from": "given"})
+
+
+def test_gas_fraction_per_point_and_validation(tmp_path):
+    from cfd_translator.variants import expand
+    st = dict(DUCT, cavitation={"npsh": [9, 7, 5], "inlet_gas_fraction": [0.005, 0.01, 0.02]})
+    out, groups, errs = expand({"s": st})
+    assert not errs and [out[f"s_npsh{n}"]["cavitation"]["inlet_gas_fraction"] for n in (9, 7, 5)] == [0.005, 0.01, 0.02]
+    assert all(validate_study(v)["ok"] for v in out.values())
+    _, _, errs = expand({"s": dict(DUCT, cavitation={"npsh": [9, 7], "inlet_gas_fraction": [0.01]})})
+    assert "1 values for 2 NPSH points" in errs["s"][0]
+    assert any("goes with an npsh list" in e for e in validate_study(
+        dict(DUCT, cavitation={"npsh": 7, "inlet_gas_fraction": [0.01, 0.02]}))["errors"])
+    sat = dict(DUCT, cavitation={"npsh": 7, "inlet_gas_fraction": {"saturated_at": 101325}})
+    assert validate_study(sat)["ok"], validate_study(sat)
+    deep = dict(DUCT, cavitation={"npsh": 0.5, "inlet_gas_fraction": {"saturated_at": 101325}})
+    assert any("more than 0.2" in e for e in validate_study(deep)["errors"])
+    assert not validate_study(dict(DUCT, cavitation={"npsh": 7, "inlet_gas_fraction": {"saturated": 1}}))["ok"]
+    # each point's own fraction in its case; none comes out above saturation, and the run is still liquid + air
+    mesh, patches, sel, plan, w = prepare(sat, tmp_path / "a")
+    g = plan["vof"]["gas"]
+    assert 0.007 < g["inlet_fraction"] < 0.011 and g["from"].startswith("saturation at 101325 Pa")
+    high = dict(DUCT, cavitation={"npsh": 12, "inlet_gas_fraction": {"saturated_at": 101325}})
+    mesh, patches, sel, plan, w = prepare(high, tmp_path / "b")
+    assert plan["vof"]["solver"] == "compressibleVoF" and plan["vof"]["gas"]["inlet_fraction"] == 0
+    a = foamio.read_foam((tmp_path / "b" / "case" / "0" / "alpha.water").read_text())["boundaryField"]
+    assert "1" in str(a["inlet"]["value"])

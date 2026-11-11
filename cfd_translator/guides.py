@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.2
+Version: 2026.11.12.3
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -70,7 +70,10 @@ GUIDES = {
             "npsh_inlet_m from the flow-weighted inlet total pressure, sigma_tip) and pump.head_m, power_W averaged "
             "over the last quarter. images: a 'vapour' slice (field vapour) shows where it forms.",
             "Air coming out of solution (a self-priming pump whose head falls gradually from NPSHa ~7 m): "
-            "cavitation.inlet_gas_fraction (0-0.2, e.g. 0.01-0.05) runs liquid + air entering with it (OpenFOAM "
+            "cavitation.inlet_gas_fraction runs liquid + air entering with it: a fraction (0-0.2), one per NPSH "
+            "point (a list as long as npsh), or {saturated_at: 101325} (the air a liquid saturated at that pressure "
+            "cannot hold at each point's inlet pressure, Henry's law: about 0.02 (p_sat / p_inlet - 1) at 20 C, so "
+            "~1 % at NPSH 7 m and ~3 % at 4 m; release < 1 for slower outgassing) (OpenFOAM "
             "compressibleVoF: water at constant density, air a perfect gas that expands where the pressure falls, "
             "isothermal), with the same NPSH sweep, mass-flow outlet and results. No vapour in the same run: the "
             "pressure is held at the vapour pressure, and cells reaching it are reported (cavitation.at_vapour_"

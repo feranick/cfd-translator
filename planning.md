@@ -386,6 +386,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.12.3**: inlet_gas_fraction per NPSH point: a list, or {saturated_at} (Henry's law at each inlet pressure).
+
 **2026.11.12.2**: cavitation.inlet_gas_fraction: liquid + compressible air (compressibleVoF, isothermal, no vapour).
 Verify on a machine: the first run (S50 or the self-priming pump at NPSH 7 m with 0.02): that `thermophysics no` keeps
 T fixed and the air compressible, that LTS settles, the air's mass in = out, and gas_holdup. Next if needed: vapour and
