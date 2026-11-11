@@ -268,6 +268,7 @@ def test_the_transient_run_turns_the_mesh_once(tmp_path, monkeypatch):
             import shutil
             shutil.copytree(c / "0", c / "5")
             return {"log": {"iterations": 5}, "checkMesh": {"ok": True}}
+        (c / "log.foamRun").write_text("Courant Number mean: 0.12 max: 25\nTime = 0.4\n")
         return {"log": {"iterations": 40}, "checkMesh": {"ok": True}, "time": 0.4, "reached_end": True}
 
     def fake_step(fm, cmd, log, c, timeout, raise_on_error=True, **k):
@@ -291,6 +292,8 @@ def test_the_transient_run_turns_the_mesh_once(tmp_path, monkeypatch):
     assert seen[5] == ("run", True, True)                                 # then the sliding run
     saved = json.loads((folder / "transient.json").read_text())
     assert saved["sliding_done"] and any("sliding mesh" in w for w in warns)
+    assert saved["courant"] == [{"segment": 1, "time": 0.4, "mean_last": 0.12, "max_last": 25.0, "max": 25.0,
+                                 "max_median": 25.0, "steps_seen": 1}]                  # this segment's Courant numbers
     U = foamio.read_foam((case / "0" / "U").read_text())["boundaryField"]
     assert U["blade"]["type"] == "movingWallVelocity"
     # a later segment does not split the mesh again
@@ -563,3 +566,38 @@ def test_interface_off_its_cylinder_is_found_and_stops_the_run():
         assert "[-11.2, 58.6, -71.1] mm" in str(ei.value) and "4 or more cells" in str(ei.value)
     finally:
         sl_mod.off_surface = orig
+
+
+def test_fixed_time_step(tmp_path):
+    """max_co null: exactly degrees_per_step a step, no Courant limit (snappy's micrometre cells in the S50's 0.5 mm
+    gaps took max_co 2 to 0.02 deg a step; the v2506 run went at 1 deg, Courant ~25 in a few cells, mean 0.12)."""
+    from cfd_translator.executor import transient_steps
+    from cfd_translator.transient import courant_stats, settings
+    st = _study(degrees_per_step=1, max_co=None)
+    assert validate_study(st)["ok"], validate_study(st)
+    s = settings(st)
+    assert s["fixed_step"] and s["max_co"] is None and s["dt"] == pytest.approx(0.04 / 360, rel=1e-5)
+    assert transient_steps(st) == pytest.approx(0.4 / (0.04 / 360) * 1.6, rel=1e-4)        # 3600 steps (x 1.6)
+    m = pump_mesh()
+    st2 = dict(st, model="kOmegaSST", rotating=[dict(ZONE)])
+    st2["solve"] = {"transient": dict(st["solve"]["transient"], init=0)}
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    case = tmp_path / "case"
+    plan = write_case(st2, m, patches_for(m), case)
+    from cfd_translator.transient import write_transient
+    write_transient(case, st2, plan)
+    cd = (case / "system" / "controlDict").read_text()
+    assert "adjustTimeStep  no;" in cd and "maxCo" not in cd and "writeControl    runTime;" in cd
+    assert f"deltaT          {0.04 / 360:.6g};" in cd
+    # without a sliding zone a fixed step needs dt
+    plain = {k: v for k, v in _study().items() if k != "rotating"}
+    plain["solve"] = {"transient": {"end_time": 0.4, "max_co": None}}
+    assert any("fixed time step" in e for e in validate_study(plain)["errors"])
+    plain["solve"]["transient"]["dt"] = 1e-4
+    assert not any("fixed time step" in e for e in validate_study(plain)["errors"])
+    assert settings(plain)["dt"] == 1e-4 and settings(plain)["fixed_step"]
+    # the Courant numbers OpenFOAM printed
+    log = tmp_path / "log.foamRun"
+    log.write_text("".join(f"Courant Number mean: 0.12 max: {mx}\nTime = {k}\n" for k, mx in enumerate((20, 25, 31, 24))))
+    c = courant_stats(log)
+    assert c == {"mean_last": 0.12, "max_last": 24.0, "max": 31.0, "max_median": 25.0, "steps_seen": 4}

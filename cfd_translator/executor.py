@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.11.2
+Version: 2026.11.12.1
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -643,6 +643,10 @@ def transient_steps(study: dict) -> float | None:
     dt = min(W / 10, T / 500)
     from .transient import sliding_zone
     sl = sliding_zone(study)
+    if "max_co" in tr and tr["max_co"] is None:       # a fixed time step: dt, or degrees_per_step of a revolution
+        fdt = (float(tr.get("degrees_per_step", 1.0)) / 360.0 * 60.0 / abs(float(sl["rpm"]))) if sl else \
+            float(tr.get("dt") or dt)
+        return max(T - T0, 0.0) / fdt * (1.6 if sl else 1.0)
     co = float(tr.get("max_co", 2.0 if sl else 1.0))
     if sl:
         # the rotor's tip speed sets the Courant number, and at most degrees_per_step per step

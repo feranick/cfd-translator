@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.06.2
+Version: 2026.11.12.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -148,7 +148,7 @@ STUDY_KEYS = {
             "max_cells, optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
-             "transient: {end_time s, average_from, max_co, write_interval, init (steady its first), max_jobs, "
+             "transient: {end_time s, average_from, max_co (null: fixed dt), write_interval, init (steady its first), max_jobs, "
              "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean)}",
@@ -865,8 +865,14 @@ def validate_study(st: dict) -> dict:
             T = float(tr["end_time"])
             if "average_from" in tr and (not _num(tr["average_from"]) or not 0 <= tr["average_from"] < T):
                 errs.append("solve.transient.average_from: a time (s) from 0 to before end_time")
-            if "max_co" in tr and (not _num(tr["max_co"]) or not 0.05 <= tr["max_co"] <= 20):
-                errs.append("solve.transient.max_co: Courant number limit, 0.05-20 (default 1)")
+            if "max_co" in tr and tr["max_co"] is None:
+                slz = any(isinstance(z, dict) and z.get("motion") == "sliding" for z in st.get("rotating") or [])
+                if not slz and not _num(tr.get("dt")):
+                    errs.append("solve.transient.max_co null (a fixed time step) needs dt (s), or a sliding zone "
+                                "(degrees_per_step)")
+            elif "max_co" in tr and (not _num(tr["max_co"]) or not 0.05 <= tr["max_co"] <= 20):
+                errs.append("solve.transient.max_co: Courant number limit, 0.05-20 (default 1), or null for a fixed "
+                            "time step (dt, or a sliding mesh's degrees_per_step)")
             for k in ("write_interval", "dt"):
                 if k in tr and (not _num(tr[k]) or not 0 < tr[k] <= T):
                     errs.append(f"solve.transient.{k}: seconds, > 0 and <= end_time")

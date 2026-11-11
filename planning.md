@@ -386,6 +386,22 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.12.1**: fixed time step (`max_co: null`), Courant numbers per segment; clusters.md: sliding7 as the first
+real cluster run, Engaging queueing, no strict mode around CFDT_JOB_SETUP.
+Open (clusters, from the hand-built S50 runs on Perlmutter):
+- Serial mesh steps: snappyHexMesh runs in parallel, but cfdt reconstructs the mesh (reconstructParMesh), reads it
+  whole in Python (pocket removal by subsetMesh, face tags, zones, sliding checks, the polyMesh it writes) and
+  decomposePar splits it again for the solve: 14-31 min a pass at 6.8 M cells on one core, about an hour of a 4-node
+  allocation at 14 M. Options: decompose the written case with OpenFOAM's parallel tools (redistributePar, if
+  OpenFOAM 14 has it: check) instead of decomposePar; or do the whole-mesh Python steps in a separate small job before
+  the multi-node one (a 'mesh' job, then the solve job: the expensive allocation never waits on serial steps). The
+  second fits cfdt's job model (dependencies) and needs no OpenFOAM change.
+- Collated file handler at 512 ranks (Engaging: 1 M files in scratch): cfdt's readers of decomposed cases
+  (foam._Decomposed, processor*/cfdt_addressing) read processor directories; collated writes processors<N>/ files.
+  Needs a reader for that layout before `-fileHandler collated` can be used.
+- A Courant limit by percentile (ignore the smallest cells): OpenFOAM 14's adjustable time step takes the maximum over
+  all cells; a percentile would need a function object that sets deltaT. The fixed step covers the S50 case.
+
 **2026.11.11.3**: llmt-runtime>=2026.11.11.2 (`--nodes=1` for every one-node MPI job); job.sh test updated.
 
 **2026.11.11.2**: multi-node jobs (not one_node; CFDT_SLURM_NODES; ranks capped at S.max_job_procs; caps from the

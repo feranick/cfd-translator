@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.08.1
+Version: 2026.11.12.1
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -69,7 +69,13 @@ def settings(study: dict, mesh=None) -> dict | None:
             V = mesh.geometry()["V"]
             h = float(np.cbrt(max(float(np.min(V)), 1e-30)))       # mm
         dt = min(0.2 * h * SCALE / U, W / 20)
-    out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)), "max_co": float(tr.get("max_co", 1.0)),
+    # max_co null: a fixed time step (dt, or a sliding mesh's degrees_per_step), no Courant limit: snappyHexMesh leaves
+    # a few micrometre cells in narrow gaps, and a Courant limit of 2 took the S50 to 0.02 deg a step (150,000 steps
+    # for 8 revolutions); the hand-built v2506 run went at 1 deg a step with Courant ~25 in a handful of cells,
+    # mean 0.12, and stayed stable (Perlmutter, 2026.11)
+    fixed = "max_co" in tr and tr["max_co"] is None
+    out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)),
+           "max_co": None if fixed else float(tr.get("max_co", 1.0)), "fixed_step": fixed,
            "write_interval": W,
            # a run started from another run's fields (init_from) needs no steady start
            "init": int(tr.get("init", 0 if (model == "laminar" or init_ref(study)[0]) else 500)),
@@ -77,21 +83,44 @@ def settings(study: dict, mesh=None) -> dict | None:
            "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
            "max_dt": float(f"{min(W / 10, T / 500):.4g}"),
            **({"init_from": init_ref(study)[0], "init_fields": init_ref(study)[1]} if init_ref(study)[0] else {})}
+    if fixed and tr.get("dt"):
+        out["dt"] = out["max_dt"] = float(tr["dt"])
     sl = sliding_zone(study)
     if sl:
         # a sliding mesh: at most degrees_per_step of rotation per time step, Courant 2 (OpenFOAM's propeller
         # tutorial), averages over whole revolutions (the window ends at end_time)
         Trev = 60.0 / abs(float(sl["rpm"]))
         deg = float(tr.get("degrees_per_step", 1.0))
-        out["max_co"] = float(tr.get("max_co", 2.0))
-        out["max_dt"] = float(f"{min(out['max_dt'], deg / 360.0 * Trev):.4g}")
-        out["dt"] = min(out["dt"], out["max_dt"])
+        if fixed:                              # exactly degrees_per_step a step
+            out["dt"] = out["max_dt"] = float(f"{deg / 360.0 * Trev:.6g}")
+        else:
+            out["max_co"] = float(tr.get("max_co", 2.0))
+            out["max_dt"] = float(f"{min(out['max_dt'], deg / 360.0 * Trev):.4g}")
+            out["dt"] = min(out["dt"], out["max_dt"])
         n = int(np.floor((T - out["average_from"]) / Trev + 1e-9))
         if n >= 1:
             out["average_from"] = float(f"{T - n * Trev:.10g}")
         out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),
                    degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)))
     return out
+
+
+def courant_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
+    """The Courant numbers OpenFOAM printed at the end of a transient log (its last tail_mb): the last step's mean and
+    max, the largest max and the median of the maxima over those steps. A fixed time step (max_co null) runs with a
+    large maximum in a few cells: these say how large and how steady it is."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, Path(log).stat().st_size - int(tail_mb * 1024 * 1024)))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    co = [(float(a), float(b)) for a, b in _CO.findall(text)]
+    if not co:
+        return None
+    mx = sorted(b for _, b in co)
+    return {"mean_last": co[-1][0], "max_last": co[-1][1], "max": mx[-1], "max_median": mx[len(mx) // 2],
+            "steps_seen": len(co)}
 
 
 def sliding_zone(study: dict) -> dict | None:
@@ -135,8 +164,10 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
                  "        );\n    }")
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       latestTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {tr['end_time']:.8g};\n\ndeltaT          {tr['dt']:.6g};\n\n"
-          f"adjustTimeStep  yes;\n\nmaxCo           {tr['max_co']:g};\n\nmaxDeltaT       {tr['max_dt']:.6g};\n\n"
-          f"writeControl    adjustableRunTime;\n\nwriteInterval   {tr['write_interval']:.8g};\n\npurgeWrite      2;\n\n"
+          + ("adjustTimeStep  no;\n\nwriteControl    runTime;\n\n" if tr.get("fixed_step") else
+             f"adjustTimeStep  yes;\n\nmaxCo           {tr['max_co']:g};\n\nmaxDeltaT       {tr['max_dt']:.6g};\n\n"
+             f"writeControl    adjustableRunTime;\n\n") +
+          f"writeInterval   {tr['write_interval']:.8g};\n\npurgeWrite      2;\n\n"
           "writeFormat     ascii;\n\nwritePrecision  10;\n\nwriteCompression off;\n\ntimeFormat      general;\n\n"
           "timePrecision   8;\n\nrunTimeModifiable true;\n\nfunctions\n{\n" + "\n".join(funcs) + "\n}")
     (case / "system" / "controlDict").write_text(_dict("controlDict", "system", cd))
@@ -240,6 +271,7 @@ def progress(text: str, end_time: float) -> dict:
     co = _CO.findall(text[-20000:])
     if co:
         out["courant_max"] = float(co[-1][1])
+        out["courant_mean"] = float(co[-1][0])
     dt = _DT.findall(text[-20000:])
     if dt:
         out["dt"] = float(dt[-1])

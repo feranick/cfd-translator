@@ -133,6 +133,10 @@ export CFDT_MAX_MEM=360G                      # the per-user cap is 386G; never 
 export CFDT_TIMEOUT=42600                     # mit_normal: 12 h per job
 ```
 
+`job.sh` runs without strict mode (no `set -e`), so a `CFDT_JOB_SETUP` line that returns non-zero (`module load` and
+the OpenFOAM bashrc often do) does not end the job; cfdt checks for OpenFOAM itself when it runs. The first hand-built
+Perlmutter job died in 7 s on exactly that under `set -euo pipefail`.
+
 `CFDT_LAUNCH` is the MPI launcher cfdt uses for snappyHexMesh, foamRun and the sliding mesh's parallel utilities
 (`{n}`: the ranks). Without it cfdt uses `mpirun -np N`, as on its own machines.
 
@@ -147,6 +151,10 @@ cfdt status $CFDT_OUT/run_...                 # as study_status (pending ones wi
 cfdt pack $CFDT_OUT/run_...                   # when done: run_....cfdt.tgz next to the request
 cfdt pack $CFDT_OUT/run_... --state           # with the mesh and fields, for render_images at home (large)
 ```
+
+Queueing on Engaging: a full 96-core node on `mit_normal` can wait hours (the first S50 job pended 8 h and was then
+cancelled with no recorded reason). `squeue --start -j <id>` gives SLURM's estimate; a job cancelled without a reason
+(`sacct -j <id> -o JobID,State,Reason,Start,End`) is one to ask ORCD about.
 
 Long transient runs (DES, sliding mesh) write and stop before each job's limit and continue in the next job by
 themselves (`solve.transient.max_jobs`), as on mochi. `cfdt cancel REQUEST` stops them.
@@ -169,7 +177,14 @@ build123d goal needs build123d-translator there, or export it as STL first.
 4. Perlmutter: a short multi-node job before the real one, e.g. `pipe_poiseuille_mpi` with `"run": {"procs": 256}`
    and a mesh fine enough for 256 ranks: job.sh has `--nodes=2 --ntasks-per-node=128`, and `log.foamRun` shows
    `nProcs : 256` on two hosts.
-5. Then the real case: on Perlmutter up to 4 x 128 ranks; on Engaging one node (96).
+5. The first real case: the S50 `sliding7` (the fine ring at the interface) as built, at 20 m3/h, with
+   `solve.transient` `max_co: null` and `degrees_per_step: 1`, on Perlmutter at 4 x 128 ranks. It is the check of
+   cfdt's sliding mesh (OpenFOAM 14's non-conformal coupling, NCC) on the S50: cfdt's six earlier sliding attempts
+   there failed in the first steps, and `sliding7` has never run, while ESI's cyclicAMI case ran with interface
+   weights averaging 1.0008. Compare `pump.head_m`, `power_W` and `efficiency` (revolution averages) with the
+   hand-built v2506 run on Perlmutter, and look at `solve.time_step.courant_by_segment` and the sliding block
+   (`solve.sliding`: interface cells, correct_mesh_phi).
+6. Then the other cases: on Perlmutter up to 4 x 128 ranks; on Engaging one node (96).
 
 ## 6. What the hand-built S50 run on Perlmutter needed, and where cfdt does it
 
@@ -177,6 +192,6 @@ build123d goal needs build123d-translator there, or export it as STL first.
 |---|---|
 | pockets cut off from the flow removed | snappy: `cut_off_regions` + `subsetMesh` (mesh.regions_removed) |
 | interface faces with no overlap, a stepped interface | sliding: `check` stops before the solve; NCC (`createNonConformalCouples`) instead of AMI |
-| sliver cells limiting the time step | mesh quality and skewness reports with places; layers dropped when checkMesh fails |
+| sliver cells limiting the time step | `solve.transient.max_co: null`: a fixed step of `degrees_per_step` (or `dt`), no Courant limit; the Courant numbers reported per job segment (`solve.time_step`). A report of the cells alone would not have saved the run |
 | pcorr tolerance | the transient fvSolution's pcorr/MeshPhi settings (correctPhi), the retry without correctMeshPhi |
 | write and stop before the time limit, continue, cap the jobs | transient segments (deadline writeNow, latestTime, max_jobs) |

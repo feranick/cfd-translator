@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.11.1
+Version: 2026.11.12.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -240,6 +240,17 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                                     jobs=tstate.get("segments", 0) + 1, init_iterations=tstate.get("init_iterations"),
                                     averaged_fields=bool(fields.get("averaged")))
                 out["solve"].pop("first_residuals", None)
+                from .transient import courant_stats
+                co = courant_stats(case / "log.foamRun")
+                segs = tstate.get("courant") or []
+                out["solve"]["time_step"] = {"fixed": bool(tr.get("fixed_step")), "dt": tr.get("dt"),
+                                             **({"max_co": tr["max_co"]} if tr.get("max_co") else {}),
+                                             **({"courant": co} if co else {}),
+                                             **({"courant_by_segment": segs} if segs else {})}
+                if tr.get("fixed_step") and co and co["max_median"] > 50:
+                    warns.append(f"fixed time step: the largest Courant number is {co['max_median']:.3g} most steps "
+                                 f"(mean {co['mean_last']:.3g}): watch the results for noise from those cells, or "
+                                 "lower degrees_per_step / dt")
                 if plan.get("sliding"):
                     sl = plan["sliding"]
                     out["solve"]["sliding"] = {
@@ -770,6 +781,11 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         info = foam.run(case, max(left, 120.0), procs, resume=True, deadline=t_job + timeout - margin)
     state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
     state["time"] = info.get("time")
+    from .transient import courant_stats
+    co = courant_stats(case / "log.foamRun")       # this job's segment (the log is renamed when the next one starts)
+    if co:
+        state.setdefault("courant", []).append({"segment": int(state.get("segments", 0)) + 1, "time": info.get("time"),
+                                                **co})
     if info.get("reached_end"):
         save()
         return info

@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.06.3
+Version: 2026.11.12.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -48,6 +48,11 @@ GUIDES = {
             "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
             "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
             "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+            "Narrow gaps (an impeller's 0.5 mm clearances): snappyHexMesh leaves a few micrometre cells there, and a "
+            "Courant limit then shrinks the step to a sliver (S50 at max_co 2: 0.02 deg a step, ~150,000 steps for 8 "
+            "revolutions). Use max_co null: a fixed step of exactly degrees_per_step (1 deg ran stable on the S50 with "
+            "Courant ~25 in a handful of cells, mean 0.12, ESI v2506 on Perlmutter). solve.time_step.courant (and "
+            "courant_by_segment) report the maximum, its median over the steps and the mean.",
         ],
         "cavitation": [
             "cavitation: {npsh: [12, 8, 6, 5, 4, 3.5, 3, 2.5]} turns the pump study into an NPSH sweep: one study per "
