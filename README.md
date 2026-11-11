@@ -427,6 +427,8 @@ cfd_translator/
   transient.py  URANS / DES / laminar unsteady runs, steady start, stop-and-continue over SLURM jobs
 tests/conftest.py (a bare machine for every test), test_cfd.py, test_slurm.py, test_average.py, test_scalars.py, test_porous.py, test_snappy.py, test_variants.py, test_transient.py, test_mcp_server.py, test_render_vtk.py, test_porous_force.py, test_sliding.py, test_cavitation.py
 examples/studies.json      planning.md (session context)
+docs/openfoam-v2506-hpc-recipes.md   building and running ESI OpenFOAM v2506 on MIT Engaging and NERSC Perlmutter (reference;
+                                     cfdt itself targets openfoam.org OpenFOAM 14)
 ```
 
 ## Versions
