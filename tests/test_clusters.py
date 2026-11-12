@@ -307,3 +307,24 @@ def test_cli_validate_exit_code(tmp_path, capsys):
     assert e.value.code == 1 and '"ok": false' in capsys.readouterr().out
     cli.main(["validate", str(good)])                                   # valid: returns, exit 0
     assert cli.exit_code("pack", {"error": "no request"}) == 1 and cli.exit_code("bench", {"a": {"passed": False}}) == 0
+
+
+def test_caps_say_what_capped_the_memory(tmp_path, monkeypatch):
+    """Perlmutter refused --mem=480G with RealMemory 515100M: the cap is what a job can get (llmt-runtime 2026.11.12.1),
+    and cfdt's caps() names the runtime's reason instead of 'a node's memory (SLURM RealMemory)'."""
+    S = _perlmutter(tmp_path, monkeypatch)
+    from cfd_translator import executor
+    nodes, parts = tmp_path / "nodes.txt", tmp_path / "parts.txt"
+    monkeypatch.setenv("FAKE_SCONTROL_PARTITIONS", str(parts))
+    nodes.write_text(PERLMUTTER.replace("RealMemory=512000", "RealMemory=515100 MemSpecLimit=30000"))
+    parts.write_text("PartitionName=regular_milan_ss11 Default=YES MaxMemPerNode=UNLIMITED")
+    S.forget()
+    c = executor.caps()
+    assert c["mem_mb"] == 485100 and "MemSpecLimit" in c["mem_from"], c
+    big = dict(COUETTE, run={"procs": 512, "queue": True, "mem": "480G"})
+    assert any("485100M" in e for e in executor.run_errors(big))
+    parts.write_text("PartitionName=regular_milan_ss11 Default=YES MaxMemPerNode=460000")
+    S.forget()
+    c = executor.caps()
+    assert c["mem"] == "460000M" and "MaxMemPerNode" in c["mem_from"], c
+    S.forget()

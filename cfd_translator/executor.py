@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.12.8
+Version: 2026.11.12.9
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -220,6 +220,13 @@ def node_cores() -> int | None:
     return max(S.node_core_count(n) for n in ns) if ns else None
 
 
+def node_mem_limit() -> tuple[float | None, str]:
+    """(MB, why) of the most memory a job can ask for per node: llmt-runtime's node_mem_limit (RealMemory less
+    MemSpecLimit, within the partition's MaxMemPerNode / MaxMemPerCPU x CPUs; since runtime 2026.11.12.1: Perlmutter
+    refused --mem=480G with RealMemory 515100M)."""
+    return S.node_mem_limit(RT)
+
+
 def node_mem_mb() -> float | None:
     """The most memory one job can ask for (MB): the largest RealMemory among the nodes jobs go to, or None when
     SLURM does not know it. mochi's jobs failed only at submission with 'Memory specification can not be satisfied'
@@ -249,8 +256,9 @@ def nodes_listing(nodes: list) -> dict:
 
 def caps() -> dict:
     """The ceilings set in config/env (CFDT_MAX_TIMEOUT s, CFDT_MAX_MEM, CFDT_MAX_PROCS); unset: none. With
-    SLURM, procs is also at most a node's cores, and mem at most a node's memory, exactly as SLURM gives it
-    ('64000M'; it read '62G' before 2026.11.09.4), mem_mb in MB for the router."""
+    SLURM, procs is also at most a node's cores, and mem at most what a job can get on a node (llmt-runtime's
+    node_mem_limit; mem_from says what capped it), exactly as SLURM gives it ('64000M'; it read '62G' before
+    2026.11.09.4), mem_mb in MB for the router."""
     out = {}
     for k, name in (("timeout_s", "MAX_TIMEOUT"), ("mem", "MAX_MEM"), ("procs", "MAX_PROCS")):
         v = RT.env(name, "").strip()
@@ -277,10 +285,10 @@ def caps() -> dict:
             if given is None or given > nc:
                 out["procs"] = str(nc)
                 out["procs_from"] = "a node's cores (SLURM, one rank per core)"
-    nm = node_mem_mb()
+    nm, why = node_mem_limit()
     if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
         out["mem"] = S.mem_text(nm)
-        out["mem_from"] = "a node's memory (SLURM RealMemory)"
+        out["mem_from"] = why or "a node's memory (SLURM RealMemory)"
     if out.get("mem") and mem_mb(out["mem"]):
         out["mem_mb"] = int(mem_mb(out["mem"]))
         if rc.get("mem_per"):

@@ -111,7 +111,6 @@ export CFDT_SLURM_ARGS="-A m526 -C cpu -q regular"   # -C cpu: the 128-core CPU 
 export CFDT_SLURM_NODE=any                    # SLURM chooses the nodes (the login node is not one)
 export CFDT_SLURM_NODES=4                     # a job may span up to 4 nodes
 export CFDT_LAUNCH="srun -n {n} --cpu-bind=cores"
-export CFDT_MAX_MEM=440G                      # per node: what a job can get, below RealMemory (see below)
 export CFDT_PROCS=512                         # 4 x 128; studies with fewer cells get fewer (5000 cells a rank)
 export CFDT_TIMEOUT=42600                     # s per job: with cfdt's 10 min, 12 h
 ```
@@ -121,14 +120,15 @@ A study's `run.procs` (or `solve.procs`) up to 512 is accepted (`caps.procs`); 5
 asks `--mem=120G` on each node (480G in all); the estimate gives each node 2 GB + its share of 4 GB per million cells
 (job.json: `mem` per node, `mem_total`, `mem_per: node`). Before 2026.11.12.8 an unknown size on 4 nodes asked 2G a node.
 
-A node's memory cap (`caps.mem`) is SLURM's RealMemory (515100M on Perlmutter's CPU nodes), but a job cannot have all
-of it: Perlmutter refused `--mem=480G` ("Memory required by task is not available"). Until llmt-runtime takes what a job
-can actually get (RealMemory minus MemSpecLimit, a partition's MaxMemPerNode), set `CFDT_MAX_MEM` to it. Find it with
-`sbatch --test-only` (no job is queued); the 440G above is a safe guess to replace:
+A node's memory cap (`caps.mem`, per node) is what a job can get there (llmt-runtime 2026.11.12.1, cfdt 2026.11.12.9):
+RealMemory less MemSpecLimit, within the partition's MaxMemPerNode or MaxMemPerCPU x the node's CPUs; `mem_from` in
+`cfdt status` says which limit applies. Perlmutter refused `--mem=480G` with RealMemory 515100M before this. If
+`cfdt status` shows a cap SLURM still refuses, set `CFDT_MAX_MEM` (per node) below it and check with `sbatch --test-only`
+(no job is queued):
 
 ```bash
-scontrol show node $(sinfo -h -N -o "%N %f" | awk '/cpu/ {print $1; exit}') | grep -oE "RealMemory=[0-9]+|MemSpecLimit=[0-9]+"
-for m in 440G 460G 470G 475G; do echo -n "$m: "; sbatch --test-only -A m526 -C cpu -q regular -N 1 --mem=$m --wrap true 2>&1 | tail -1; done
+cfdt status | python3 -c "import json,sys; c=json.load(sys.stdin)['executor']['caps']; print(c.get('mem'), '|', c.get('mem_from'))"
+for m in 440G 460G 480G; do echo -n "$m: "; sbatch --test-only -A m526 -C cpu -q regular -N 1 --mem=$m --wrap true 2>&1 | tail -1; done
 ```
 
 **Engaging**
