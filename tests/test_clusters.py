@@ -242,3 +242,68 @@ def test_bench_verdict_solve_and_expected_notes():
     notes = bench.expected_notes(w)
     assert len(notes) == 2 and "fewer ranks" in notes[0] and "window average" in notes[1]
     assert bench.expected_notes(w[2:]) == []
+
+
+def _perlmutter(tmp_path, monkeypatch):
+    from llmt_runtime import slurm as S
+    from llmt_runtime.testing import fake_slurm
+    fake_slurm(tmp_path, monkeypatch)
+    f = tmp_path / "nodes.txt"
+    f.write_text(PERLMUTTER)
+    monkeypatch.setenv("FAKE_SCONTROL_NODES", str(f))
+    monkeypatch.setenv("FAKE_SBATCH_PENDING", "1")
+    for k, v in (("CFDT_EXECUTOR", "slurm"), ("CFDT_SLURM_NODE", "any"), ("CFDT_SLURM_NODES", "4"),
+                 ("CFDT_SLURM_ARGS", "-A m526 -C cpu -q regular"), ("CFDT_PROCS", "512")):
+        monkeypatch.setenv(k, v)
+    S.forget()
+    return S
+
+
+def test_run_mem_is_per_node_on_multi_node_jobs(tmp_path, monkeypatch):
+    """Perlmutter: run.mem is SLURM's --mem, per node (llmt-runtime passes it as given), so its cap is a node's
+    memory; validation now says so, the 'auto' run.mem is split over the nodes (it asked for the whole estimate on
+    each), and the auto total may reach a node's memory on each node."""
+    S = _perlmutter(tmp_path, monkeypatch)
+    from cfd_translator import executor
+    c = executor.caps()
+    assert c["mem_per"] == "node" and "per node" in c["mem_note"]
+    big = dict(COUETTE, run={"procs": 512, "queue": True, "mem": "600G"})
+    errs = executor.run_errors(big)
+    assert any("per node" in e and "node's share" in e for e in errs), errs
+    assert not executor.run_errors(dict(big, run={"procs": 512, "queue": True, "mem": "500G"}))
+    monkeypatch.setattr(executor, "_cells", lambda st: 200e6)           # 2 + 800 GB: more than one node has
+    auto = dict(big, run={"procs": 512, "queue": True, "mem": "auto"})
+    assert executor.job_nodes(auto, 200e6) == 4
+    total = executor.mem_mb(executor.mem_auto(auto, 200e6))
+    assert total > 512000                                               # not cut to one node's memory
+    per = executor.mem_mb(executor.mem_auto_per_node(auto, 200e6))
+    assert per <= 512000 and abs(per - total / 4) < 1100
+    assert executor.mem_mb(executor._for_job(auto)["run"]["mem"]) == per
+    assert executor.mem_needed_mb(auto, 200e6) == per                   # the router compares it with caps.mem_mb
+    r = api.run({"s": auto}, "ref", wait=0)
+    j = json.loads((Path(r["request"]) / "s" / "job.json").read_text())
+    assert j["nodes"] == 4 and executor.mem_mb(j["mem"]) == per
+    # one rule: each node gets what one node would (2 GB + its share), and 8G a node when the size is unknown
+    # (CFDT_SLURM_MEM=auto: the runtime divides mem_auto's total; it asked for 2G a node on 4 nodes)
+    monkeypatch.setattr(executor, "cell_estimate", lambda st: None)
+    monkeypatch.setattr(executor, "_cells", lambda st: None)
+    plain = dict(COUETTE, run={"procs": 512, "queue": True})
+    assert executor.job_nodes(plain, None) == 4
+    assert executor.mem_mb(executor.mem_auto(plain, None)) == 4 * 8192
+    assert executor.mem_mb(S.mem_plan(executor.RT, plain)["mem"]) == 8192
+    assert executor.mem_needed_mb(plain, None) == 8192
+    S.forget()
+
+
+def test_cli_validate_exit_code(tmp_path, capsys):
+    """`cfdt validate s.json && cfdt run s.json` ran the run although the study was invalid (exit 0)."""
+    from cfd_translator import cli
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"s": dict(COUETTE, fluid="lava")}))
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"s": COUETTE}))
+    with pytest.raises(SystemExit) as e:
+        cli.main(["validate", str(bad)])
+    assert e.value.code == 1 and '"ok": false' in capsys.readouterr().out
+    cli.main(["validate", str(good)])                                   # valid: returns, exit 0
+    assert cli.exit_code("pack", {"error": "no request"}) == 1 and cli.exit_code("bench", {"a": {"passed": False}}) == 0

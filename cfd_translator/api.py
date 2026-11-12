@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.7
+Version: 2026.11.12.8
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -133,11 +133,18 @@ def _mem_warning(study: dict, est: dict) -> str | None:
     if executor.kind() != "slurm" or not est.get("cells"):
         return None
     mb, src = executor.mem_plan(study, est["cells"])
+    nodes = executor.job_nodes(study, est["cells"])
     need = executor.mem_estimate_mb(est["cells"])
+    if need:
+        need /= nodes                        # the estimate is the job's; --mem (and run.mem) are per node
+    on = f" on each of its {nodes} nodes" if nodes > 1 else ""
     if src == "CFDT_SLURM_ARGS" and mb and need and need > mb * 1.05:
-        return (f"memory: the job asks for {mb / 1024:.0f}G (--mem in CFDT_SLURM_ARGS) but ~{est['cells'] / 1e6:.1f}M "
-                f"cells may need {need / 1024:.0f}G: set run.mem (e.g. '{int(need // 1024 + 1)}G'), or have the admin "
-                "move --mem from CFDT_SLURM_ARGS to CFDT_SLURM_MEM=auto")
+        return (f"memory: the job asks for {mb / 1024:.0f}G{on} (--mem in CFDT_SLURM_ARGS) but ~{est['cells'] / 1e6:.1f}M "
+                f"cells may need {need / 1024:.0f}G{on}: set run.mem (e.g. '{int(need // 1024 + 1)}G'), or have the "
+                "admin move --mem from CFDT_SLURM_ARGS to CFDT_SLURM_MEM=auto")
+    if src == "study" and nodes > 1 and mb and need and need > mb * 1.05:
+        return (f"memory: run.mem {mb / 1024:.0f}G is per node (SLURM's --mem); ~{est['cells'] / 1e6:.1f}M cells on "
+                f"{nodes} nodes may need {need / 1024:.0f}G on each (set run.mem to that, or 'auto')")
     return None
 
 

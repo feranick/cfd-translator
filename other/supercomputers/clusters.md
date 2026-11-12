@@ -7,8 +7,9 @@ small archive of the results; `import_results` (or `cfdt import`) turns it into 
 `study_status`, `window`, `variants` and `render_images` work as usual.
 
 Jobs may span several nodes (llmt-runtime 2026.11.11.1, cfdt 2026.11.11.2): with `CFDT_SLURM_NODES` a study whose
-ranks exceed a node's cores runs on `--nodes=K` with the ranks balanced (`--ntasks-per-node`), its memory estimate
-split per node. On Perlmutter the S50 sliding case runs on 4 nodes x 128 ranks (about 27k cells a rank), as the
+ranks exceed a node's cores runs on `--nodes=K` with the ranks balanced (`--ntasks-per-node`). Memory is always per
+node (SLURM's `--mem`): `run.mem` is what each node gets, and the estimate gives each node what one node would
+(2 GB + its share of 4 GB per million cells; 8G a node when the size is unknown). On Perlmutter the S50 sliding case runs on 4 nodes x 128 ranks (about 27k cells a rank), as the
 hand-built run did. Engaging's per-user cap (96 CPUs) keeps jobs on one node there.
 
 OpenFOAM 14 is built on both clusters (build 14-a4867fc914c1; `env-of14-perlmutter.sh`, `env-of14-engaging.sh` here,
@@ -110,13 +111,25 @@ export CFDT_SLURM_ARGS="-A m526 -C cpu -q regular"   # -C cpu: the 128-core CPU 
 export CFDT_SLURM_NODE=any                    # SLURM chooses the nodes (the login node is not one)
 export CFDT_SLURM_NODES=4                     # a job may span up to 4 nodes
 export CFDT_LAUNCH="srun -n {n} --cpu-bind=cores"
+export CFDT_MAX_MEM=440G                      # per node: what a job can get, below RealMemory (see below)
 export CFDT_PROCS=512                         # 4 x 128; studies with fewer cells get fewer (5000 cells a rank)
 export CFDT_TIMEOUT=42600                     # s per job: with cfdt's 10 min, 12 h
 ```
 
 A study's `run.procs` (or `solve.procs`) up to 512 is accepted (`caps.procs`); 512 ranks run as 4 nodes x 128, 300 as
-3 x 100, up to 128 on one node. The memory estimate (2 GB + 4 GB per million cells) is the job's; SLURM's `--mem` is
-per node, so llmt-runtime divides it (job.json: `mem`, `mem_total`, `mem_per: node`).
+3 x 100, up to 128 on one node. Memory is per node, `run.mem` and the estimate alike: `run.mem: "120G"` on a 4-node job
+asks `--mem=120G` on each node (480G in all); the estimate gives each node 2 GB + its share of 4 GB per million cells
+(job.json: `mem` per node, `mem_total`, `mem_per: node`). Before 2026.11.12.8 an unknown size on 4 nodes asked 2G a node.
+
+A node's memory cap (`caps.mem`) is SLURM's RealMemory (515100M on Perlmutter's CPU nodes), but a job cannot have all
+of it: Perlmutter refused `--mem=480G` ("Memory required by task is not available"). Until llmt-runtime takes what a job
+can actually get (RealMemory minus MemSpecLimit, a partition's MaxMemPerNode), set `CFDT_MAX_MEM` to it. Find it with
+`sbatch --test-only` (no job is queued); the 440G above is a safe guess to replace:
+
+```bash
+scontrol show node $(sinfo -h -N -o "%N %f" | awk '/cpu/ {print $1; exit}') | grep -oE "RealMemory=[0-9]+|MemSpecLimit=[0-9]+"
+for m in 440G 460G 470G 475G; do echo -n "$m: "; sbatch --test-only -A m526 -C cpu -q regular -N 1 --mem=$m --wrap true 2>&1 | tail -1; done
+```
 
 **Engaging**
 

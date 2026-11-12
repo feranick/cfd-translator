@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.12.5
+Version: 2026.11.12.8
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -285,6 +285,8 @@ def caps() -> dict:
         out["mem_mb"] = int(mem_mb(out["mem"]))
         if rc.get("mem_per"):
             out["mem_per"] = rc["mem_per"]         # SLURM's --mem is per node
+            out["mem_note"] = (f"run.mem is per node (SLURM's --mem): a job on {rc.get('nodes')} nodes may have "
+                               f"{out['mem']} on each; the 'auto' estimate is the job's total, split over its nodes")
     return out
 
 
@@ -310,10 +312,14 @@ def run_errors(st: dict) -> list[str]:
     if m is not None:
         mb = mem_mb(m) if isinstance(m, str) and m.lower() != "auto" else (1 if m == "auto" else None)
         if not mb:
-            errs.append("run.mem: SLURM memory per job, e.g. '8G' or '500M', or 'auto' (from the cell estimate)")
+            errs.append("run.mem: SLURM memory per node (--mem), e.g. '8G' or '500M', or 'auto' (from the cell "
+                        "estimate, split over the job's nodes)")
         elif "mem" in cap and mem_mb(cap["mem"]) and mb > mem_mb(cap["mem"]):
+            multi = int(cap.get("nodes") or 1) > 1
             errs.append(f"run.mem: at most {cap['mem']} on this machine ({cap.get('mem_from', 'CFDT_MAX_MEM')}); "
-                        "choose a machine with more (machines(): executor.caps.mem) or ask for less")
+                        + ("it is per node (SLURM's --mem): a job on several nodes gets it on each, so give a "
+                           "node's share, not the total; " if multi else "")
+                        + "choose a machine with more (machines(): executor.caps.mem) or ask for less")
     n = r.get("procs")
     if n is not None:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
@@ -360,6 +366,8 @@ def mem_plan(study: dict, cells: float | None = None) -> tuple[float | None, str
     the node's memory. cells: the study's estimate (None: unknown). The job's own --mem is llmt-runtime's mem_plan with
     cfdt's mem_auto (job_mem); this one names the source and sizes the validation estimate."""
     cap = _cap_mb()
+    if cap:
+        cap *= job_nodes(study, cells)        # the estimate is the job's total: a node's memory on each of its nodes
 
     def capped(mb):
         return float(min(mb, cap) if cap else mb)
@@ -375,7 +383,9 @@ def mem_plan(study: dict, cells: float | None = None) -> tuple[float | None, str
         return None, "none"
     if setting.lower() == "auto":
         need = mem_estimate_mb(cells)
-        return capped(need if need else 8192.0), "estimate" if need else "auto (no cell estimate: 8G)"
+        nodes = job_nodes(study, cells)
+        tot = need + 2048.0 * (nodes - 1) if need else 8192.0 * nodes
+        return capped(tot), "estimate" if need else "auto (no cell estimate: 8G a node)"
     mb = mem_mb(setting)
     return (capped(mb), "CFDT_SLURM_MEM") if mb else (None, "none")
 
@@ -389,22 +399,49 @@ def _mem_text(mb: float, cap: float | None = None) -> str:
     return t
 
 
+def job_nodes(study: dict, cells: float | None = None) -> int:
+    """The nodes a study's SLURM job runs on (llmt-runtime's job_layout of its ranks; 1 unless CFDT_SLURM_NODES > 1)."""
+    if kind() != "slurm" or S.max_nodes(RT) <= 1:
+        return 1
+    try:
+        return int(S.job_layout(RT, procs_for_job(study, cells))[0])
+    except Exception:  # noqa: BLE001 (sizing advice: one node when the layout cannot be told)
+        return 1
+
+
 def mem_auto(study: dict, cells: float | None = None) -> str:
-    """CFDT_SLURM_MEM=auto (and run.mem 'auto'): the job's --mem from the cell estimate, 2 GB + 4 GB per million
-    cells, 8G when the cells cannot be told; within CFDT_MAX_MEM and the node's memory. The runtime's hooks.mem_auto."""
+    """CFDT_SLURM_MEM=auto: the job's total memory, sized so that each node gets what one node would: 2 GB + 4 GB per
+    million cells on one node; on K nodes, 2 GB on each + their share of 4 GB per million cells; 8G on each node when
+    the cells cannot be told. Within CFDT_MAX_MEM and the node's memory on each node. The runtime's hooks.mem_auto:
+    llmt-runtime divides this total over the nodes (SLURM's --mem is per node), so every --mem cfdt asks for, run.mem
+    or the estimate, is per node (one rule since 2026.11.12.8: an unknown size on 4 nodes asked for 2G on each)."""
     if cells is None:
         cells = _cells(study)
+    nodes = job_nodes(study, cells)
     cap = _cap_mb()
-    need = mem_estimate_mb(cells) or 8192.0
+    if cap:
+        cap *= nodes
+    need = mem_estimate_mb(cells)
+    need = need + 2048.0 * (nodes - 1) if need else 8192.0 * nodes
     return _mem_text(min(need, cap) if cap else need, cap)
+
+
+def mem_auto_per_node(study: dict, cells: float | None = None) -> str:
+    """mem_auto's total split over the job's nodes: what --mem asks on each (run.mem 'auto')."""
+    if cells is None:
+        cells = _cells(study)
+    total = mem_mb(mem_auto(study, cells)) or 8192.0
+    nodes = job_nodes(study, cells)
+    return _mem_text(total / nodes, _cap_mb()) if nodes > 1 else _mem_text(total, _cap_mb())
 
 
 def _for_job(study: dict) -> dict:
     """The study as llmt-runtime sizes its job: run.mem 'auto' (cfdt's: the estimate, whatever CFDT_SLURM_MEM and a
-    --mem in CFDT_SLURM_ARGS say) becomes that size."""
+    --mem in CFDT_SLURM_ARGS say) becomes that size per node (the runtime takes a run.mem as per node, as --mem; a
+    4-node job got the whole estimate on each node before 2026.11.12.8)."""
     r = S.run_of(study)
     if str(r.get("mem", "")).strip().lower() == "auto":
-        return dict(study, run=dict(r, mem=mem_auto(study)))
+        return dict(study, run=dict(r, mem=mem_auto_per_node(study)))
     return study
 
 
@@ -712,14 +749,20 @@ def estimate_minutes(study: dict, solver: str, cells: float | None = None, procs
 
 
 def mem_needed_mb(study: dict, cells: float | None = None) -> float:
-    """The memory the job asks for (mem_plan, as its --mem: a size as given, the estimate rounded up as mem_auto
-    writes it); SLURM's default ('none'): the estimate's need, for the router."""
+    """The memory the job asks for on each node (mem_plan, as its --mem: a size as given, the estimate rounded up as
+    mem_auto writes it and split over the job's nodes); SLURM's default ('none'): the estimate's need, for the
+    router, which compares it with caps.mem_mb (a node's)."""
     mb, src = mem_plan(study, cells)
+    nodes = job_nodes(study, cells)
     if mb is None:
-        return float(mem_estimate_mb(cells) or 8192.0)
+        need = mem_estimate_mb(cells)
+        return (need + 2048.0 * (nodes - 1)) / nodes if need else 8192.0
     if src in ("study", "CFDT_SLURM_ARGS", "CFDT_SLURM_MEM"):
         return float(mb)
-    return float(mem_mb(_mem_text(mb, _cap_mb())) or mb)
+    if str((study.get("run") or {}).get("mem", "")).lower() == "auto":
+        return float(mem_mb(mem_auto_per_node(study, cells)) or mb)
+    total = float(mem_mb(mem_auto(study, cells)) or mb)
+    return float(mem_mb(_mem_text(total / nodes, _cap_mb())) or total / nodes) if nodes > 1 else total
 
 
 def estimate(study: dict, solver: str) -> dict | None:

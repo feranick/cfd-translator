@@ -1,9 +1,9 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.11.2
+Version: 2026.11.12.8
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
-    cfdt validate studies.json           static checks
+    cfdt validate studies.json           static checks (exit 1 when a study is invalid)
     cfdt run studies.json [--solver S] [--wait SEC]
                                          mesh, solve, check (S: auto | foam | ref); waits for all, or SEC seconds
                                          (--wait 0 on a cluster's login node: submit and return the request)
@@ -85,6 +85,20 @@ def main(argv=None) -> None:
     except KeyboardInterrupt:     # run / bench printed the SLURM jobs left in the queue (api.run, bench.run)
         sys.exit(130)
     print(json.dumps(out, indent=1, default=float))
+    code = exit_code(a.cmd, out)
+    if code:
+        sys.exit(code)
+
+
+def exit_code(cmd: str, out) -> int:
+    """1 when the command did not do what it was asked, so `cfdt validate s.json && cfdt run s.json` stops at an
+    invalid study: validate with ok false, or any answer with a top-level 'error'. Results (a study that failed, a
+    benchmark that did not pass) are data in the JSON and keep 0."""
+    if not isinstance(out, dict):
+        return 0
+    if cmd == "validate" and out.get("ok") is False:
+        return 1
+    return 1 if out.get("error") else 0
 
 
 def _command(a) -> dict:
