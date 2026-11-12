@@ -718,3 +718,36 @@ def test_a_short_seam_is_told_apart_from_a_hole():
     cut = [(t, tri[1:]) if k == 0 else (t, tri) for k, (t, tri) in enumerate(surf)]
     h = snappy.surface_health(pts, cut)
     assert h["open_edges"] > 0 and h["open_length_mm"] > 0
+
+
+def test_sliding_caps_on_background_grid_planes():
+    """The hand-built ESI S50 case put snappy's background planes on the zone's caps (z -82.25 and -46.25 mm): no
+    snapping there, AMI weights 0.98-1.16. sliding7's caps were mid-cell and the lower one leaned 64.7 degrees."""
+    st = {"mesh": {"mesher": "snappy", "size": 4, "surface": [0.7, 2]},
+          "rotating": [{"name": "impeller", "axis": [0, 0, 1], "center": [0, 0, -82.25], "rpm": 2900, "radius": 59.7,
+                        "span": [0, 36.0], "motion": "sliding"}]}
+    pbb = ([-120.3, -130.1, -131.7], [140.2, 400.9, 30.4])
+    s = snappy.settings(st, False, list(pbb[0]) + list(pbb[1]), pbb)
+    lo, hi, n = np.array(s["lo"]), np.array(s["hi"]), np.array(s["cells"])
+    dz = (hi[2] - lo[2]) / n[2]
+    for cap in (-82.25, -46.25):
+        k = (cap - lo[2]) / dz
+        assert abs(k - round(k)) < 1e-9, (cap, k)
+        for L in range(5):                                    # a face plane at every refinement level
+            kk = (cap - lo[2]) / (dz / 2 ** L)
+            assert abs(kk - round(kk)) < 1e-9
+    assert dz == pytest.approx(4.0) and s["h0"] == pytest.approx(4.0)
+    assert lo[2] <= pbb[0][2] - 1.5 * dz + 1e-9 and hi[2] >= pbb[1][2] + 1.5 * dz - 1e-9
+    assert s["aligned"]["done"] and s["aligned"]["cells_between_caps"] == 9
+    # a span that is not a whole number of cells: the axial cells shrink a little so both caps are planes
+    st["rotating"][0]["span"] = [0, 37.0]
+    s = snappy.settings(st, False, list(pbb[0]) + list(pbb[1]), pbb)
+    lo, hi, n = np.array(s["lo"]), np.array(s["hi"]), np.array(s["cells"])
+    dz = (hi[2] - lo[2]) / n[2]
+    assert dz == pytest.approx(3.7) and s["h0"] == pytest.approx(4.0)
+    for cap in (-82.25, -45.25):
+        assert abs((cap - lo[2]) / dz - round((cap - lo[2]) / dz)) < 1e-9
+    # x and y untouched; an oblique axis or an external box: left as they were, and said so
+    assert (hi[0] - lo[0]) / n[0] == pytest.approx(4.0)
+    st["rotating"][0]["axis"] = [0, 0.6, 0.8]
+    assert snappy.settings(st, False, list(pbb[0]) + list(pbb[1]), pbb)["aligned"]["done"] is False

@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.12.11
+Version: 2026.11.12.13
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -360,6 +360,13 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                 "cylinder would break the mesh: where the cylinder runs closer to walls than about two cells (vane "
                 "tips, a casing bore). Put the zone's boundary where the gap holds 4 or more cells, or refine that "
                 "gap (a hollow mesh.refine cylinder over it) until it does")
+        if len(f) > 400_000:
+            # Perlmutter sliding7 (2026.11.12): 1.47 M interface faces (0.9 M in a 0.125 mm band), 13 M couplings once
+            # turned, ~35 of a 44 s step spent changing the mesh against ~7 s in the linear solves
+            notes.append(f"the sliding interface has {len(f):,} faces: every time step re-intersects them and rebuilds "
+                         "the mesh around them (sliding7: 1.47 M faces, ~35 s of a 44 s step on 512 ranks). Cells twice "
+                         "as large along the interface give 4x fewer faces; a band finer than the cells it must match "
+                         "on both sides costs time without helping the coupling")
         zo, oo = pvf["zone_owner"], pvf["other_owner"]
         best = min(zo["max"], oo["max"])
         own = "the rotor (zone) side" if zo["max"] <= oo["max"] else "the stator side"

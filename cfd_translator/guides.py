@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.4
+Version: 2026.11.12.13
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -40,6 +40,11 @@ GUIDES = {
             "The cells along the zone's boundary matter: the interface's mesh-flux correction works on them "
             "(solve.sliding.interface_cells). If OpenFOAM crashes there, cfdt runs again with "
             "solve.transient.correct_mesh_phi false (some pressure noise at the interface).",
+            "The zone's caps (the ends of its span) lie on background-grid planes by themselves (internal flow, axis "
+            "along x, y or z: mesh.snappy.caps_on_grid), so they need no snapping; give the zone's band the cell size of "
+            "the cells it meets (0.25 mm on S50, not 0.125: every step re-intersects the interface's faces). Before a "
+            "long run, check interface_cells.projected_volume_fraction (OpenFOAM warns above 0.3; cfdt stops above 1) "
+            "and off_surface.max_deg with get_case.",
         ],
         "time": [
             "solve.transient.end_time in seconds: revolutions x 60 / rpm; about 10 revolutions (5 to settle after "

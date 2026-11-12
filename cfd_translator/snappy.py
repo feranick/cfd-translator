@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.11.1
+Version: 2026.11.12.13
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -131,6 +131,7 @@ def settings(study: dict, external: bool, box: list, part_bb: tuple | None = Non
         n = np.ceil((hi - lo) / h + 3).astype(int)
         c = 0.5 * (lo + hi)
         lo, hi = c - n * h / 2, c + n * h / 2
+    lo, hi, n, aligned = align_to_caps(study, lo, hi, n, h, external)
     h0 = float(((hi - lo) / n).max())
     sf = m.get("surface", h / 8)
     smin, smax = (float(sf[0]), float(sf[1])) if isinstance(sf, list) else (float(sf), float(sf))
@@ -178,7 +179,46 @@ def settings(study: dict, external: bool, box: list, part_bb: tuple | None = Non
             "surface_mm": [h0 / 2 ** Ls[0], h0 / 2 ** Ls[1]], "features": Lf, "gap": gap, "regions": regions,
             "distance": dist, "layers": lay, "quality": quality, "retry": bool(q.get("retry", True)),
             "max_cells": int(float(m.get("max_cells", 2e7))),
-            "feature_angle": float(((m.get("layers") or {}).get("feature_angle", 130)))}
+            "feature_angle": float(((m.get("layers") or {}).get("feature_angle", 130))),
+            **({"aligned": aligned} if aligned else {})}
+
+
+def align_to_caps(study: dict, lo, hi, n, h: float, external: bool):
+    """A sliding zone's end planes (caps) on background-grid planes, as in the hand-built ESI S50 case (AMI weights
+    0.98-1.16 with the hub crossing the lower cap): every refinement level splits the background cells in halves, so
+    a cap on a background plane lies on cell faces at every level, mid-gap with whole cells on both sides, and needs
+    no snapping. Perlmutter's sliding7 (2026.11.12) had its caps mid-cell: the snapped lower cap leaned 64.7 degrees
+    by the hub, coverage fell to 0.51 and the projected volume fraction stayed at 0.54-0.95.
+    Internal flow, a zone axis along x, y or z, and a finite span: the grid along the axis gets cells of
+    span / ceil(span / h) (h or a little less, so both caps fall on planes) and is shifted so the lower cap is one.
+    Returns (lo, hi, n, info or None); external domains (fixed boxes) and oblique axes are left as they are."""
+    from .transient import sliding_zone
+    z = sliding_zone(study)
+    if z is None:
+        return lo, hi, n, None
+    a = np.asarray(z.get("axis", [0, 0, 1]), float)
+    a = a / np.linalg.norm(a)
+    k = int(np.argmax(np.abs(a)))
+    if abs(abs(a[k]) - 1.0) > 1e-9:
+        return lo, hi, n, {"done": False, "why": "the zone's axis is not along x, y or z"}
+    span = z.get("span")
+    if not span:
+        return lo, hi, n, {"done": False, "why": "the zone has no span (no caps)"}
+    if external:
+        return lo, hi, n, {"done": False, "why": "external flow: the domain box is fixed"}
+    c = float(np.asarray(z.get("center", [0, 0, 0]), float)[k])
+    caps = sorted(c + a[k] * float(v) for v in span)
+    sp = caps[1] - caps[0]
+    m_ = max(1, int(math.ceil(sp / h - 1e-9)))
+    dz = sp / m_
+    lo, hi, n = np.array(lo, float), np.array(hi, float), np.array(n, int)
+    # the same extent and margins (at least a cell and a half beyond the part), the lower cap on a grid plane
+    need_lo, need_hi = lo[k] + 1.5 * h - 1e-9, hi[k] - 1.5 * h + 1e-9   # the part's extent along the axis
+    j0 = int(math.ceil((caps[0] - (need_lo - 1.5 * dz)) / dz - 1e-9))   # planes below the lower cap
+    j1 = int(math.ceil(((need_hi + 1.5 * dz) - caps[0]) / dz - 1e-9))   # planes above it
+    lo[k], hi[k], n[k] = caps[0] - j0 * dz, caps[0] + j1 * dz, j0 + j1
+    return lo, hi, n, {"done": True, "axis": "xyz"[k], "caps_mm": [round(caps[0], 6), round(caps[1], 6)],
+                       "cell_mm": round(dz, 6), "cells_between_caps": m_}
 
 
 def stricter(qs: dict) -> dict:
@@ -1294,6 +1334,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     mesh.info.update({
         "kind": "snappy", "structured": False, "empty_tags": [], "size": st["h0"],
         "snappy": {"background_cells": st["cells"], "cell_mm": st["h0"], "surface_levels": list(st["surface"]),
+                   **({"caps_on_grid": st["aligned"]} if st.get("aligned") else {}),
                    "surface_mm": [float(f"{x:.4g}") for x in st["surface_mm"]],
                    "features_level": st["features"], "gap_level_increment": st["gap"],
                    "refine": [{k: v for k, v in e.items() if k in ("name", "shape", "level", "cell_mm")} for e in st["regions"]]

@@ -46,9 +46,9 @@ Numbers below come from `cfd_translator.transient.step_profile` / `stitcher_stat
 
 ## What to change in the study
 
-1. The zone's lower end: move `rotating[].span` (or `center`) so the end at s0 crosses the hub where a refinement round
-   about the axis gives it 4+ cells, or where it meets a wall that is itself a surface of revolution with a clean
-   corner; check `interface_cells.off_surface` (max_deg should be well below 30) and the new
+1. The zone's caps on background-grid planes, as the hand-built ESI case had them (z -82.25 and -46.25 mm on 0.25 mm
+   cells; AMI weights 0.98-1.16 with the hub crossing the lower cap): cfdt 2026.11.12.13 does this by itself
+   (`mesh.snappy.caps_on_grid`). Check `interface_cells.off_surface` (max_deg should be well below 30) and
    `projected_volume_fraction` before solving (`get_case`).
 2. The interface band at 0.25 mm instead of 0.125 mm (both sides alike, round about the axis).
 3. The time step: Courant 62 at rest in a few cells; the hand-built case ran at ~25.
