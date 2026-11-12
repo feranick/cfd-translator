@@ -179,8 +179,12 @@ build123d goal needs build123d-translator there, or export it as STL first.
 ## 5. Checks before a big run
 
 1. `cfdt status` shows OpenFOAM 14 and (for STEP) Gmsh found; `cfdt format | head` works.
-2. `cfdt bench pipe_poiseuille_mpi sphere_snappy_re100` from the login node: SLURM jobs that pass in minutes (the
-   launcher with several ranks, snappyHexMesh in parallel, the environment in jobs, scratch).
+2. `cfdt bench channel_2d sphere_snappy_stl` from the login node: SLURM jobs that pass in minutes and need only
+   OpenFOAM (the sphere is an STL cfdt writes itself: snappyHexMesh in parallel with layers, the launcher with several
+   ranks, the environment in jobs, scratch). With Gmsh, also `pipe_poiseuille_mpi` and `pipe_snappy`; with
+   build123d-translator, `sphere_snappy_re100`. Bench jobs ask for 30 minutes each (run.timeout_s 20 min;
+   `CFDT_BENCH_TIMEOUT` sets another), so a short QOS takes them:
+   `CFDT_SLURM_ARGS="-A m526 -C cpu -q debug" cfdt bench channel_2d sphere_snappy_stl` on Perlmutter.
 3. `cfdt bench cylinder_2d2_restart`: a transient run in 2-minute jobs that must stop, resubmit itself (sbatch from
    inside a job) and give the same answers. Needs Gmsh.
 4. Perlmutter: a short multi-node job before the real one, e.g. `pipe_poiseuille_mpi` with `"run": {"procs": 256}`

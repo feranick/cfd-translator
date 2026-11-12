@@ -179,3 +179,30 @@ def test_status_summarises_many_nodes():
     assert len(out["nodes"]) == NODES_LISTED and s["count"] == 5288
     assert s["kinds"] == [{"cpus": 256, "cores": 128, "count": 5000}, {"cpus": 128, "cores": 64, "count": 288}]
     assert s["names"] == ["nid000000", "nid000001", "nid000002", "...", "gpu287"]
+
+
+def test_bench_jobs_have_their_own_time(monkeypatch):
+    """Perlmutter's debug QOS (30 min) refused the bench jobs, which took the machine's 12 h CFDT_TIMEOUT."""
+    from cfd_translator import bench
+    monkeypatch.delenv("CFDT_BENCH_TIMEOUT", raising=False)
+    cases = bench._cases()
+    st = bench.job_study(cases["channel_2d"])
+    assert st["queue"] is True and st["run"]["timeout_s"] == 1200.0                 # job: 20 + 10 min
+    assert bench.job_study(cases["cylinder_2d2_restart"])["run"]["timeout_s"] == 120    # its own, shorter
+    assert "timeout_s" not in (bench.job_study(cases["ahmed25_L1"]).get("run") or {})  # slow: not capped
+    monkeypatch.setenv("CFDT_BENCH_TIMEOUT", "600")
+    assert bench.job_study(cases["ahmed25_L1"])["run"]["timeout_s"] == 600.0
+    assert "run" not in cases["channel_2d"]["study"]                                    # the case itself unchanged
+
+
+def test_stl_sphere_bench(tmp_path, monkeypatch):
+    """sphere_snappy_stl: the Re 100 sphere from a generated STL, no build123d-translator or Gmsh."""
+    import math
+
+    from cfd_translator import bench, meshsurf
+    from cfd_translator.format import validate_study
+    c = bench._cases()["sphere_snappy_stl"]
+    assert c["needs"] == [] and validate_study(c["study"])["ok"], validate_study(c["study"])
+    L = meshsurf.load(c["study"]["geometry"])
+    assert L["bodies"] == 1 and L["check"]["triangles"] == 5120 and L["check"]["open_edges"] == 0
+    assert L["body_volumes_mm3"][0] == pytest.approx(4 / 3 * math.pi * 125, rel=0.01)

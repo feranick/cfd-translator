@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.09.4
+Version: 2026.11.12.6
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -37,6 +37,7 @@ Version: 2026.11.09.4
   chain_plate      build123d-translator plate -> cfd-translator -> fea-translator: the FEA support
                    reaction equals minus the CFD force (needs Gmsh, b3dt and feat)
   sphere_snappy_re100  snappyHexMesh with layers: sphere at Re 100, Cd vs the standard drag curve (b3dt, Gmsh)
+  sphere_snappy_stl    the same sphere from an STL (icosphere, 5120 triangles): no build123d-translator or Gmsh
   sphere_half_snappy   the same as a half model on a symmetry plane (the cut face meshed by snappy.cut_at_box)
   pipe_snappy          internal flow on a snappyHexMesh mesh: Hagen-Poiseuille as pipe_poiseuille
   cylinder_2d2         transient (laminar, Re 100): Schaefer & Turek 2D-2 vortex shedding, cD max, cL max, Strouhal
@@ -47,6 +48,8 @@ Version: 2026.11.09.4
   ahmed25_L1..L3, ahmed35_L1..L3   Ahmed body (half, moving ground, kOmegaSST, layers at y+ ~60), three meshes:
                        Cd vs the wind tunnel (0.285, 0.26) within 10 %, y+ 30-300, layer coverage (slow; by name)
 Slow cases run only when named. The reference solver runs the 2D box cases (couette, channel, cavity).
+As SLURM jobs, the cases other than the slow ones get 20 minutes each (run.timeout_s; CFDT_BENCH_TIMEOUT sets another,
+for the slow ones too), whatever the machine's CFDT_TIMEOUT.
 """
 from __future__ import annotations
 
@@ -443,6 +446,15 @@ def _cases() -> dict:
         "checks": lambda r: [("Cd at Re 100 (standard drag curve %.3f)" % cd_sph, cd_sph, r["coefficients"]["cd"], {"tol": 0.06}),
                              ("layers on the sphere (coverage, %)", 100.0, r["_mesh"]["layers"]["coverage_pct"], {"tol": 0.3})],
         "ref": False, "needs": ["gmsh", "build123d_translator"]}
+    # the same sphere as a closed triangle mesh (STL): no build123d-translator or Gmsh needed (clusters)
+    st_stl = sphere(False)
+    st_stl["geometry"] = {"stl": str(sphere_stl(5.0))}
+    C["sphere_snappy_stl"] = {
+        "study": st_stl,
+        "checks": lambda r: [("Cd at Re 100, sphere from an STL (standard drag curve %.3f)" % cd_sph, cd_sph,
+                              r["coefficients"]["cd"], {"tol": 0.06}),
+                             ("layers on the sphere (coverage, %)", 100.0, r["_mesh"]["layers"]["coverage_pct"], {"tol": 0.3})],
+        "ref": False, "needs": []}
     C["sphere_half_snappy"] = {
         "study": sphere(True),
         "checks": lambda r: [("Cd of the half sphere on a symmetry plane (%.3f)" % cd_sph, cd_sph, r["coefficients"]["cd"],
@@ -716,6 +728,70 @@ def _available(mod: str) -> bool:
         return False
 
 
+BENCH_TIMEOUT_S = 1200.0   # a bench case's own run.timeout_s in a SLURM job: 20 min, so the job asks for 30 (debug QOS)
+
+
+def sphere_stl(r: float = 5.0, levels: int = 4) -> Path:
+    """An icosphere of radius r (mm) as a binary STL (20 x 4^levels triangles; 5120 by default, its facets within
+    0.01 mm of the sphere), written once under CFDT_OUT/geometry: the STL bench needs no CAD tool."""
+    import struct
+
+    import numpy as np
+
+    from .api import out_root
+    path = Path(out_root()) / "geometry" / f"_bench_sphere_r{r:g}_l{levels}.stl"
+    if path.is_file():
+        return path
+    t = (1 + 5 ** 0.5) / 2
+    V = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+         (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    F = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6),
+         (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10),
+         (8, 6, 7), (9, 8, 1)]
+    pts = [np.asarray(v, float) / np.linalg.norm(v) for v in V]
+    for _ in range(levels):
+        mid, nf = {}, []
+
+        def m(a, b):
+            k = (min(a, b), max(a, b))
+            if k not in mid:
+                v = pts[a] + pts[b]
+                pts.append(v / np.linalg.norm(v))
+                mid[k] = len(pts) - 1
+            return mid[k]
+        for a, b, c in F:
+            ab, bc, ca = m(a, b), m(b, c), m(c, a)
+            nf += [(a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)]
+        F = nf
+    P = np.asarray(pts) * r
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        f.write(b"cfdt bench sphere".ljust(80, b" ") + struct.pack("<I", len(F)))
+        for a, b, c in F:
+            n = np.cross(P[b] - P[a], P[c] - P[a])
+            n = n / np.linalg.norm(n)
+            f.write(struct.pack("<12fH", *n, *P[a], *P[b], *P[c], 0))
+    tmp.replace(path)
+    return path
+
+
+def job_study(case: dict) -> dict:
+    """A case's study as a SLURM job of a bench: queued, and with its own time (run.timeout_s: CFDT_BENCH_TIMEOUT,
+    default 20 min, so the job asks for 30) unless the case sets one or is slow (by name; then only
+    CFDT_BENCH_TIMEOUT caps it). The machine's CFDT_TIMEOUT (12 h on a cluster) was refused by Perlmutter's debug
+    QOS (30 min: QOSMaxWallDurationPerJobLimit)."""
+    import os
+    st = dict(case["study"], queue=True)
+    env = os.environ.get("CFDT_BENCH_TIMEOUT", "").strip()
+    cap = float(env) if env else (None if case.get("slow") else BENCH_TIMEOUT_S)
+    if cap:
+        run = dict(st.get("run") or {})
+        run["timeout_s"] = min(float(run.get("timeout_s", cap)), cap)
+        st["run"] = run
+    return st
+
+
 def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
     cases = _cases()
     if names:
@@ -744,7 +820,7 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
     from . import executor
     if executor.kind() == "slurm":
         from . import api
-        jobs = {n: dict(cases[n]["study"], queue=True) for n in todo if not cases[n].get("chain")}
+        jobs = {n: job_study(cases[n]) for n in todo if not cases[n].get("chain")}
         if jobs:
             req = api.start(jobs, solver)
             submitted = set(jobs)
@@ -843,7 +919,7 @@ def submit(solver: str, names=None) -> dict:
         todo.append(n)
     unknown = [n for n in (names or []) if n not in cases]
     from . import api
-    req = api.start({n: dict(cases[n]["study"], queue=True) for n in todo}, solver) if todo else None
+    req = api.start({n: job_study(cases[n]) for n in todo}, solver) if todo else None
     return {"request": str(req) if req else None, "cases": todo, "skipped": skipped, "unknown": unknown}
 
 
