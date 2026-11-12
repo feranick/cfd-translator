@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.12.6
+Version: 2026.11.12.7
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -54,6 +54,7 @@ for the slow ones too), whatever the machine's CFDT_TIMEOUT.
 from __future__ import annotations
 
 import math
+import re
 import sys
 import time
 from pathlib import Path
@@ -826,6 +827,9 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             submitted = set(jobs)
             print(f"[cfdt bench] {len(jobs)} SLURM jobs in {req}", file=sys.stderr, flush=True)
             queued = _wait_for_jobs(req)
+            own = sum(_wall(queued.get(n)) or 0 for n in jobs)
+            print(f"[cfdt bench] SLURM jobs done after {time.time() - t_sub:.0f} s (queue wait included; "
+                  f"the cases ran {own:.0f} s in all)", file=sys.stderr, flush=True)
     for n in todo:
         c = cases[n]
         print(f"[cfdt bench] {n} ...", file=sys.stderr, flush=True)
@@ -836,7 +840,7 @@ def run(solver: str, names=None, folder: Path = Path(".")) -> dict:
             continue
         if n in submitted:                   # its SLURM job's result: never run here as well
             r = queued.get(n) or {"ok": False, "why": "submitted as a SLURM job, but its request has no result for it"}
-            t0 = t_sub
+            t0 = None                        # its own time is its result's wall time; the bench's wait is said once
         else:
             r = run_study(n, c["study"], Path(folder) / n, solver)
         out[n] = evaluate(n, r, cases)
@@ -895,9 +899,50 @@ def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:
         checks.append({"what": what, "expected": round(exp, 8), "got": round(float(got), 8), "error": float(f"{err:.3g}"),
                        **tol, "passed": bool(ok)})
     return {"ok": True, "passed": all(c_["passed"] for c_ in checks), "checks": checks,
-            "solve": r.get("solve", {}).get("converged"), "cells": r["mesh"]["cells"],
+            "solve": solve_summary(r), "reliable": r.get("reliable"), "cells": r["mesh"]["cells"],
             "invariants": {k: r["results"]["checks"][k].get("error") for k in ("mass_balance", "momentum_balance")},
-            "warnings": r.get("warnings", []), "seconds": r.get("seconds")}
+            "warnings": r.get("warnings", []), "notes": expected_notes(r.get("warnings", [])),
+            "seconds": r.get("seconds")}
+
+
+# warnings that small benchmark cases raise by design: informational there (they stay in 'warnings' as well)
+EXPECTED_WARNINGS = (
+    (r"ran on \d+ MPI ranks? instead of \d+: .*CFDT_CELLS_PER_RANK",
+     "expected: a small case runs on fewer ranks (at least CFDT_CELLS_PER_RANK cells per rank)"),
+    (r"averaging: \d+ iterations recorded, fewer than min_iterations",
+     "expected: a small steady case converges in too few iterations for a window average; its final-iteration "
+     "values are the results"),
+)
+
+
+def expected_notes(warnings) -> list:
+    """Notes for the warnings a small benchmark case raises by design."""
+    out = []
+    for w in warnings or []:
+        for pat, why in EXPECTED_WARNINGS:
+            if re.search(pat, str(w)) and why not in out:
+                out.append(why)
+    return out
+
+
+def _wall(r) -> float | None:
+    """A study result's own wall time (s): meshing, solving and results, without any queue wait."""
+    sec = (r or {}).get("seconds") or {}
+    if isinstance(sec, (int, float)):        # a brief result: its wall time
+        return float(sec)
+    if sec.get("wall") is not None:
+        return float(sec["wall"])
+    parts = [sec[k] for k in ("mesh_case", "solve", "results") if isinstance(sec.get(k), (int, float))]
+    return float(sum(parts)) if parts else None
+
+
+def solve_summary(r: dict) -> dict:
+    """How the solve ended: steady cases converge (residuals); transient ones settle (the monitored averages)."""
+    sv = r.get("solve") or {}
+    if sv.get("transient"):
+        return {"transient": True, "settled": sv.get("settled"), "time_steps": sv.get("time_steps"),
+                "reached_time": sv.get("reached_time")}
+    return {"converged": sv.get("converged"), "iterations": sv.get("iterations")}
 
 
 def submit(solver: str, names=None) -> dict:
@@ -929,7 +974,15 @@ def _progress(name, res, t0, r=None):
     extra = ""
     if r and r.get("ok"):
         sv = r.get("solve", {})
-        extra = f" cells {r['mesh']['cells']}, {sv.get('iterations')} iterations, converged {sv.get('converged')}"
+        if sv.get("transient"):
+            extra = (f" cells {r['mesh']['cells']}, transient: {sv.get('time_steps')} time steps, "
+                     f"settled {sv.get('settled')}, reliable {r.get('reliable')}")
+        else:
+            extra = (f" cells {r['mesh']['cells']}, {sv.get('iterations')} iterations, converged {sv.get('converged')}, "
+                     f"reliable {r.get('reliable')}")
     worst = max((c.get("error", 0) for c in res.get("checks", [])), default=None)
-    print(f"[cfdt bench] {name}: {s} in {time.time() - t0:.0f} s{extra}" + (f", largest check error {worst:.3g}" if worst is not None else "")
-          + (f" ({str(res.get('error'))[:200]})" if s == "ERROR" else ""), file=sys.stderr, flush=True)
+    w = _wall(r) if t0 is None else time.time() - t0
+    took = f"in {w:.0f} s" if w is not None else "(no time recorded)"
+    print(f"[cfdt bench] {name}: {s} {took}{extra}" + (f", largest check error {worst:.3g}" if worst is not None else "")
+          + (f" ({str(res.get('error'))[:200]})" if s == "ERROR" else "")
+          + "".join(f"\n    note: {x}" for x in res.get("notes") or []), file=sys.stderr, flush=True)

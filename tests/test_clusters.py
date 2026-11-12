@@ -206,3 +206,39 @@ def test_stl_sphere_bench(tmp_path, monkeypatch):
     L = meshsurf.load(c["study"]["geometry"])
     assert L["bodies"] == 1 and L["check"]["triangles"] == 5120 and L["check"]["open_edges"] == 0
     assert L["body_volumes_mm3"][0] == pytest.approx(4 / 3 * math.pi * 125, rel=0.01)
+
+
+def _bench_result(transient=False, wall=42.0, warnings=()):
+    sv = ({"transient": True, "converged": False, "settled": True, "time_steps": 800, "reached_time": 0.4}
+          if transient else {"converged": True, "iterations": 300})
+    return {"ok": True, "reliable": True, "solve": sv, "mesh": {"cells": 2000},
+            "results": {"checks": {"mass_balance": {"error": 0}, "momentum_balance": {"error": 0}}},
+            "warnings": list(warnings), "seconds": {"mesh_case": 1, "solve": 2, "results": 1, "wall": wall}}
+
+
+def test_bench_lines_show_each_case_and_settled(monkeypatch, capsys):
+    """Perlmutter bench: every SLURM case said 'PASS in 1012 s' (the bench's wait, debug queue included), and the
+    transient restart case said 'converged False' though it passed and was reliable."""
+    from cfd_translator import bench
+    res = {"ok": True, "passed": True, "checks": [], "notes": []}
+    bench._progress("cylinder_2d2_restart", res, None, _bench_result(transient=True, wall=75.4))
+    bench._progress("channel_2d", res, None, _bench_result(wall=27.2))
+    err = capsys.readouterr().err
+    assert "cylinder_2d2_restart: PASS in 75 s" in err and "settled True, reliable True" in err
+    assert "converged" not in err.splitlines()[0]
+    assert "channel_2d: PASS in 27 s" in err and "converged True" in err
+    assert bench._wall({"seconds": 12.5}) == 12.5 and bench._wall({"seconds": {"mesh_case": 1, "solve": 2}}) == 3.0
+    assert bench._wall({}) is None
+
+
+def test_bench_verdict_solve_and_expected_notes():
+    from cfd_translator import bench
+    sv = bench.solve_summary(_bench_result(transient=True))
+    assert sv == {"transient": True, "settled": True, "time_steps": 800, "reached_time": 0.4}
+    assert bench.solve_summary(_bench_result()) == {"converged": True, "iterations": 300}
+    w = ["ran on 1 MPI rank instead of 4: 2000 cells (at least 5000 per rank, CFDT_CELLS_PER_RANK)",
+         "averaging: 144 iterations recorded, fewer than min_iterations (200); final-iteration values kept",
+         "averaging: no moment history from cfdtForces (postProcessing/cfdtForces); final-iteration values kept"]
+    notes = bench.expected_notes(w)
+    assert len(notes) == 2 and "fewer ranks" in notes[0] and "window average" in notes[1]
+    assert bench.expected_notes(w[2:]) == []

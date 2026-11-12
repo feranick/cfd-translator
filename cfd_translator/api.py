@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.4
+Version: 2026.11.12.7
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -666,7 +666,8 @@ def brief(r: dict) -> dict:
     out["checks"] = {k: (v.get("error") if isinstance(v, dict) else v) for k, v in ck.items()
                      if k in ("mass_balance", "momentum_balance", "energy_balance")}
     sv = r.get("solve") or {}
-    out["solve"] = {k: sv[k] for k in ("iterations", "converged", "settled", "procs") if k in sv}
+    out["solve"] = {k: sv[k] for k in ("iterations", "converged", "transient", "settled", "time_steps", "procs")
+                    if k in sv}
     m = r.get("mesh") or {}
     out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality") if k in m}
     lay = m.get("layers")
