@@ -165,3 +165,17 @@ def test_job_setup_lines_in_job_sh(tmp_path, monkeypatch):
     assert "module load PrgEnv-gnu cray-mpich\nsource $HOME/of14/etc/bashrc\n" in sh
     assert sh.index("module load") < sh.index("run-study")
     S.forget()
+
+
+def test_status_summarises_many_nodes():
+    """Perlmutter: cfdt status listed all 5,288 nodes; a large cluster gets a summary."""
+    from cfd_translator.executor import NODES_LISTED, nodes_listing
+    few = [{"name": f"n{i}", "cpus": 40, "cores": 20} for i in range(3)]
+    assert nodes_listing(few) == {"nodes": few}
+    many = [{"name": f"nid{i:06d}", "cpus": 256, "cores": 128} for i in range(5000)] + \
+           [{"name": f"gpu{i}", "cpus": 128, "cores": 64} for i in range(288)]
+    out = nodes_listing(many)
+    s = out["nodes_summary"]
+    assert len(out["nodes"]) == NODES_LISTED and s["count"] == 5288
+    assert s["kinds"] == [{"cpus": 256, "cores": 128, "count": 5000}, {"cpus": 128, "cores": 64, "count": 288}]
+    assert s["names"] == ["nid000000", "nid000001", "nid000002", "...", "gpu287"]

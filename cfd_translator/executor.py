@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.12.1
+Version: 2026.11.12.5
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -225,6 +225,26 @@ def node_mem_mb() -> float | None:
     SLURM does not know it. mochi's jobs failed only at submission with 'Memory specification can not be satisfied'
     when run.mem asked for more (90G, 2026.11.07). llmt-runtime's (scontrol RealMemory)."""
     return S.node_mem_mb(RT)
+
+
+NODES_LISTED = 8
+
+
+def nodes_listing(nodes: list) -> dict:
+    """status' nodes: every node on a small cluster; on a large one (Perlmutter: 5,288) the first NODES_LISTED and a
+    summary (how many, each kind's CPUs and cores with its count, a few names)."""
+    rows = [{k: n[k] for k in ("name", "cpus", "cores")} for n in nodes]
+    if len(rows) <= NODES_LISTED:
+        return {"nodes": rows}
+    kinds = {}
+    for r in rows:
+        kinds[(r["cpus"], r["cores"])] = kinds.get((r["cpus"], r["cores"]), 0) + 1
+    return {"nodes": rows[:NODES_LISTED],
+            "nodes_summary": {"count": len(rows),
+                              "kinds": [{"cpus": c, "cores": k, "count": n}
+                                        for (c, k), n in sorted(kinds.items(), key=lambda kv: -kv[1])],
+                              "names": [r["name"] for r in rows[:3]] + ["..."] + [rows[-1]["name"]],
+                              "note": f"the first {NODES_LISTED} of {len(rows)} nodes are listed in 'nodes'"}}
 
 
 def caps() -> dict:
@@ -745,7 +765,7 @@ def status() -> dict:
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
                 "procs": S.default_procs(RT), "time_limit_min": time_limit_min(), "time": ts, "slurm_time": ts,
                 "args": RT.env("SLURM_ARGS", ""), "timeout_s": timeout_s(), "caps": caps(),
-                "nodes": [{k: n[k] for k in ("name", "cpus", "cores")} for n in slurm_nodes()],
+                **nodes_listing(slurm_nodes()),
                 "node": node, "node_cores": node_cores(),
                 **({"cores_shared": ca["why"]} if ca and ca.get("shared") else {}),
                 "mem": mem_setting(), "runtime": _runtime_version()}

@@ -20,6 +20,10 @@ with the steps at the end.
 
 ## 1. OpenFOAM 14 (openfoam.org)
 
+The verified build recipes, the env scripts and the test runs (Perlmutter: test job 61153641, 2 nodes x 8 ranks; NCC
+mixerVessel2D on 16 ranks) are in `openfoam-v2506-hpc-recipes.md` (sections "OpenFOAM-14"), next to this file. Both
+install OpenFOAM-14 and ThirdParty-14 in `~/software/openfoam`, next to v2506, with `env-of14.sh` there. The outline:
+
 The Foundation's release, the one cfdt writes cases for (`foamRun` with modules). ESI's v2506 (openfoam-v2506-hpc-recipes.md, next to
 this file) runs other solvers and does not read cfdt's cases.
 
@@ -31,7 +35,7 @@ exec bash -l
 module purge
 module use /orcd/software/community/001/modulefiles
 module load gcc/12.2.0 openmpi/5.0.8
-mkdir -p ~/software/openfoam14 && cd ~/software/openfoam14
+mkdir -p ~/software/openfoam && cd ~/software/openfoam        # next to OpenFOAM-v2506
 git clone https://github.com/OpenFOAM/OpenFOAM-14.git
 git clone https://github.com/OpenFOAM/ThirdParty-14.git
 source OpenFOAM-14/etc/bashrc WM_COMPILER=Gcc WM_MPLIB=SYSTEMOPENMPI
@@ -70,7 +74,7 @@ rsync -a --exclude 'OpenFOAM-14/applications/' --exclude 'OpenFOAM-14/src/' --ex
   --exclude 'OpenFOAM-14/doc/' --exclude 'OpenFOAM-14/build/' --exclude 'OpenFOAM-14/platforms/*/applications/' \
   --exclude 'OpenFOAM-14/platforms/*/src/' --exclude '.git*' \
   --include 'ThirdParty-14/' --include 'ThirdParty-14/platforms/***' --include 'ThirdParty-14/etc/***' \
-  --exclude 'ThirdParty-14/*' ./ $HOME/software/openfoam14/
+  --exclude 'ThirdParty-14/*' ./ $HOME/software/openfoam/         # next to OpenFOAM-v2506
 ```
 
 The four `MPI_*` variables must be set again before sourcing the bashrc in every shell: `env-of14-perlmutter.sh`
@@ -98,7 +102,7 @@ depend on the shell that submitted them.
 module load python
 source ~/software/openfoam/env-of14.sh        # PrgEnv-gnu, cray-mpich, SYSTEMMPI, the OpenFOAM 14 bashrc
 source ~/venvs/cfdt/bin/activate
-export CFDT_FOAM=PATH                         # OpenFOAM is already in the environment
+export CFDT_FOAM=$HOME/software/openfoam/env-of14.sh   # sourced before each OpenFOAM command
 export CFDT_JOB_SETUP="module load python\nsource ~/software/openfoam/env-of14.sh\nsource ~/venvs/cfdt/bin/activate"
 export CFDT_EXECUTOR=slurm
 export CFDT_OUT=$PSCRATCH/cfdt_runs           # scratch is purged on a schedule: pack results soon
@@ -120,7 +124,7 @@ per node, so llmt-runtime divides it (job.json: `mem`, `mem_total`, `mem_per: no
 source ~/software/openfoam/env-of14.sh        # module purge; gcc 12.2.0, openmpi 5.0.8; the OpenFOAM 14 bashrc
 module load miniforge
 source ~/venvs/cfdt/bin/activate
-export CFDT_FOAM=PATH
+export CFDT_FOAM=$HOME/software/openfoam/env-of14.sh
 export CFDT_JOB_SETUP="source ~/software/openfoam/env-of14.sh\nmodule load miniforge\nsource ~/venvs/cfdt/bin/activate"
 export CFDT_EXECUTOR=slurm
 export CFDT_OUT=$HOME/orcd/scratch/cfdt_runs
@@ -136,6 +140,11 @@ export CFDT_TIMEOUT=42600                     # mit_normal: 12 h per job
 `job.sh` runs without strict mode (no `set -e`), so a `CFDT_JOB_SETUP` line that returns non-zero (`module load` and
 the OpenFOAM bashrc often do) does not end the job; cfdt checks for OpenFOAM itself when it runs. The first hand-built
 Perlmutter job died in 7 s on exactly that under `set -euo pipefail`.
+
+`CFDT_FOAM` names the file each OpenFOAM command sources first (cfdt runs every command in its own `bash -c`). The env
+script is the robust choice: `CFDT_FOAM=PATH` relies on the calling shell's environment, and on Perlmutter an
+interactive login shell with the nersc-python conda environment active did not find OpenFOAM that way, though a fresh
+`bash -lc` did. The env script sets the modules, the MPI variables and the OpenFOAM bashrc itself.
 
 `CFDT_LAUNCH` is the MPI launcher cfdt uses for snappyHexMesh, foamRun and the sliding mesh's parallel utilities
 (`{n}`: the ranks). Without it cfdt uses `mpirun -np N`, as on its own machines.

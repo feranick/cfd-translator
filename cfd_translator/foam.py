@@ -1,8 +1,9 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.12.4
+Version: 2026.11.12.5
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
-CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
+CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
+sourced before each command (or 'PATH' when the environment is already sourced), else foamRun on the
 PATH, else the newest /opt/openfoam*/etc/bashrc (the Ubuntu packages). Each command runs in its own
 bash that sources the bashrc. CFDT_PROCS > 1 runs in parallel (decomposePar, mpirun, reconstructPar).
 """

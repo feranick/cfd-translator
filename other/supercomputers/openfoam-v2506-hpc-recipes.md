@@ -272,7 +272,7 @@ Notes that apply to both clusters:
 - **Use `git clone` + `checkout`, not a GitHub zip.** The build string comes from `wmakePrintBuild` (`14-` + the first 12 characters of the git HEAD). Without `.git` it would print only `14`.
 - **Directory names must be `OpenFOAM-14` and `ThirdParty-14`**, side by side. The Foundation bashrc finds ThirdParty that way. They sit next to `OpenFOAM-v2506` and `ThirdParty-v2506` without conflict.
 - **No `foamInstallationTest` or `foamSystemCheck` in OpenFOAM-14.** Verification is by the solver header, `ldd` and the test job below.
-- **Objects:** Foundation keeps object files in `*/Make/linux64GccDPInt32Opt/` inside the source tree (ESI used `build/`). The slim copy excludes those directories.
+- **Objects:** Foundation puts object files in `OpenFOAM-14/platforms/linux64GccDPInt32Opt/{src,applications}/` (ESI used `build/`). Binaries and libraries are in `platforms/linux64GccDPInt32Opt/{bin,lib}`. The slim copy excludes the object trees. This was confirmed on the Perlmutter build: the first dry run without those excludes came to 2.08 GB.
 - **Build command:** the top-level `Allwmake` also builds ThirdParty (Scotch, PT-Scotch, Zoltan, METIS). Scotch needs `flex` and `bison`, and METIS needs `cmake`.
 
 ## Shared verification tests (`of14-tests.sh`, same file on both clusters)
@@ -437,7 +437,7 @@ ldd $FOAM_APPBIN/foamRun | grep "not found"                      # should print 
 ldd $FOAM_LIBBIN/$FOAM_MPI/libPstream.so | grep libmpi           # -> openmpi 5.0.8 module path
 ```
 Optional, after the tests pass: delete the objects (several GB; a later rebuild then starts from scratch):
-`find ~/software/openfoam/OpenFOAM-14 -type d -path '*/Make/linux64GccDPInt32Opt' -prune -exec rm -rf {} +`
+`rm -rf ~/software/openfoam/OpenFOAM-14/platforms/linux64GccDPInt32Opt/{src,applications}`
 
 ### Limits
 Same as v2506 on `mit_normal`: 96 cores and 386G per user, 12 h per job. Production uses 1 node × 96 ranks with `--mem=360G`. Never use `--mem=0`.
@@ -505,7 +505,15 @@ reconstructPar -latestTime > log.reconstructPar 2>&1
 
 ## NERSC Perlmutter — OpenFOAM-14
 
-> **Perlmutter is in maintenance until 18 Nov 2026 06:00 Pacific.** Everything below is ready but untested on Perlmutter until then.
+> **Verified on Perlmutter (Nov 2026)** with test job 61153641 on 2 nodes × 8 ranks:
+> - Build : 14-a4867fc914c1; libPstream linked to Cray MPICH `libmpi_gnu.so.12`.
+> - Serial pitzDailySteady: converged in 285 iterations.
+> - Parallel pitzDailySteady (16 ranks, scotch): converged in 298 iterations.
+> - reconstructPar and METIS decomposition: PASS.
+> - NCC mixerVessel2D on 16 ranks: ran to t = 0.25 s, PASS.
+> - Slim home copy: 530 MB plus a 32 MB tutorials archive.
+>
+> The 285 vs 298 iteration counts show the normal effect of decomposition (see the last section).
 
 Build location: `$PSCRATCH/openfoam14/{OpenFOAM-14,ThirdParty-14}`
 Install location: slim copy in `~/software/openfoam/{OpenFOAM-14,ThirdParty-14}` (next to v2506) + tutorials archive `~/software/openfoam/OpenFOAM-14-tutorials.tgz`
@@ -585,6 +593,8 @@ OPTS=(
   --exclude '.git*'
   --exclude 'log.Allwmake'
   --exclude 'Make/linux64GccDPInt32Opt/'
+  --exclude 'OpenFOAM-14/platforms/*/src/'
+  --exclude 'OpenFOAM-14/platforms/*/applications/'
   --exclude 'OpenFOAM-14/applications/'
   --exclude 'OpenFOAM-14/tutorials/'
   --exclude 'OpenFOAM-14/doc/'
