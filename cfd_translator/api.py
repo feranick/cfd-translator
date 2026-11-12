@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.14
+Version: 2026.11.12.16
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -888,6 +888,13 @@ def render_images(study_folder: str, images=True) -> dict:
     if errs:
         return {"error": "invalid images", "errors": errs}
     specs = default_images(study, mesh) if images is True else images
+    have = set(fields.get("scalars") or {})
+    missing = sorted({sp.get("field") for sp in specs if isinstance(sp, dict)} & set(_field_names(study)) - have
+                     - {None})
+    if missing:
+        return {"error": f"field(s) {', '.join(missing)} are not in this study's saved state (it ran before cfdt "
+                         "saved them, 2026.11.12.4): reprocess the request (reprocess) to read them from its case, "
+                         "then render again", "missing_fields": missing}
     out, warns = render(study, mesh, plan, fields, d / "images", specs, d.name)
     return {"images": out, "warnings": warns}
 

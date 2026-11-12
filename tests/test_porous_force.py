@@ -168,3 +168,33 @@ def test_reprocess_puts_the_reaction_into_an_old_result(tmp_path, monkeypatch):
     assert (sd / "car.json.2026.10.25.6.bak").is_file()
     assert "error" in api.reprocess(str(tmp_path))                                  # not a request under CFDT_OUT
     assert "error" in api.reprocess(str(req), ["nope"])
+
+
+def test_reprocess_saves_the_state_with_k_and_nut_from_the_case(tmp_path, monkeypatch):
+    """run_20261108_s50_rc_open_s1: render_images field k gave KeyError 'k' after reprocess; reprocess read the case's
+    fields (k, nut since 2026.11.12.4) but kept the old saved state."""
+    from cfd_translator import foam
+    from cfd_translator.render import load_state
+    root = tmp_path / "out"
+    monkeypatch.setenv("CFDT_OUT", str(root))
+    req = root / "run_20261108_000000_abcdef"
+    sd = req / "pump"
+    sd.mkdir(parents=True)
+    st, mesh, plan, fields = _setup(tmp_path / "prep")
+    st = dict(st, model="kOmegaSST")
+    save_state(sd, mesh, plan, fields, st)
+    (sd / "case").mkdir()
+    (req / "request.json").write_text(json.dumps({"names": ["pump"]}))
+    (sd / "pump.json").write_text(json.dumps({"name": "pump", "ok": True, "translator": "2026.11.08.1", "solver": "foam",
+                                              "solve": {"converged": True}, "results": {"forces": {}}}))
+    r = api.render_images(str(sd), [{"name": "k_mid", "slice": {"axis": "z", "at": 5}, "field": "k"}])
+    assert r.get("missing_fields") == ["k"] and "reprocess" in r["error"]
+    n = mesh.ncells
+    with_k = dict(fields, scalars={"k": {"internal": np.full(n, 0.5), "patches": {}},
+                                   "nut": {"internal": np.full(n, 1e-5), "patches": {}}})
+    monkeypatch.setattr(foam, "read_fields", lambda *a, **k: with_k)
+    out = api.reprocess(str(req))["studies"]["pump"]
+    assert out["ok"] and out["fields"] == "the case" and out["state_fields_added"] == ["k", "nut"]
+    _, _, f2, _ = load_state(sd)
+    assert set(f2["scalars"]) == {"k", "nut"} and float(f2["scalars"]["k"]["internal"][0]) == 0.5
+    assert json.loads((sd / "pump.json").read_text())["reprocessed"]["state"]["fields_added"] == ["k", "nut"]

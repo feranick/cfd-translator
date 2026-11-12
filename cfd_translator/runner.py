@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.15
+Version: 2026.11.12.16
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -480,11 +480,14 @@ def reprocess_study(folder: Path, name: str) -> dict:
     case = folder / "case"
     transient = bool((old.get("solve") or {}).get("transient"))
     source = "the saved state"
+    from_case = False
+    old_scalars = set((fields.get("scalars") or {}))
     if old.get("solver") != "ref" and case.is_dir():
         from .foam import read_fields
         try:
             fields = read_fields(case, mesh, plan, mean=transient)
             source = "the case" + (" (mean fields)" if fields.get("averaged") else "")
+            from_case = True
         except Exception as exc:  # noqa: BLE001
             source = f"the saved state (the case could not be read: {exc})"
     upgraded = upgrade_plan(plan, study)
@@ -552,9 +555,18 @@ def reprocess_study(folder: Path, name: str) -> dict:
     bak = folder / f"{name}.json.{old.get('translator', 'old')}.bak"
     if not bak.exists():
         bak.write_text(f.read_text())
+    # the saved state from the fields just read, so render_images has what this version reads from a case (k, nut,
+    # p_rms, p_below_* since 2026.11.12.4: run_20261108_s50_rc_open_s1's render_images field k gave KeyError 'k'
+    # after reprocess, which read the case but kept the old state)
+    added = []
+    if from_case:
+        from .render import save_state
+        added = sorted(set(fields.get("scalars") or {}) - old_scalars)
+        save_state(folder, mesh, plan, fields, study)
+        out["reprocessed"]["state"] = {"saved": True, **({"fields_added": added} if added else {})}
     _save(out, folder, name)
     return {"name": name, "ok": True, "reliable": out["reliable"], "fields": source, "changes": changes,
-            "backup": str(bak)}
+            "backup": str(bak), **({"state_fields_added": added} if added else {})}
 
 
 def execution_record(procs_requested: int, procs_used: int | None = None, launch: str | None = None,
