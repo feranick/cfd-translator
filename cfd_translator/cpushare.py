@@ -1,5 +1,5 @@
 """cpushare.py — is anything else running on this job's CPUs? (Linux /proc; a SLURM job's view)
-Version: 2026.10.31.5
+Version: 2026.11.12.10
 
 On spark1 an 18-rank job ran at 36 s per iteration next to another run on a 20-core node (2026.10.30); the same
 case took 0.5 s per step alone. SLURM should never give two jobs the same cores, but it does when its core
@@ -71,12 +71,42 @@ def _user(pid: int) -> str | None:
     return None
 
 
-def competitors(cpus: set, root: int, before: dict, after: dict, dt: float) -> tuple[float, list]:
-    """Cores' worth of CPU time (over dt seconds) that processes outside root's tree spent on cpus."""
+def _in_job(pid: int, job: str | None, study: str | None) -> bool:
+    """Whether a process belongs to this SLURM job (its cgroup or SLURM_JOB_ID) or to this study (CFDT_STUDY): srun
+    starts a job's ranks under slurmstepd, outside the batch script's process tree (Perlmutter: the job's own 128
+    foamRun ranks were reported as other processes on its CPUs)."""
+    if job:
+        try:
+            cg = Path(f"/proc/{pid}/cgroup").read_text()
+            if f"job_{job}/" in cg or cg.rstrip().endswith(f"job_{job}"):
+                return True
+        except OSError:
+            pass
+    env = _environ(pid)
+    return bool((job and env.get("SLURM_JOB_ID") == job) or (study and env.get("CFDT_STUDY") == study))
+
+
+def physical_cores(cpus: set) -> int:
+    """The physical cores among logical CPUs (hardware threads of one core counted once; Linux sysfs)."""
+    seen = set()
+    for c in cpus:
+        try:
+            sib = Path(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read_text().strip()
+        except OSError:
+            sib = str(c)
+        seen.add(sib)
+    return len(seen) or len(cpus)
+
+
+def competitors(cpus: set, root: int, before: dict, after: dict, dt: float, ours=None) -> tuple[float, list]:
+    """Cores' worth of CPU time (over dt seconds) that processes outside root's tree spent on cpus. ours(pid) -> bool
+    leaves out processes of this job started outside the tree (srun's ranks)."""
     mine = _descendants(after, root) | _descendants(before, root)
     taken, who = 0.0, []
     for pid, (ppid, cpu, sec, cmd) in after.items():
         if pid in mine or cpu not in cpus or pid not in before:
+            continue
+        if ours is not None and ours(pid):
             continue
         d = sec - before[pid][2]
         if d <= 0:
@@ -94,6 +124,10 @@ class Watcher:
         self.folder, self.interval = Path(folder), float(interval)
         self.root = root or os.getpid()
         self.cpus = set(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else set()
+        self.cores = physical_cores(self.cpus) if self.cpus else 0
+        self.job = os.environ.get("SLURM_JOB_ID") or None
+        self.study = str(Path(folder).resolve() / "case")
+        self._ours: dict = {}
         self.max, self.samples, self.busy, self.top = 0.0, 0, 0, {}
         self._stop = threading.Event()
         self._t = None
@@ -112,8 +146,15 @@ class Watcher:
             self.sample(before, after, t1 - t0)
             before, t0 = after, t1
 
+    def ours(self, pid: int) -> bool:
+        if pid not in self._ours:
+            self._ours[pid] = _in_job(pid, self.job, self.study)
+        return self._ours[pid]
+
     def sample(self, before: dict, after: dict, dt: float) -> None:
-        taken, who = competitors(self.cpus, self.root, before, after, max(dt, 1e-3))
+        for gone in [p for p in self._ours if p not in after]:
+            self._ours.pop(gone, None)
+        taken, who = competitors(self.cpus, self.root, before, after, max(dt, 1e-3), self.ours)
         self.samples += 1
         if taken >= 0.5:
             self.busy += 1
@@ -124,7 +165,8 @@ class Watcher:
         if taken >= 0.5:
             try:
                 (self.folder / "cpu_share.json").write_text(json.dumps(
-                    {"cores_taken": round(taken, 2), "of": len(self.cpus), "at": time.time(), "by": who}))
+                    {"cores_taken": round(taken, 2), "of": self.cores or len(self.cpus), "hw_threads": len(self.cpus),
+                     "at": time.time(), "by": who}))
             except OSError:
                 pass
 
@@ -135,7 +177,8 @@ class Watcher:
         if self.busy == 0:
             return None
         top = sorted(self.top.items(), key=lambda kv: -kv[1])[:5]
-        return {"max_cores_taken": round(self.max, 2), "cpus": len(self.cpus), "samples": self.samples,
+        return {"max_cores_taken": round(self.max, 2), "cpus": self.cores or len(self.cpus), "hw_threads": len(self.cpus),
+                "samples": self.samples,
                 "samples_shared": self.busy, "by": [{"cmd": c, "user": u, "cores": round(v, 2)} for (c, u), v in top]}
 
 

@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.8
+Version: 2026.11.12.10
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -348,10 +348,10 @@ def _progress(d: Path, study: dict) -> dict:
                 out["mesh"]["cells_estimate"] = ce
             if m.get("warnings"):
                 out["mesh_warnings"] = m["warnings"][:6]
-        from .foam import diverged, divergence_message
-        at = diverged(d / "case" / "log.foamRun") if (d / "case" / "log.foamRun").is_file() else None
-        if at is not None:
-            out["diverged"] = divergence_message(at) + " (the job stops it at its next check)"
+        from .foam import divergence, divergence_message
+        dv = divergence(d / "case" / "log.foamRun") if (d / "case" / "log.foamRun").is_file() else None
+        if dv is not None:
+            out["diverged"] = divergence_message(dv) + " (the job stops it at its next check)"
         else:
             slow = _solver_limit(d / "case" / "log.foamRun")
             if slow:
@@ -362,7 +362,7 @@ def _progress(d: Path, study: dict) -> dict:
     except (OSError, ValueError):
         sh = None
     if sh and time.time() - float(sh.get("at", 0)) < 180 and isinstance(out, dict):
-        out["shared_cpus"] = {k: sh[k] for k in ("cores_taken", "of", "by") if k in sh}
+        out["shared_cpus"] = {k: sh[k] for k in ("cores_taken", "of", "hw_threads", "by") if k in sh}
         out["shared_cpus"]["note"] = "other processes are using this job's CPUs: it runs slower (see warnings)"
     return out
 

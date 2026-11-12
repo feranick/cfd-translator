@@ -633,3 +633,34 @@ def test_init_from_in_the_same_request_waits_for_its_source(slurm, monkeypatch):
     assert "--dependency=afterany:1001" in jb["command"]
     bad = api.validate({"x": dict(COUETTE, solve={"init_from": "nope"})})
     assert not bad["ok"] and "not a study of this request" in bad["studies"]["x"]["errors"][0]
+
+
+def test_cpu_share_leaves_out_the_jobs_own_srun_ranks(tmp_path, monkeypatch):
+    """Perlmutter: srun starts the ranks under slurmstepd, outside the batch script's tree; the job's own 128 foamRun
+    ranks were reported as 'other processes using this job's CPUs' (128 of 256 hardware threads)."""
+    from cfd_translator import cpushare
+    before = {100: (1, 0, 0.0, "python"), 500: (2, 1, 0.0, "foamRun"), 200: (1, 3, 0.0, "lmp_mpi")}
+    after = {100: (1, 0, 1.0, "python"), 500: (2, 1, 60.0, "foamRun"), 200: (1, 3, 45.0, "lmp_mpi")}
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    jobs = {500: "/system.slice/slurmstepd.scope/job_4242/step_0/user/task_0\n", 200: "/user.slice/x\n"}
+    monkeypatch.setattr(cpushare, "_environ", lambda pid: {})
+    real = cpushare.Path
+
+    class P(type(real())):
+        def read_text(self, *a, **k):
+            parts = str(self).split("/")
+            if len(parts) > 3 and parts[1] == "proc" and parts[3] == "cgroup":
+                return jobs.get(int(parts[2]), "")
+            return super().read_text(*a, **k)
+    monkeypatch.setattr(cpushare, "Path", P)
+    w = cpushare.Watcher(tmp_path, root=100)
+    w.cpus, w.cores = {0, 1, 2, 3}, 2
+    w.sample(before, after, 60.0)
+    sh = json.loads((tmp_path / "cpu_share.json").read_text())
+    assert [b["cmd"] for b in sh["by"]] == ["lmp_mpi"] and sh["cores_taken"] == 0.75
+    assert sh["of"] == 2 and sh["hw_threads"] == 4                        # physical cores, threads apart
+    # the study's marker (CFDT_STUDY) also counts as the job's own
+    monkeypatch.setattr(cpushare, "_environ", lambda pid: {"CFDT_STUDY": w.study} if pid == 200 else {})
+    w2 = cpushare.Watcher(tmp_path, root=100)
+    w2.cpus = {0, 1, 2, 3}
+    assert cpushare.competitors(w2.cpus, 100, before, after, 60.0, w2.ours)[0] == 0

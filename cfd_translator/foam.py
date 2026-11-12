@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.12.5
+Version: 2026.11.12.10
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -10,6 +10,7 @@ bash that sources the bashrc. CFDT_PROCS > 1 runs in parallel (decomposePar, mpi
 from __future__ import annotations
 
 import glob
+import math
 import os
 import re
 import shutil
@@ -41,21 +42,100 @@ _NAN = re.compile(r"(?:Initial|Final) residual = [-+]?(?:nan|inf)|sum local = [-
 _TIME_LINE = re.compile(r"^Time = ([-+0-9.eE]+)", re.M)
 
 
-def diverged(log: Path) -> str | None:
-    """The time / iteration at which the log first shows NaN or infinite residuals, or None."""
+# beyond NaN (Perlmutter, sliding7, 13.1 M cells: Courant max 2.5e98 and initial residuals ~0.7 from about step 40,
+# 60 s a step, and the run went on): an absurd Courant number, or the pressure / velocity residuals stuck near 1
+CO_ABSURD = 1e4              # CFDT_DIVERGE_CO; a fixed step runs at Courant ~25 in a few snappy cells: far below
+RES_HIGH = 0.5               # every time step's largest first initial residual (p, p_rgh, U) at least this ...
+RES_STEPS = 30               # ... for this many time steps in a row ...
+RES_SKIP = 20                # ... after the first time steps (a start from rest or a mapped field begins near 1)
+_CO = re.compile(r"Courant Number mean: \S+ max: (\S+)")
+_RES = re.compile(r"Solving for (p_rgh|p|Ux|Uy|Uz), Initial residual = ([-+0-9.eE]+)")
+_STEP = re.compile(r"^Time = ", re.M)
+TAIL_BYTES = 8 * 1024 * 1024
+
+
+def _co_limit() -> float:
+    try:
+        return float(os.environ.get("CFDT_DIVERGE_CO", "") or CO_ABSURD)
+    except ValueError:
+        return CO_ABSURD
+
+
+def divergence(log: Path) -> dict | None:
+    """How a solver's log shows divergence, or None: {at: time / iteration, why: 'nan' | 'courant' | 'residuals',
+    value?}. NaN or infinite residuals; a Courant number above CFDT_DIVERGE_CO (1e4) or not finite; or, in a transient
+    run, the largest first initial residual of p / p_rgh / U at RES_HIGH (0.5) or more for RES_STEPS (30) time steps in
+    a row, after its first RES_SKIP (20)."""
     try:
         with open(log, "rb") as f:
             text = f.read().decode(errors="replace")
     except OSError:
         return None
     m = _NAN.search(text)
-    if not m:
-        return None
-    t = _TIME_LINE.findall(text[:m.start()])
-    return t[-1] if t else "the start"
+    if m:
+        t = _TIME_LINE.findall(text[:m.start()])
+        return {"at": t[-1] if t else "the start", "why": "nan"}
+    lim = _co_limit()
+    for m in _CO.finditer(text):
+        try:
+            co = float(m.group(1))
+        except ValueError:
+            continue
+        if not math.isfinite(co) or co > lim:
+            t = _TIME_LINE.findall(text[:m.start()])
+            return {"at": t[-1] if t else "the start", "why": "courant", "value": co}
+    # residuals: the complete time steps of the log's end that have a Courant line (transient steps, not steady init)
+    tail = text[-TAIL_BYTES:]
+    n_tr = len(_CO.findall(text[:len(text) - len(tail)]))   # transient steps before the tail
+    blocks = _STEP.split(tail)[1:-1]                      # the last block may still be running
+    run, first_bad = 0, None
+    for blk in blocks:
+        if "Courant Number" not in blk:
+            run, first_bad = 0, None
+            continue
+        n_tr += 1
+        if n_tr <= RES_SKIP:
+            continue
+        first = {}
+        for f_, v in _RES.findall(blk):
+            first.setdefault(f_, v)
+        try:
+            worst = max(float(v) for v in first.values()) if first else 0.0
+        except ValueError:
+            worst = 0.0
+        if worst >= RES_HIGH:
+            run += 1
+            if first_bad is None:
+                first_bad = blk.split(None, 1)[0] if blk.strip() else "?"
+            if run >= RES_STEPS:
+                return {"at": first_bad, "why": "residuals", "value": worst, "steps": run}
+        else:
+            run, first_bad = 0, None
+    return None
 
 
-def divergence_message(at: str) -> str:
+def diverged(log: Path) -> str | None:
+    """The time / iteration at which the log first shows divergence (divergence()), or None."""
+    d = divergence(log)
+    return d["at"] if d else None
+
+
+def divergence_message(at, why: str = "nan", value=None, steps=None) -> str:
+    if isinstance(at, dict):
+        at, why, value, steps = at["at"], at.get("why", "nan"), at.get("value"), at.get("steps")
+    if why == "courant":
+        what = (f"the Courant number reached {value:.3g}" if value is not None and math.isfinite(value)
+                else "the Courant number became NaN or infinite")
+        return (f"the solution diverged at time {at}: {what} (the velocity blew up; CFDT_DIVERGE_CO sets the limit, "
+                f"{_co_limit():g}). Usual causes: a time step too large for the start (a fixed solve.time_step from "
+                "rest or from a poor initial field: start from a steady init or a smaller step), very bad cells "
+                "(mesh.worst_non_ortho, skewness, snappy's micrometre cells in narrow gaps), or a sliding interface "
+                "whose sides do not match")
+    if why == "residuals":
+        return (f"the solution diverged from time {at}: the pressure / velocity initial residuals stayed at "
+                f"{RES_HIGH:g} or more ({value:.2g} at the last) for {steps} time steps in a row, so the time steps no "
+                "longer converge. Usual causes: a time step too large (solve.time_step, max_co), too few PIMPLE "
+                "correctors for it, very bad cells, or a start from rest at full speed")
     return (f"the solution diverged at iteration {at}: the residuals are NaN. Usual causes: parts of the mesh cut off "
             "from every inlet and outlet (closed pockets: checkMesh 'Number of regions' above 1), very bad cells "
             "(mesh.worst_non_ortho, skewness), or relaxation too high for the mesh (solve.relax)")
@@ -143,10 +223,10 @@ def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log):
     while True:
         if watch_log is not None and time.time() >= next_look:
             next_look = time.time() + WATCH_S
-            at = diverged(watch_log)
-            if at is not None:
+            dv = divergence(watch_log)
+            if dv is not None:
                 _kill_group(p)
-                raise Diverged(divergence_message(at))
+                raise Diverged(divergence_message(dv))
         if deadline is not None and on_deadline is not None and not fired and time.time() >= deadline:
             fired = True
             on_deadline()
@@ -283,9 +363,9 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
         stop = (lambda: request_stop(case))
     rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
     log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
-    at = diverged(case / "log.foamRun")
-    if at is not None:                         # it ended on its own (short run), but on NaN
-        raise Diverged(divergence_message(at))
+    dv = divergence(case / "log.foamRun")
+    if dv is not None:                         # it ended on its own (short run), but diverged
+        raise Diverged(divergence_message(dv))
     out["log"] = foamio.parse_log(log)
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])

@@ -234,3 +234,41 @@ def test_continue_a_finished_run(tmp_path, monkeypatch):
     # the estimate counts only the time still to run
     from cfd_translator import executor
     assert executor.transient_steps(new) == pytest.approx(executor.transient_steps(dict(CH, solve={"transient": {"end_time": 3.0}})) * 1.0, rel=0.5)
+
+
+def _step_log(n, co=0.8, res=0.01, start=0):
+    out = []
+    for i in range(start, start + n):
+        out.append(f"Courant Number mean: 0.01 max: {co if not callable(co) else co(i)}\ndeltaT = 1e-05\n"
+                   f"Time = {(i + 1) * 1e-5:.5g}s\n\nPIMPLE: Iteration 1\n"
+                   f"smoothSolver:  Solving for Ux, Initial residual = {res if not callable(res) else res(i)}, "
+                   "Final residual = 1e-06, No Iterations 3\n"
+                   "GAMG:  Solving for p, Initial residual = 0.002, Final residual = 1e-07, No Iterations 9\n"
+                   "ExecutionTime = 60 s  ClockTime = 61 s\n\n")
+    return "".join(out)
+
+
+def test_divergence_watch_trips_on_courant_and_stuck_residuals(tmp_path, monkeypatch):
+    """Perlmutter sliding7 (13.1 M cells): Courant max 2.5e98 and initial residuals ~0.7 from about step 40, 60 s a
+    step, and the run went on: the watch knew only NaN residuals."""
+    from cfd_translator import foam
+    monkeypatch.delenv("CFDT_DIVERGE_CO", raising=False)
+    log = tmp_path / "log.foamRun"
+    log.write_text(_step_log(100, co=25.0, res=lambda i: 1.0 if i < 15 else 0.05))   # fixed step, Co 25: fine
+    assert foam.divergence(log) is None
+    log.write_text(_step_log(60, co=lambda i: 0.9 if i < 40 else 2.5e98))
+    d = foam.divergence(log)
+    assert d["why"] == "courant" and d["value"] == 2.5e98 and "Courant number reached 2.5e+98" in foam.divergence_message(d)
+    log.write_text(_step_log(80, res=lambda i: 0.7 if i >= 40 else 0.01))
+    d = foam.divergence(log)
+    assert d["why"] == "residuals" and d["steps"] == 30 and d["at"].startswith("0.00041")
+    assert "30 time steps in a row" in foam.divergence_message(d)
+    log.write_text(_step_log(80, res=lambda i: 0.7 if i % 10 else 0.01))               # high, but not 30 in a row
+    assert foam.divergence(log) is None
+    log.write_text(_step_log(40, res=0.9))                                            # a start: the first 20 skipped
+    assert foam.divergence(log) is None
+    monkeypatch.setenv("CFDT_DIVERGE_CO", "10")
+    log.write_text(_step_log(10, co=25.0))
+    assert foam.divergence(log)["why"] == "courant"
+    log.write_text(_step_log(5) + "smoothSolver:  Solving for Ux, Initial residual = nan, Final residual = nan\n")
+    assert foam.divergence(log)["why"] == "nan" and foam.diverged(log) is not None
