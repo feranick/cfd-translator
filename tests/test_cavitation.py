@@ -247,7 +247,7 @@ def test_gas_case_files(tmp_path):
     fc = (c / "system" / "fvConstraints").read_text()
     assert "type            bound;" in fc and "field           p;" in fc and f"min             {pv:.10g};" in fc
     fv = (c / "system" / "fvSolution").read_text()
-    assert "thermophysics   no;" in fv and '".*(rho|rhoFinal)"' in fv and "|T).*" in fv and "localEuler" not in fv
+    assert "thermophysics" not in fv and '".*(rho|rhoFinal)"' in fv and "|T).*" in fv and "localEuler" not in fv
     fs = (c / "system" / "fvSchemes").read_text()
     assert "localEuler" in fs and "div(rhoPhi,k)" in fs and "div(alphaRhoPhi,e)" in fs and "div(phi,p)" in fs
     a = foamio.read_foam((c / "0" / "alpha.water").read_text())["boundaryField"]
@@ -333,3 +333,31 @@ def test_gas_fraction_per_point_and_validation(tmp_path):
     assert plan["vof"]["solver"] == "compressibleVoF" and plan["vof"]["gas"]["inlet_fraction"] == 0
     a = foamio.read_foam((tmp_path / "b" / "case" / "0" / "alpha.water").read_text())["boundaryField"]
     assert "1" in str(a["inlet"]["value"])
+
+
+def test_gas_balance_check_and_verdict():
+    """carbonio, 2026.11.12: a 2 % air duct at a steady state carried out 4x the air that came in (the inlet's air at
+    the start pressure's density, 'thermophysics no'). The air's balance is a check, and an imbalance is a verdict."""
+    from cfd_translator.runner import _verdict
+    res = {"checks": {"gas_balance": {"in_kg_s": 3.737e-05, "out_kg_s": 1.525e-04, "error": 3.08}}}
+    ok, why = _verdict({"solve": {"converged": True}}, res)
+    assert not ok and any("air not conserved" in w for w in why)
+    res["checks"]["gas_balance"].update(out_kg_s=3.75e-05, error=0.003)
+    assert _verdict({"solve": {"converged": True}}, res)[0]
+
+
+def test_gas_duct_bench_checks():
+    from cfd_translator import bench
+    c = bench._cases()["duct_air_2pct"]
+    assert validate_study(c["study"])["ok"], validate_study(c["study"])
+    r = {"cavitation": {"inlet_total_pressure_Pa": 90430.56,
+                        "flows": {"gas_in_kg_s": 3.737e-05, "gas_out_kg_s": 3.74e-05, "gas_in_m3s": 4.081e-05,
+                                  "gas_out_m3s": 4.081e-05 * 77222.8 / 71050.5, "liquid_flow_error": -5e-05}},
+         "pressure": {"inlet": {"p_mean": -13207.8}, "outlet": {"p_mean": -19380.1}}}
+    ev = bench.evaluate("duct_air_2pct", {"ok": True, "results": dict(r, checks={"mass_balance": {}, "momentum_balance": {}}),
+                                          "mesh": {"cells": 5120}, "reliable": True}, {"duct_air_2pct": c})
+    assert ev["passed"], ev
+    r["cavitation"]["flows"]["gas_out_kg_s"] = 1.525e-04                # cfdt 2026.11.12.14
+    ev = bench.evaluate("duct_air_2pct", {"ok": True, "results": dict(r, checks={"mass_balance": {}, "momentum_balance": {}}),
+                                          "mesh": {"cells": 5120}, "reliable": True}, {"duct_air_2pct": c})
+    assert not ev["passed"]

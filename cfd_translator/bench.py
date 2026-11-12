@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.12.7
+Version: 2026.11.12.15
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -10,6 +10,8 @@ Version: 2026.11.12.7
   couette_2d       plane Couette flow: Q = U H / 2, wall shear mu U / H (exact on any mesh)
   channel_2d       plane Poiseuille: dp/dx = 12 mu U / H^2, wall force = dp H (2D, parabolic inlet)
   cavity_re100     lid-driven cavity, Re 100: centreline velocities vs Ghia, Ghia & Shin (1982)
+  duct_air_2pct    water + 2 % air (inlet_gas_fraction, compressibleVoF, LTS) in a duct: air out = air in, its
+                   volume expanded by p_in / p_out (isothermal), the liquid flow as asked
   pipe_poiseuille  Hagen-Poiseuille pipe: dp = 8 mu L Q / (pi R^4) (swept disk mesh; Gmsh)
   cylinder_2d1     Schaefer & Turek (1996) 2D-1, cylinder in a channel at Re 20: cD, dp (Gmsh)
   taylor_couette_2d   rotating inner cylinder (rotating wall): exact torque and velocity (Gmsh)
@@ -85,6 +87,17 @@ def _cavity(re: int, n: int) -> dict:
             "probes": probes}
 
 
+def _gas_duct_checks(r):
+    cv = r["cavitation"]
+    fl = cv["flows"]
+    p0 = cv["inlet_total_pressure_Pa"]
+    pin, pout = p0 + r["pressure"]["inlet"]["p_mean"], p0 + r["pressure"]["outlet"]["p_mean"]
+    return [("air out = air in (kg/s)", fl["gas_in_kg_s"], fl["gas_out_kg_s"], {"tol": 0.03}),
+            ("air volume out / in = p_in / p_out (isothermal)", pin / pout, fl["gas_out_m3s"] / fl["gas_in_m3s"],
+             {"tol": 0.05}),
+            ("liquid flow = the study's", 0.0, cv["flows"]["liquid_flow_error"], {"abs": 0.01})]
+
+
 def _cavity_checks(re, tol):
     def f(r):
         out = []
@@ -123,6 +136,15 @@ def _cases() -> dict:
                              ("wall force = 12 mu U L depth / H", 12 * mu * U * 1.0 * 0.01 / H, r["forces"]["walls"]["fx"], {"tol": 0.01})],
         "ref": True, "needs": []}
     C["cavity_re100"] = {"study": _cavity(100, 64), "checks": _cavity_checks(100, 0.02), "ref": True, "needs": []}
+    # water with 2 % air (cavitation.inlet_gas_fraction: compressibleVoF, LTS) through a 20 x 20 mm duct at 5 m/s,
+    # NPSH 9 m: as much air leaves as enters, and it leaves expanded by the static pressures' ratio (isothermal).
+    # cfdt 2026.11.12.14 carried 4x the air (the inlet's air at its start pressure's density)
+    C["duct_air_2pct"] = {
+        "study": {"geometry": {"box": [400, 20, 20]}, "fluid": "water", "model": "kOmegaSST",
+                  "bcs": [{"kind": "inlet", "name": "inlet", "faces": {"nx": -1}, "flow_rate": 0.002},
+                          {"kind": "outlet", "name": "outlet", "faces": {"nx": 1}, "pressure": 0}],
+                  "mesh": {"cells": [80, 8, 8]}, "cavitation": {"npsh": 9, "inlet_gas_fraction": 0.02, "iterations": 3000}},
+        "checks": _gas_duct_checks, "ref": False, "needs": []}
     C["cavity_re1000"] = {"study": _cavity(1000, 128), "checks": _cavity_checks(1000, 0.03), "ref": False,
                           "needs": [], "slow": True}
     # Hagen-Poiseuille: R = 5 mm, water, 0.5 L/min; dp between z = 50 and 150 mm on the axis

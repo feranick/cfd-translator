@@ -1,6 +1,6 @@
 """cavitation.py — cavitating liquid flow: OpenFOAM 14 incompressibleVoF with the VoFCavitation fvModel; or liquid
 with air entering at the inlet (inlet_gas_fraction): compressibleVoF, water + perfect-gas air, no vapour.
-Version: 2026.11.12.3
+Version: 2026.11.12.15
 
 A study with "cavitation": {...} solves liquid and its vapour as one mixture with a vapour fraction (VoF,
 alpha.water = liquid fraction), with mass transfer where the pressure falls below the vapour pressure
@@ -462,9 +462,13 @@ def write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g,
           f"    \"({fields}).*\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-7;\n        relTol          0.1;\n        minIter         1;\n    }\n}\n\n"
           "PIMPLE\n{\n    momentumPredictor yes;\n    nOuterCorrectors 1;\n    nCorrectors     2;\n"
-          # air: isothermal, no energy equation (foamRun runs the thermophysics only with pimple.thermophysics());
-          # the air's density still follows the pressure (psi = 1/(R T))
-          + ("    thermophysics   no;\n    transonic       no;\n" if gas_mode else "") +
+          # air: the thermophysics stay on (an energy equation; T fixed at the inlet, adiabatic walls: nearly
+          # isothermal). With 'thermophysics no' (2026.11.07-2026.11.12.14) the phases' densities were only
+          # updated by psi dp in the pressure corrector (rhoFluidThermo::correctRho), which misses the inlet's
+          # total-pressure ramp and the dynamic head: the air entered at its density at the start pressure. A duct
+          # with 2 % air (carbonio, 2026.11.12) carried 8 % (holdup 4.0 = p_start / p_inlet), 2.3 at NPSH 20 m,
+          # 1.0 with a start pressure near p0; the S50 points 1.2 and 2.3, the liquid flow 9-12 % low
+          + ("    transonic       no;\n" if gas_mode else "") +
           f"    nNonOrthogonalCorrectors {nonorth};\n\n    maxCo           {cv['max_co']:g};\n    maxAlphaCo      1;\n"
           "    rDeltaTSmoothingCoeff 0.05;\n    rDeltaTDampingCoeff 0.5;\n    nAlphaSpreadIter 0;\n"
           f"    nAlphaSweepIter 0;\n    maxDeltaT       {dt_max:.6g};\n}}\n\n"
@@ -615,9 +619,16 @@ def results(study: dict, mesh, plan: dict, fields: dict, res: dict) -> tuple[dic
             flows.update(gas_in_kg_s=float(f"{gi:.4g}"), gas_out_kg_s=float(f"{go:.4g}"),
                          gas_in_m3s=float(f"{-ends[vf['inlet']]['Q2']:.4g}"),
                          gas_out_m3s=float(f"{ends[vf['outlet']]['Q2']:.4g}"))
+            if gi > 0:
+                res.setdefault("checks", {})["gas_balance"] = {
+                    "in_kg_s": _round(gi), "out_kg_s": _round(go), "error": _round(abs(go - gi) / gi),
+                    "note": "the air neither forms nor dissolves here: at a steady state as much leaves as enters"}
             if gi > 0 and abs(go - gi) > 0.05 * gi:
-                warns.append(f"air in {gi:.3g} kg/s, out {go:.3g} kg/s ({(go - gi) / gi:+.0%}): the air held in the "
-                             "pump is still changing (it gathers in the eye or behind the blades); more iterations")
+                warns.append(f"air in {gi:.3g} kg/s, out {go:.3g} kg/s ({(go - gi) / gi:+.0%}): " +
+                             ("more air leaves than enters: the solver is making air (a converged run must carry "
+                              "out what comes in)" if go > gi else
+                              "the air held in the pump is still changing (it gathers in the eye or behind the "
+                              "blades); more iterations"))
         else:
             evap = dvol / (1.0 / vf["rho_v"] - 1.0 / rho_l)
             flows["net_evaporation_kg_s"] = float(f"{evap:.4g}")

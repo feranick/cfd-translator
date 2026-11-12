@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.11
+Version: 2026.11.12.15
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -646,6 +646,10 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
         why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
     if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.02:
         why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
+    if ch.get("gas_balance", {}).get("error", 0) > 0.05:
+        gb = ch["gas_balance"]
+        why.append(f"air not conserved: {gb['in_kg_s']:.3g} kg/s in, {gb['out_kg_s']:.3g} kg/s out "
+                   f"({gb['error']:.0%})")
     if ch.get("alpha_bounds") and not ch["alpha_bounds"].get("ok", True):
         why.append(f"the liquid fraction left [0, 1] ({ch['alpha_bounds']['min']} .. {ch['alpha_bounds']['max']})")
     mb = ch.get("momentum_balance", {})
