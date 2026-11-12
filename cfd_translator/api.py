@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.11
+Version: 2026.11.12.14
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -422,10 +422,18 @@ def _progress_of(d: Path, study: dict) -> dict:
     trs = s.get("transient")
     # no steady start when the run starts from another run's fields (init_from): reading its time steps as steady
     # iterations showed 'iteration 1 of 500' at 34,000 s an iteration for runs at t = 0.8 and 1.6 s (2026.11.07)
+    # nor when it carries on a finished run (solve.transient.continue: rogue_v4c_cont, 2026.11.12, 'iteration 3 of
+    # 500' at ~61,000 s an iteration, elapsed counting the old run's 3722 min from its copied log.checkMesh)
     from .transient import init_ref
-    init = (int(trs.get("init", 0 if (study.get("model", "laminar") == "laminar" or init_ref(study)[0]) else 500))
+    try:
+        tst = json.loads((d / "transient.json").read_text()) if (d / "transient.json").is_file() else {}
+    except (OSError, ValueError):
+        tst = {}
+    carried = bool(trs and (trs.get("continue") or tst.get("continued_from")))
+    init = (0 if carried else
+            int(trs.get("init", 0 if (study.get("model", "laminar") == "laminar" or init_ref(study)[0]) else 500))
             if trs else 0)
-    if trs and (init == 0 or (d / "case" / "log.foamRun.init").exists()):
+    if trs and (init == 0 or tst.get("init_done") or (d / "case" / "log.foamRun.init").exists()):
         from .transient import progress as _tp
         T = float(trs["end_time"])
         pr = _tp(text, T)
@@ -435,11 +443,13 @@ def _progress_of(d: Path, study: dict) -> dict:
         sp = step_profile(text)
         if sp:
             out["step_profile"] = sp
+        if carried and tst.get("continued_at") is not None:
+            out["continued_at"] = tst["continued_at"]
         try:
             head = log.open("r", errors="replace").read(200000)
             t_first = float(_re.findall(r"^Time = ([-+0-9.eE]+)", head, _re.M)[0])
         except (OSError, IndexError, ValueError):
-            t_first = None
+            t_first = float(tst["continued_at"]) if carried and tst.get("continued_at") is not None else None
         if it and t_first is not None and el > 1:
             t1 = float(it[-1])
             rate = (t1 - t_first) / el

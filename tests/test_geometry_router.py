@@ -6,6 +6,7 @@ Version: 2026.11.09.4 (the queue and node-memory tests answer llmt-runtime's SLU
 from __future__ import annotations
 
 import json
+import time
 import struct
 from pathlib import Path
 
@@ -642,6 +643,31 @@ def test_progress_of_an_init_from_transient_run(tmp_path):
     pr = api._progress_of(d, st)
     assert pr["stage"] == "solving (transient)" and pr["time"] == pytest.approx(0.8093, abs=1e-3)
     assert pr["end_time"] == 2.5 and "iteration" not in pr and pr["eta_min_max"] > 0
+
+
+def test_progress_of_a_continued_transient_run(tmp_path):
+    """rogue_v4c_cont (spark1, 2026.11.12, job 569): a solve.transient.continue run showed 'iteration 3 of 500' at
+    ~61,000 s an iteration and an elapsed time counting the old run's 3722 min (its copied log.checkMesh)."""
+    import os
+    d = tmp_path / "s"
+    (d / "case").mkdir(parents=True)
+    (d / "case" / "log.checkMesh").write_text("old\n")
+    os.utime(d / "case" / "log.checkMesh", (time.time() - 3722 * 60, time.time() - 3722 * 60))
+    (d / "transient.json").write_text(json.dumps({"init_done": True, "started": True, "continued_from": "run_a/x",
+                                                  "continued_at": 0.4}))
+    st = {"model": "kOmegaSSTDES", "solve": {"transient": {"end_time": 0.6, "average_from": 0.15, "continue": "run_a/x"}}}
+    lines = []
+    for k in range(1, 4):
+        lines += ["Courant Number mean: 0.1 max: 0.9", "deltaT = 1e-05", f"Time = {0.4 + k * 1e-5:.8g}s",
+                  f"ExecutionTime = {k * 60.0:.1f} s  ClockTime = {k * 60:.0f} s", ""]
+    (d / "case" / "log.foamRun").write_text("\n".join(lines))
+    pr = api._progress_of(d, st)
+    assert pr["stage"] == "solving (transient)" and "iteration" not in pr and "s_per_iteration" not in pr
+    assert pr["time"] == pytest.approx(0.40003, abs=1e-6) and pr["end_time"] == 0.6 and pr["continued_at"] == 0.4
+    assert pr["elapsed_min"] == 3.0 and pr["eta_min_max"] > 0
+    # without the study's key (an older study.json): transient.json says it is carried on
+    st2 = {"model": "kOmegaSSTDES", "solve": {"transient": {"end_time": 0.6, "average_from": 0.15}}}
+    assert "iteration" not in api._progress_of(d, st2)
 
 
 def test_mapping_failure_is_a_clear_error(tmp_path, monkeypatch):
