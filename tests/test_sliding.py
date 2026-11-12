@@ -643,6 +643,11 @@ def test_projected_volume_fraction_estimate_chooses_the_owner_and_stops_bad_inte
 def test_step_profile_and_stitcher_stats(tmp_path):
     from cfd_translator.transient import step_profile, stitcher_stats
     step = ("Courant Number mean: 0.01 max: 62\ndeltaT = 1e-05\nTime = {t}s\n\n"
+            "patchToPatch: Calculating couplings between ...\n"
+            "    Source min/average/max coverage = 0.7{t}/0.99996/1\n    Target min/average/max coverage = 0.76/0.99996/1.0016\n"
+            "    Source average openness/error/depth/angle = 1.4e-16/7.2e-06/0.0137/2.03\n"
+            "    Source max openness/error/depth/angle = 9.5e-16/0.13/0.27/4{t}.5\n"
+            "    1296747{t} couplings calculated in 0.8s\n"
             "Cell min/average/max projected volume fraction = 0/0.001/{pvf}\n"
             "PIMPLE: Iteration 1\nsmoothSolver:  Solving for Ux, Initial residual = 0.1, Final residual = 0.01, No Iterations 4\n"
             "GAMG:  Solving for p, Initial residual = 0.1, Final residual = 0.001, No Iterations 12\n"
@@ -653,10 +658,13 @@ def test_step_profile_and_stitcher_stats(tmp_path):
     sp = step_profile(text)
     assert sp["steps"] == 4 and sp["s_per_step"] == 50 and sp["iterations_per_step"] == {"Ux": 94.0, "p": 32.0}
     assert sp["solvers"]["Ux"] == "smoothSolver" and sp["projected_volume_fraction_max"] == 0.58
+    assert sp["coverage_min"] == 0.71 and sp["coupled_angle_max_deg"] == 44.5 and sp["couplings"] == 12967474
+    assert sp["couplings_s"] == 0.8
     log = tmp_path / "log.foamRun"
     log.write_text(text)
     st = stitcher_stats(log)
     assert st["projected_volume_fraction_max"] == 0.59 and st["over_0.3"] == 5
+    assert st["coverage_min"] == 0.71 and st["coupled_angle_max_deg"] == 45.5 and st["couplings_at_rest"] == 12967471
 
 
 def test_sliding_final_momentum_solve_is_not_to_1e_7(tmp_path):

@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.12.11
+Version: 2026.11.12.12
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -236,6 +236,29 @@ def courant_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
 
 _SOLVE = re.compile(r"(\w+):\s+Solving for (\w+), Initial residual = [^,]+, Final residual = [^,]+, No Iterations (\d+)")
 _PVF = re.compile(r"projected volume fraction = ([-+0-9.eE]+)/([-+0-9.eE]+)/([-+0-9.eE]+)")
+_COV = re.compile(r"(?:Source|Target) min/average/max coverage = ([-+0-9.eE]+)/")
+_ANG = re.compile(r"Source max openness/error/depth/angle = [^/]+/[^/]+/[^/]+/([-+0-9.eE]+)")
+_COUPLE = re.compile(r"(\d+) couplings calculated in ([-+0-9.eE]+)s")
+
+
+def _stitch_of(b: str) -> dict:
+    """One step's stitching from OpenFOAM 14's log: coverage (min of both sides), the largest angle between coupled
+    faces (deg), couplings and their time, the projected volume fraction (max)."""
+    out = {}
+    cv = [float(x) for x in _COV.findall(b)]
+    if cv:
+        out["coverage_min"] = min(cv)
+    an = [float(x) for x in _ANG.findall(b)]
+    if an:
+        out["angle_max_deg"] = max(an)
+    cp = _COUPLE.findall(b)
+    if cp:
+        out["couplings"] = int(cp[-1][0])
+        out["couplings_s"] = float(cp[-1][1])
+    pv = _PVF.findall(b)
+    if pv:
+        out["pvf"] = max(float(x[2]) for x in pv)
+    return out
 
 
 def step_profile(text: str, last: int = 8) -> dict | None:
@@ -249,7 +272,7 @@ def step_profile(text: str, last: int = 8) -> dict | None:
         return None
     allb = [text[marks[i]:marks[i + 1]] for i in range(len(marks) - 1)]     # the last one may still be running
     blocks = allb[-last:]
-    its, solver, pvf = {}, {}, []
+    its, solver, pvf, stitch = {}, {}, [], []
     clocks = []
     for b in allb[-(last + 1):]:
         ck = _CLOCK.findall(b)
@@ -259,9 +282,11 @@ def step_profile(text: str, last: int = 8) -> dict | None:
         for sv, field, n in _SOLVE.findall(b):
             its[field] = its.get(field, 0) + int(n)
             solver[field] = sv
-        pv = _PVF.findall(b)
-        if pv:
-            pvf.append(max(float(x[2]) for x in pv))
+        st = _stitch_of(b)
+        if "pvf" in st:
+            pvf.append(st["pvf"])
+        if st:
+            stitch.append(st)
     nb = len(blocks)
     out = {"steps": nb,
            "iterations_per_step": {f: round(v / nb, 1) for f, v in sorted(its.items(), key=lambda kv: -kv[1])},
@@ -273,6 +298,16 @@ def step_profile(text: str, last: int = 8) -> dict | None:
     if pvf:
         out["projected_volume_fraction_max"] = round(max(pvf), 3)
         out["projected_volume_fraction_last"] = round(pvf[-1], 3)
+    cov = [x["coverage_min"] for x in stitch if "coverage_min" in x]
+    ang = [x["angle_max_deg"] for x in stitch if "angle_max_deg" in x]
+    cpl = [x for x in stitch if "couplings" in x]
+    if cov:
+        out["coverage_min"] = round(min(cov), 3)
+    if ang:
+        out["coupled_angle_max_deg"] = round(max(ang), 1)
+    if cpl:
+        out["couplings"] = cpl[-1]["couplings"]
+        out["couplings_s"] = round(sum(x["couplings_s"] for x in cpl) / len(cpl), 2)
     return out
 
 
@@ -287,8 +322,19 @@ def stitcher_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
     v = [float(m[2]) for m in _PVF.findall(text)]
     if not v:
         return None
-    return {"projected_volume_fraction_max": round(max(v), 3), "projected_volume_fraction_last": round(v[-1], 3),
-            "over_0.3": sum(x > 0.3 for x in v), "seen": len(v)}
+    out = {"projected_volume_fraction_max": round(max(v), 3), "projected_volume_fraction_last": round(v[-1], 3),
+           "over_0.3": sum(x > 0.3 for x in v), "seen": len(v)}
+    cv = [float(x) for x in _COV.findall(text)]
+    an = [float(x) for x in _ANG.findall(text)]
+    cp = _COUPLE.findall(text)
+    if cv:
+        out["coverage_min"] = round(min(cv), 3)
+    if an:
+        out["coupled_angle_max_deg"] = round(max(an), 1)
+    if cp:
+        out["couplings_last"] = int(cp[-1][0])
+        out["couplings_at_rest"] = int(cp[0][0])
+    return out
 
 
 def sliding_zone(study: dict) -> dict | None:

@@ -1,0 +1,2672 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  14
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+Build  : 14-a4867fc914c1
+Exec   : /global/u2/f/feranick/software/openfoam/OpenFOAM-14/platforms/linux64GccDPInt32Opt/bin/foamRun -parallel
+Date   : Nov 12 2026
+Time   : 07:22:14
+Host   : "nid004684"
+PID    : 1555725
+I/O    : uncollated
+Case   : /pscratch/sd/f/feranick/cfdt_runs/run_20261112_061118_b0ebf6/s50_Q20_sliding7_cluster/case
+nProcs : 512
+Slaves : 
+511
+(
+"nid004684.1555726"
+"nid004684.1555728"
+"nid004684.1555730"
+"nid004684.1555732"
+"nid004684.1555734"
+"nid004684.1555736"
+"nid004684.1555738"
+"nid004684.1555740"
+"nid004684.1555742"
+"nid004684.1555745"
+"nid004684.1555747"
+"nid004684.1555748"
+"nid004684.1555750"
+"nid004684.1555752"
+"nid004684.1555754"
+"nid004684.1555757"
+"nid004684.1555759"
+"nid004684.1555760"
+"nid004684.1555763"
+"nid004684.1555765"
+"nid004684.1555766"
+"nid004684.1555769"
+"nid004684.1555771"
+"nid004684.1555772"
+"nid004684.1555775"
+"nid004684.1555776"
+"nid004684.1555778"
+"nid004684.1555780"
+"nid004684.1555783"
+"nid004684.1555784"
+"nid004684.1555786"
+"nid004684.1555788"
+"nid004684.1555791"
+"nid004684.1555792"
+"nid004684.1555794"
+"nid004684.1555797"
+"nid004684.1555798"
+"nid004684.1555800"
+"nid004684.1555802"
+"nid004684.1555804"
+"nid004684.1555806"
+"nid004684.1555808"
+"nid004684.1555811"
+"nid004684.1555812"
+"nid004684.1555814"
+"nid004684.1555817"
+"nid004684.1555818"
+"nid004684.1555820"
+"nid004684.1555823"
+"nid004684.1555824"
+"nid004684.1555827"
+"nid004684.1555829"
+"nid004684.1555830"
+"nid004684.1555832"
+"nid004684.1555834"
+"nid004684.1555836"
+"nid004684.1555838"
+"nid004684.1555840"
+"nid004684.1555842"
+"nid004684.1555844"
+"nid004684.1555846"
+"nid004684.1555848"
+"nid004684.1555850"
+"nid004684.1555852"
+"nid004684.1555854"
+"nid004684.1555856"
+"nid004684.1555858"
+"nid004684.1555860"
+"nid004684.1555862"
+"nid004684.1555864"
+"nid004684.1555866"
+"nid004684.1555868"
+"nid004684.1555870"
+"nid004684.1555872"
+"nid004684.1555874"
+"nid004684.1555877"
+"nid004684.1555878"
+"nid004684.1555880"
+"nid004684.1555882"
+"nid004684.1555884"
+"nid004684.1555886"
+"nid004684.1555888"
+"nid004684.1555890"
+"nid004684.1555892"
+"nid004684.1555894"
+"nid004684.1555896"
+"nid004684.1555898"
+"nid004684.1555900"
+"nid004684.1555902"
+"nid004684.1555904"
+"nid004684.1555906"
+"nid004684.1555908"
+"nid004684.1555911"
+"nid004684.1555913"
+"nid004684.1555915"
+"nid004684.1555917"
+"nid004684.1555919"
+"nid004684.1555921"
+"nid004684.1555923"
+"nid004684.1555925"
+"nid004684.1555927"
+"nid004684.1555929"
+"nid004684.1555931"
+"nid004684.1555934"
+"nid004684.1555936"
+"nid004684.1555938"
+"nid004684.1555940"
+"nid004684.1555942"
+"nid004684.1555944"
+"nid004684.1555946"
+"nid004684.1555948"
+"nid004684.1555950"
+"nid004684.1555952"
+"nid004684.1555954"
+"nid004684.1555956"
+"nid004684.1555958"
+"nid004684.1555960"
+"nid004684.1555962"
+"nid004684.1555964"
+"nid004684.1555966"
+"nid004684.1555968"
+"nid004684.1555970"
+"nid004684.1555972"
+"nid004684.1555974"
+"nid004684.1555976"
+"nid004684.1555978"
+"nid004684.1555980"
+"nid005762.626717"
+"nid005762.626718"
+"nid005762.626720"
+"nid005762.626722"
+"nid005762.626724"
+"nid005762.626726"
+"nid005762.626728"
+"nid005762.626730"
+"nid005762.626732"
+"nid005762.626735"
+"nid005762.626736"
+"nid005762.626738"
+"nid005762.626740"
+"nid005762.626742"
+"nid005762.626744"
+"nid005762.626747"
+"nid005762.626748"
+"nid005762.626750"
+"nid005762.626753"
+"nid005762.626755"
+"nid005762.626756"
+"nid005762.626759"
+"nid005762.626761"
+"nid005762.626762"
+"nid005762.626765"
+"nid005762.626766"
+"nid005762.626769"
+"nid005762.626771"
+"nid005762.626773"
+"nid005762.626775"
+"nid005762.626777"
+"nid005762.626779"
+"nid005762.626781"
+"nid005762.626783"
+"nid005762.626784"
+"nid005762.626786"
+"nid005762.626789"
+"nid005762.626790"
+"nid005762.626792"
+"nid005762.626795"
+"nid005762.626797"
+"nid005762.626799"
+"nid005762.626801"
+"nid005762.626803"
+"nid005762.626805"
+"nid005762.626806"
+"nid005762.626809"
+"nid005762.626811"
+"nid005762.626812"
+"nid005762.626815"
+"nid005762.626817"
+"nid005762.626818"
+"nid005762.626820"
+"nid005762.626823"
+"nid005762.626824"
+"nid005762.626827"
+"nid005762.626829"
+"nid005762.626830"
+"nid005762.626832"
+"nid005762.626834"
+"nid005762.626836"
+"nid005762.626839"
+"nid005762.626840"
+"nid005762.626842"
+"nid005762.626844"
+"nid005762.626846"
+"nid005762.626848"
+"nid005762.626850"
+"nid005762.626852"
+"nid005762.626854"
+"nid005762.626856"
+"nid005762.626858"
+"nid005762.626860"
+"nid005762.626862"
+"nid005762.626864"
+"nid005762.626866"
+"nid005762.626868"
+"nid005762.626870"
+"nid005762.626872"
+"nid005762.626874"
+"nid005762.626876"
+"nid005762.626878"
+"nid005762.626880"
+"nid005762.626882"
+"nid005762.626884"
+"nid005762.626886"
+"nid005762.626888"
+"nid005762.626890"
+"nid005762.626892"
+"nid005762.626894"
+"nid005762.626897"
+"nid005762.626898"
+"nid005762.626900"
+"nid005762.626902"
+"nid005762.626904"
+"nid005762.626906"
+"nid005762.626908"
+"nid005762.626910"
+"nid005762.626912"
+"nid005762.626914"
+"nid005762.626916"
+"nid005762.626918"
+"nid005762.626920"
+"nid005762.626922"
+"nid005762.626924"
+"nid005762.626927"
+"nid005762.626928"
+"nid005762.626930"
+"nid005762.626933"
+"nid005762.626934"
+"nid005762.626936"
+"nid005762.626938"
+"nid005762.626941"
+"nid005762.626943"
+"nid005762.626945"
+"nid005762.626947"
+"nid005762.626948"
+"nid005762.626950"
+"nid005762.626952"
+"nid005762.626954"
+"nid005762.626956"
+"nid005762.626958"
+"nid005762.626961"
+"nid005762.626963"
+"nid005762.626965"
+"nid005762.626967"
+"nid005762.626969"
+"nid005762.626971"
+"nid005991.653668"
+"nid005991.653669"
+"nid005991.653671"
+"nid005991.653673"
+"nid005991.653675"
+"nid005991.653677"
+"nid005991.653679"
+"nid005991.653681"
+"nid005991.653683"
+"nid005991.653686"
+"nid005991.653687"
+"nid005991.653689"
+"nid005991.653692"
+"nid005991.653693"
+"nid005991.653695"
+"nid005991.653698"
+"nid005991.653700"
+"nid005991.653701"
+"nid005991.653703"
+"nid005991.653705"
+"nid005991.653707"
+"nid005991.653710"
+"nid005991.653711"
+"nid005991.653714"
+"nid005991.653715"
+"nid005991.653717"
+"nid005991.653720"
+"nid005991.653722"
+"nid005991.653724"
+"nid005991.653726"
+"nid005991.653727"
+"nid005991.653730"
+"nid005991.653732"
+"nid005991.653733"
+"nid005991.653736"
+"nid005991.653738"
+"nid005991.653739"
+"nid005991.653742"
+"nid005991.653744"
+"nid005991.653746"
+"nid005991.653748"
+"nid005991.653750"
+"nid005991.653752"
+"nid005991.653754"
+"nid005991.653756"
+"nid005991.653758"
+"nid005991.653760"
+"nid005991.653762"
+"nid005991.653763"
+"nid005991.653766"
+"nid005991.653768"
+"nid005991.653770"
+"nid005991.653772"
+"nid005991.653774"
+"nid005991.653776"
+"nid005991.653777"
+"nid005991.653779"
+"nid005991.653781"
+"nid005991.653784"
+"nid005991.653786"
+"nid005991.653788"
+"nid005991.653790"
+"nid005991.653792"
+"nid005991.653793"
+"nid005991.653795"
+"nid005991.653798"
+"nid005991.653800"
+"nid005991.653801"
+"nid005991.653803"
+"nid005991.653806"
+"nid005991.653807"
+"nid005991.653809"
+"nid005991.653812"
+"nid005991.653813"
+"nid005991.653815"
+"nid005991.653817"
+"nid005991.653819"
+"nid005991.653821"
+"nid005991.653823"
+"nid005991.653825"
+"nid005991.653827"
+"nid005991.653829"
+"nid005991.653831"
+"nid005991.653833"
+"nid005991.653835"
+"nid005991.653837"
+"nid005991.653839"
+"nid005991.653841"
+"nid005991.653843"
+"nid005991.653845"
+"nid005991.653847"
+"nid005991.653849"
+"nid005991.653851"
+"nid005991.653854"
+"nid005991.653856"
+"nid005991.653857"
+"nid005991.653859"
+"nid005991.653861"
+"nid005991.653863"
+"nid005991.653865"
+"nid005991.653867"
+"nid005991.653869"
+"nid005991.653871"
+"nid005991.653873"
+"nid005991.653875"
+"nid005991.653877"
+"nid005991.653879"
+"nid005991.653881"
+"nid005991.653883"
+"nid005991.653885"
+"nid005991.653888"
+"nid005991.653889"
+"nid005991.653891"
+"nid005991.653894"
+"nid005991.653895"
+"nid005991.653898"
+"nid005991.653899"
+"nid005991.653901"
+"nid005991.653903"
+"nid005991.653905"
+"nid005991.653908"
+"nid005991.653909"
+"nid005991.653912"
+"nid005991.653913"
+"nid005991.653915"
+"nid005991.653917"
+"nid005991.653920"
+"nid005991.653921"
+"nid006593.735871"
+"nid006593.735872"
+"nid006593.735874"
+"nid006593.735876"
+"nid006593.735878"
+"nid006593.735880"
+"nid006593.735882"
+"nid006593.735884"
+"nid006593.735886"
+"nid006593.735888"
+"nid006593.735890"
+"nid006593.735893"
+"nid006593.735894"
+"nid006593.735896"
+"nid006593.735898"
+"nid006593.735901"
+"nid006593.735902"
+"nid006593.735904"
+"nid006593.735906"
+"nid006593.735909"
+"nid006593.735910"
+"nid006593.735912"
+"nid006593.735914"
+"nid006593.735916"
+"nid006593.735919"
+"nid006593.735920"
+"nid006593.735922"
+"nid006593.735924"
+"nid006593.735926"
+"nid006593.735928"
+"nid006593.735930"
+"nid006593.735932"
+"nid006593.735934"
+"nid006593.735936"
+"nid006593.735938"
+"nid006593.735940"
+"nid006593.735942"
+"nid006593.735944"
+"nid006593.735946"
+"nid006593.735948"
+"nid006593.735950"
+"nid006593.735952"
+"nid006593.735955"
+"nid006593.735957"
+"nid006593.735959"
+"nid006593.735960"
+"nid006593.735962"
+"nid006593.735964"
+"nid006593.735967"
+"nid006593.735968"
+"nid006593.735970"
+"nid006593.735973"
+"nid006593.735975"
+"nid006593.735976"
+"nid006593.735978"
+"nid006593.735981"
+"nid006593.735983"
+"nid006593.735984"
+"nid006593.735986"
+"nid006593.735989"
+"nid006593.735990"
+"nid006593.735992"
+"nid006593.735994"
+"nid006593.735996"
+"nid006593.735999"
+"nid006593.736000"
+"nid006593.736002"
+"nid006593.736004"
+"nid006593.736007"
+"nid006593.736008"
+"nid006593.736010"
+"nid006593.736013"
+"nid006593.736014"
+"nid006593.736017"
+"nid006593.736018"
+"nid006593.736020"
+"nid006593.736022"
+"nid006593.736024"
+"nid006593.736026"
+"nid006593.736028"
+"nid006593.736030"
+"nid006593.736032"
+"nid006593.736034"
+"nid006593.736036"
+"nid006593.736038"
+"nid006593.736040"
+"nid006593.736042"
+"nid006593.736044"
+"nid006593.736046"
+"nid006593.736048"
+"nid006593.736050"
+"nid006593.736052"
+"nid006593.736054"
+"nid006593.736056"
+"nid006593.736058"
+"nid006593.736060"
+"nid006593.736062"
+"nid006593.736064"
+"nid006593.736066"
+"nid006593.736068"
+"nid006593.736070"
+"nid006593.736072"
+"nid006593.736074"
+"nid006593.736076"
+"nid006593.736078"
+"nid006593.736080"
+"nid006593.736082"
+"nid006593.736084"
+"nid006593.736086"
+"nid006593.736088"
+"nid006593.736090"
+"nid006593.736092"
+"nid006593.736094"
+"nid006593.736097"
+"nid006593.736098"
+"nid006593.736100"
+"nid006593.736102"
+"nid006593.736104"
+"nid006593.736106"
+"nid006593.736108"
+"nid006593.736110"
+"nid006593.736112"
+"nid006593.736115"
+"nid006593.736116"
+"nid006593.736118"
+"nid006593.736120"
+"nid006593.736122"
+"nid006593.736124"
+)
+
+Pstream initialised with:
+    floatTransfer      : false
+    nProcsSimpleSum    : 0
+    commsType          : nonBlocking
+    polling iterations : 0
+sigFpe : Enabling floating point exception trapping (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 10)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh for time = 0
+
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 1/1/1
+    Target min/average/max coverage = 1/1/1
+    Source average openness/error/depth/angle = 8.251446714e-17/3.53784159e-14/1.528440039e-14/2.393602556e-07
+    Source max openness/error/depth/angle = 6.618945579e-16/4.822807541e-13/2.141606403e-13/2.091309789e-06
+    3047684 couplings calculated in 2.326546s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.305940229e-17/3.428202174e-16
+    Cell min/average/max projected volume fraction = 0/4.424484634e-05/0.07628787883
+
+Selecting fvMeshMover solidBody
+
+Selecting pointMeshMover: solidBody
+
+Selecting solid-body motion function rotatingMotion
+
+Selecting solver incompressibleFluid
+
+Selecting viscosity model constant
+
+Selecting momentum transport model type RAS
+    Selecting RAS turbulence model kOmegaSST
+        bounding k, min: 2.220446049e-16 max: 63.11417372 average: 2.047384523
+
+Selecting patchDistMethod meshWave
+Courant Number mean: 0.1240026795 max: 62.33117693
+
+PIMPLE: No convergence criteria found
+
+
+PIMPLE: No corrector convergence criteria found
+        Calculations will do 2 corrections
+
+
+PIMPLE: Operating solver in transient mode with 2 outer correctors
+
+
+
+Starting time loop
+
+
+Constructing functionObjects from system/functions
+    Selecting wallShearStress with name wallShearStress
+        processing wall patches:
+            impeller
+            impeller_back
+            walls
+    Selecting yPlus with name yPlus
+    Selecting pressure with name cfdtTotalP
+    Selecting surfaceFieldValue with name cfdtP_inlet
+        number of faces = 2602
+        area = 0.002562095755
+        operation = average
+        weight field = phi
+    Selecting surfaceFieldValue with name cfdtP_outlet
+        number of faces = 2829
+        area = 0.0025621941
+        operation = average
+        weight field = phi
+    Selecting forces with name cfdtM_impeller
+    Selecting fieldAverage with name cfdtAverage
+Constructing face momentum Uf
+Courant Number mean: 0.1240026795 max: 62.33117693
+Time = 5.74713e-05s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7772494805/0.9999619913/1
+    Target min/average/max coverage = 0.7653780331/0.9999623229/1.001599965
+    Source average openness/error/depth/angle = 1.476950593e-16/7.237516842e-06/0.01370264602/2.029595626
+    Source max openness/error/depth/angle = 9.56600633e-16/0.1326934993/0.2699159125/45.54440483
+    12967472 couplings calculated in 0.785658s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.303655999e-17/4.469929735e-16
+    Cell min/average/max volume conservation error = -1.366341323e-13/-1.371111664e-18/1.231348656e-13
+    Cell min/average/max old-time volume conservation error = -6.934249812e-13/4.531143986e-17/7.024162719e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001456740245/0.5828509352
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5828509352 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005331819463, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.05578888088, Final residual = 0.003379480476, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.004796846968, Final residual = 0.0004114901863, No Iterations 2
+smoothSolver:  Solving for Uy, Initial residual = 0.00337973554, Final residual = 0.0002959232641, No Iterations 2
+smoothSolver:  Solving for Uz, Initial residual = 0.002667664381, Final residual = 0.0001831570834, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.3555714427, Final residual = 0.01426158708, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.04355958625, Final residual = 9.68127434e-07, No Iterations 16
+time step continuity errors : sum local = 1.901372829e-09, global = -3.321189916e-14
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.002784282283, Final residual = 9.891822168e-08, No Iterations 33
+smoothSolver:  Solving for Uy, Initial residual = 0.001892907687, Final residual = 8.489450233e-08, No Iterations 33
+smoothSolver:  Solving for Uz, Initial residual = 0.001729191592, Final residual = 8.967241759e-08, No Iterations 31
+GAMG:  Solving for p, Initial residual = 0.2990088083, Final residual = 0.008234179097, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.05440104625, Final residual = 8.709250264e-07, No Iterations 21
+time step continuity errors : sum local = 1.90175813e-09, global = 2.650235377e-14, cumulative = 2.650235377e-14
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.0004125800967, Final residual = 8.050595182e-08, No Iterations 18
+smoothSolver:  Solving for k, Initial residual = 0.001037126646, Final residual = 9.055828364e-08, No Iterations 32
+bounding k, min: 1.804614258e-16 max: 62.8994222 average: 2.039751191
+ExecutionTime = 42.466445 s  ClockTime = 44 s
+
+Courant Number mean: 0.1393359552 max: 20.8675234
+Time = 0.0001149426s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6635229235/0.9999552386/1
+    Target min/average/max coverage = 0.7400811598/0.9999554606/1.006405487
+    Source average openness/error/depth/angle = 1.485351801e-16/1.458236141e-05/0.01314470806/2.055485895
+    Source max openness/error/depth/angle = 1.076168328e-15/0.1263017022/0.2963560749/41.77970381
+    13057692 couplings calculated in 0.840316s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.271115269e-17/4.069598744e-16
+    Cell min/average/max volume conservation error = -1.294021029e-13/-1.784659612e-19/1.282632604e-13
+    Cell min/average/max old-time volume conservation error = -1.366341323e-13/-1.335288469e-18/1.218387092e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001391033721/0.6402796558
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6402796558 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.006055538336, No Iterations 6
+GAMG:  Solving for pcorr, Initial residual = 0.1285129943, Final residual = 0.00754485279, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.01072615259, Final residual = 0.0008061004961, No Iterations 4
+smoothSolver:  Solving for Uy, Initial residual = 0.007379787739, Final residual = 0.000532270362, No Iterations 4
+smoothSolver:  Solving for Uz, Initial residual = 0.005324059511, Final residual = 0.0004447836179, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.7591513873, Final residual = 0.01936600178, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.1382217476, Final residual = 8.590320931e-07, No Iterations 23
+time step continuity errors : sum local = 2.931650757e-09, global = -3.42116368e-15
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.02373569481, Final residual = 9.77421314e-08, No Iterations 57
+smoothSolver:  Solving for Uy, Initial residual = 0.01598760909, Final residual = 9.007731836e-08, No Iterations 56
+smoothSolver:  Solving for Uz, Initial residual = 0.009657683507, Final residual = 8.689756592e-08, No Iterations 51
+GAMG:  Solving for p, Initial residual = 0.9060980037, Final residual = 0.03925572423, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.1680206166, Final residual = 7.010335511e-07, No Iterations 23
+time step continuity errors : sum local = 1.045795361e-08, global = 9.526460292e-15, cumulative = 3.602881406e-14
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.001191201079, Final residual = 8.822643673e-08, No Iterations 22
+smoothSolver:  Solving for k, Initial residual = 0.002217524727, Final residual = 8.331917497e-08, No Iterations 32
+bounding k, min: 1.924367388e-16 max: 86.65111551 average: 2.338648124
+ExecutionTime = 97.792931 s  ClockTime = 99 s
+
+Courant Number mean: 0.1429137512 max: 94.92070053
+Time = 0.0001724139s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6761356818/0.9999518858/1
+    Target min/average/max coverage = 0.671506349/0.9999522431/1.00057756
+    Source average openness/error/depth/angle = 1.503183278e-16/1.148717273e-05/0.0133430458/2.043343447
+    Source max openness/error/depth/angle = 1.060854971e-15/0.2501685804/0.2711190074/41.75319384
+    13099400 couplings calculated in 0.807152s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.213389588e-17/4.173220407e-16
+    Cell min/average/max volume conservation error = -1.498652529e-13/-5.012705468e-20/1.369932968e-13
+    Cell min/average/max old-time volume conservation error = -1.294021029e-13/-1.680434311e-19/1.282632604e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001412692741/0.542655115
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.542655115 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007093555146, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.1273886619, Final residual = 0.007645797807, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.1740590366, Final residual = 0.01157144985, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.1216229335, Final residual = 0.0118501634, No Iterations 4
+smoothSolver:  Solving for Uz, Initial residual = 0.08666969094, Final residual = 0.006266101096, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.8922442421, Final residual = 0.03170368797, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.1675007915, Final residual = 7.932252215e-07, No Iterations 21
+time step continuity errors : sum local = 6.927574163e-08, global = -9.829560822e-14
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.3791285373, Final residual = 9.432894158e-08, No Iterations 118
+smoothSolver:  Solving for Uy, Initial residual = 0.3198232745, Final residual = 9.80434172e-08, No Iterations 117
+smoothSolver:  Solving for Uz, Initial residual = 0.2035403009, Final residual = 9.615382166e-08, No Iterations 138
+GAMG:  Solving for p, Initial residual = 0.8889770783, Final residual = 0.01898375874, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.2211750811, Final residual = 8.60112203e-07, No Iterations 20
+time step continuity errors : sum local = 2.665477112e-07, global = -4.525560697e-13, cumulative = -4.165272557e-13
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.04783544328, Final residual = 9.190196574e-08, No Iterations 18
+smoothSolver:  Solving for k, Initial residual = 0.02205798162, Final residual = 8.842266843e-08, No Iterations 16
+bounding k, min: -1.415215877 max: 152.4178452 average: 2.60182859
+ExecutionTime = 141.132213 s  ClockTime = 143 s
+
+Courant Number mean: 0.6546395906 max: 2656.148334
+Time = 0.0002298852s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.5135081249/0.9999514774/1
+    Target min/average/max coverage = 0.679602306/0.9999518082/1.006683519
+    Source average openness/error/depth/angle = 1.494359e-16/1.291655457e-05/0.01371926056/2.073972109
+    Source max openness/error/depth/angle = 1.054571852e-15/0.1376268712/0.2865272554/45.49057193
+    13128496 couplings calculated in 0.804393s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.171809644e-17/4.068561585e-16
+    Cell min/average/max volume conservation error = -1.565263572e-13/2.825211941e-20/1.807342674e-13
+    Cell min/average/max old-time volume conservation error = -1.498652529e-13/-5.606186588e-20/1.386287468e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001451370028/0.5897600985
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5897600985 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005347913464, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.1196626895, Final residual = 0.007724267979, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.5916798184, Final residual = 0.0543086986, No Iterations 13
+smoothSolver:  Solving for Uy, Initial residual = 0.5894902208, Final residual = 0.05579757982, No Iterations 13
+smoothSolver:  Solving for Uz, Initial residual = 0.5022935283, Final residual = 0.04986048782, No Iterations 12
+GAMG:  Solving for p, Initial residual = 0.902377499, Final residual = 0.0300131442, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.181435583, Final residual = 9.526449985e-07, No Iterations 18
+time step continuity errors : sum local = 1.256846419e-06, global = 5.999848297e-10
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.6689831244, Final residual = 9.777347216e-08, No Iterations 359
+smoothSolver:  Solving for Uy, Initial residual = 0.6736436868, Final residual = 9.677317915e-08, No Iterations 362
+smoothSolver:  Solving for Uz, Initial residual = 0.6422674928, Final residual = 9.715549061e-08, No Iterations 349
+GAMG:  Solving for p, Initial residual = 0.838893363, Final residual = 0.01763194095, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.07811186541, Final residual = 9.486315415e-07, No Iterations 15
+time step continuity errors : sum local = 3.767761382e-05, global = 9.068209963e-10, cumulative = 9.064044691e-10
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.2408169436, Final residual = 7.564919918e-08, No Iterations 26
+smoothSolver:  Solving for k, Initial residual = 0.0769777877, Final residual = 8.209829976e-08, No Iterations 27
+bounding k, min: -0.8409225788 max: 81.48317925 average: 2.606800548
+ExecutionTime = 185.7459 s  ClockTime = 187 s
+
+Courant Number mean: 29.60232275 max: 131980.5667
+Time = 0.0002873565s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7054806798/0.9999536329/1
+    Target min/average/max coverage = 0.7170818888/0.9999539341/1.004535776
+    Source average openness/error/depth/angle = 1.488775763e-16/1.11262357e-05/0.01369465969/2.11879192
+    Source max openness/error/depth/angle = 8.627453023e-16/0.1682909143/0.266404831/47.75093537
+    13123370 couplings calculated in 0.818039s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.136531421e-17/4.205374659e-16
+    Cell min/average/max volume conservation error = -1.816470668e-13/2.280762014e-19/2.199714217e-13
+    Cell min/average/max old-time volume conservation error = -1.565263572e-13/5.211142479e-20/1.807342674e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001457719085/0.5809163775
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5809163775 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005212613019, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.1191989548, Final residual = 0.00770229394, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7142000231, Final residual = 0.07045356837, No Iterations 55
+smoothSolver:  Solving for Uy, Initial residual = 0.7176100266, Final residual = 0.07173316609, No Iterations 62
+smoothSolver:  Solving for Uz, Initial residual = 0.7012764771, Final residual = 0.06645849792, No Iterations 17
+GAMG:  Solving for p, Initial residual = 0.4884558794, Final residual = 0.02144773184, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.01208753579, Final residual = 8.989666507e-07, No Iterations 13
+time step continuity errors : sum local = 0.002070986711, global = -1.022177865e-09
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.70344022, Final residual = 0.007935098697, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7082922317, Final residual = 0.001903745743, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.6821347583, Final residual = 0.002485314235, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.5389437843, Final residual = 0.01009686194, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.0003258127249, Final residual = 6.234619461e-07, No Iterations 5
+time step continuity errors : sum local = 3.560609955, global = 0.004501369007, cumulative = 0.004501369913
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.07870613071, Final residual = 7.496189669e-08, No Iterations 25
+smoothSolver:  Solving for k, Initial residual = 0.0354766992, Final residual = 8.748989807e-08, No Iterations 30
+bounding k, min: -0.09299637437 max: 43.08179929 average: 2.587089067
+ExecutionTime = 238.867233 s  ClockTime = 240 s
+
+Courant Number mean: 27016.704 max: 28252626.7
+Time = 0.0003448278s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7523315061/0.9999570792/1
+    Target min/average/max coverage = 0.7407409894/0.9999572786/1.003425784
+    Source average openness/error/depth/angle = 1.49193404e-16/1.276978524e-05/0.01394208601/2.130250673
+    Source max openness/error/depth/angle = 1.058824929e-15/0.1834412374/0.2772636606/46.35279232
+    13150534 couplings calculated in 0.825233s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.106110744e-17/3.973273401e-16
+    Cell min/average/max volume conservation error = -1.237686481e-13/-7.337117854e-20/1.380773544e-13
+    Cell min/average/max old-time volume conservation error = -1.816470668e-13/2.177758955e-19/2.199714217e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00147874265/0.6083550365
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6083550365 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005405737011, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.1053635158, Final residual = 0.006914915574, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7312017996, Final residual = 0.07310506847, No Iterations 27
+smoothSolver:  Solving for Uy, Initial residual = 0.7313178118, Final residual = 0.07302538361, No Iterations 29
+smoothSolver:  Solving for Uz, Initial residual = 0.7262721074, Final residual = 0.07104737604, No Iterations 22
+GAMG:  Solving for p, Initial residual = 0.0215336127, Final residual = 0.0005638039158, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.0004182603297, Final residual = 8.381989839e-07, No Iterations 6
+time step continuity errors : sum local = 5.901909832, global = 0.002092110253
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.788272052, Final residual = 0.2350224614, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.8051851079, Final residual = 0.07676603525, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7634024455, Final residual = 0.05591528207, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.5901607183, Final residual = 0.01232270147, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.0003289352135, Final residual = 8.251983793e-07, No Iterations 5
+time step continuity errors : sum local = 4931.174975, global = 28.45150715, cumulative = 28.45600852
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.06400034801, Final residual = 9.373145116e-08, No Iterations 24
+smoothSolver:  Solving for k, Initial residual = 0.02811111849, Final residual = 7.83122706e-08, No Iterations 21
+bounding k, min: -0.0197499472 max: 35.53180772 average: 2.571839259
+ExecutionTime = 286.288216 s  ClockTime = 288 s
+
+Courant Number mean: 25258701.47 max: 1.964712631e+10
+Time = 0.0004022991s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6721243512/0.9999646953/1
+    Target min/average/max coverage = 0.7113840512/0.9999648745/1.00061394
+    Source average openness/error/depth/angle = 1.487499004e-16/1.106051022e-05/0.01431419407/2.185466796
+    Source max openness/error/depth/angle = 8.979189137e-16/0.2509790257/0.2764957804/43.95823673
+    13174134 couplings calculated in 0.841793s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.085105311e-17/4.436788872e-16
+    Cell min/average/max volume conservation error = -1.424338034e-13/5.066573449e-19/1.494291026e-13
+    Cell min/average/max old-time volume conservation error = -1.237686481e-13/-6.311660391e-20/1.380773544e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001527689873/0.7587600773
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.7587600773 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.006887309759, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07975058556, Final residual = 0.00519727861, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7257022944, Final residual = 0.06767748086, No Iterations 9
+smoothSolver:  Solving for Uy, Initial residual = 0.7191541174, Final residual = 0.07169604582, No Iterations 9
+smoothSolver:  Solving for Uz, Initial residual = 0.7079495356, Final residual = 0.07063294732, No Iterations 12
+GAMG:  Solving for p, Initial residual = 0.7715750037, Final residual = 0.01611267501, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.003225839734, Final residual = 7.5312888e-07, No Iterations 13
+time step continuity errors : sum local = 244.5087411, global = 0.8584515215
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7887224199, Final residual = 0.08708232373, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7813294449, Final residual = 0.01537446984, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7974292385, Final residual = 0.02101171962, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9500152526, Final residual = 0.02554999139, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.08977458574, Final residual = 4.729093505e-07, No Iterations 18
+time step continuity errors : sum local = 2096.861298, global = 14.43869116, cumulative = 42.89469968
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.04848889508, Final residual = 9.884697209e-08, No Iterations 30
+smoothSolver:  Solving for k, Initial residual = 0.01739197958, Final residual = 8.298014033e-08, No Iterations 21
+bounding k, min: -0.0002866460441 max: 33.35054258 average: 2.560928238
+ExecutionTime = 347.780373 s  ClockTime = 349 s
+
+Courant Number mean: 4096278261 max: 2.245422596e+12
+Time = 0.0004597704s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7594967593/0.9999631831/1
+    Target min/average/max coverage = 0.6948108947/0.9999634241/1.005918353
+    Source average openness/error/depth/angle = 1.487587581e-16/1.089681607e-05/0.01410722215/2.18802585
+    Source max openness/error/depth/angle = 1.06024839e-15/0.2280695645/0.2891227522/43.7985654
+    13207466 couplings calculated in 0.817895s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.062207779e-17/4.065410152e-16
+    Cell min/average/max volume conservation error = -1.364875683e-13/1.192882108e-18/1.450414303e-13
+    Cell min/average/max old-time volume conservation error = -1.424338034e-13/5.205908852e-19/1.494291026e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00148690995/0.7241151828
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.7241151828 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005799827575, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.1021332038, Final residual = 0.006490370502, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7285173877, Final residual = 0.06426787473, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.717684075, Final residual = 0.06651925483, No Iterations 8
+smoothSolver:  Solving for Uz, Initial residual = 0.7176921379, Final residual = 0.06723018644, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.8146194751, Final residual = 0.02245684871, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.1103306176, Final residual = 4.940507398e-07, No Iterations 21
+time step continuity errors : sum local = 673.881623, global = -0.3790703558
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7800754749, Final residual = 0.27230344, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7689669626, Final residual = 0.09823211324, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7730240742, Final residual = 0.03494473484, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9908457892, Final residual = 0.02765942601, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.07192176869, Final residual = 9.954337843e-07, No Iterations 16
+time step continuity errors : sum local = 1656302.866, global = 849.6453523, cumulative = 892.540052
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.03268136, Final residual = 7.577376576e-08, No Iterations 22
+smoothSolver:  Solving for k, Initial residual = 0.01228197363, Final residual = 8.135215873e-08, No Iterations 20
+bounding k, min: -0.007774869464 max: 32.21004107 average: 2.553347916
+ExecutionTime = 410.602611 s  ClockTime = 412 s
+
+Courant Number mean: 1.219995108e+12 max: 2.713207313e+14
+Time = 0.0005172417s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6699670608/0.999955248/1
+    Target min/average/max coverage = 0.6991556022/0.9999553817/1.001605832
+    Source average openness/error/depth/angle = 1.491448428e-16/1.128837729e-05/0.01463548348/2.236853724
+    Source max openness/error/depth/angle = 1.056822042e-15/0.1666437869/0.2694893834/45.30322651
+    13245352 couplings calculated in 0.822024s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.032442224e-17/4.405601462e-16
+    Cell min/average/max volume conservation error = -1.430557095e-13/-4.042948196e-20/1.372988044e-13
+    Cell min/average/max old-time volume conservation error = -1.363868692e-13/1.204428217e-18/1.450414303e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00156577716/0.5918140964
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5918140964 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.005426846992, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.09504640217, Final residual = 0.005958661833, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7290433303, Final residual = 0.07110029951, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7088466635, Final residual = 0.06356529754, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7258555272, Final residual = 0.06294752045, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.9531417008, Final residual = 0.02046333946, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.102016233, Final residual = 5.797751762e-07, No Iterations 19
+time step continuity errors : sum local = 226688.982, global = -1043.744096
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7455891696, Final residual = 0.156263403, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7444060147, Final residual = 0.104993297, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7477260588, Final residual = 0.05782690245, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9802723387, Final residual = 0.03770972248, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.04587519721, Final residual = 5.272685778e-07, No Iterations 18
+time step continuity errors : sum local = 215929998.9, global = -350322.0462, cumulative = -349429.5061
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.0251422405, Final residual = 9.288692146e-08, No Iterations 20
+smoothSolver:  Solving for k, Initial residual = 0.01022743282, Final residual = 9.023142576e-08, No Iterations 19
+bounding k, min: -0.03234956337 max: 31.16723658 average: 2.542078161
+ExecutionTime = 473.370562 s  ClockTime = 475 s
+
+Courant Number mean: 2.176998439e+14 max: 8.915478109e+16
+Time = 0.000574713s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6285674498/0.9999537088/1
+    Target min/average/max coverage = 0.703014204/0.999954046/1.004595974
+    Source average openness/error/depth/angle = 1.481287133e-16/1.349025908e-05/0.01484438625/2.269351764
+    Source max openness/error/depth/angle = 8.829100365e-16/0.1671533281/0.2701421881/49.39386079
+    13237454 couplings calculated in 0.827744s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/7.002812168e-17/4.041753619e-16
+    Cell min/average/max volume conservation error = -1.459003618e-13/-7.876793765e-19/1.299705773e-13
+    Cell min/average/max old-time volume conservation error = -1.442758672e-13/2.077217998e-21/1.361866288e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001579287931/0.5593463707
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5593463707 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004468263841, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.08868829729, Final residual = 0.005670251548, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7209599098, Final residual = 0.06393823311, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7043992779, Final residual = 0.06384367472, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7261206466, Final residual = 0.0691998444, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.8017295587, Final residual = 0.01850229929, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.05742620498, Final residual = 8.028353826e-07, No Iterations 18
+time step continuity errors : sum local = 94919715.6, global = -840802.7919
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7440950573, Final residual = 0.2551564723, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7357544335, Final residual = 0.2152201508, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7457515757, Final residual = 0.1094650705, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9656289122, Final residual = 0.02466454924, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.0150647335, Final residual = 7.75435724e-07, No Iterations 13
+time step continuity errors : sum local = 2.44418409e+11, global = -49029982.12, cumulative = -49379411.62
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02441113522, Final residual = 8.710393494e-08, No Iterations 23
+smoothSolver:  Solving for k, Initial residual = 0.009786785431, Final residual = 8.947638683e-08, No Iterations 18
+bounding k, min: -5.720716536e-08 max: 30.16091903 average: 2.534132509
+ExecutionTime = 531.370177 s  ClockTime = 533 s
+
+Courant Number mean: 5.66830118e+16 max: 4.929098524e+19
+Time = 0.0006321843s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7098041549/0.9999523797/1
+    Target min/average/max coverage = 0.708722212/0.9999528486/1.006616898
+    Source average openness/error/depth/angle = 1.481325016e-16/1.26015539e-05/0.01507933972/2.315698174
+    Source max openness/error/depth/angle = 1.026409142e-15/0.2012023085/0.2703994091/47.38759291
+    13259514 couplings calculated in 0.835336s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.978051429e-17/3.948976274e-16
+    Cell min/average/max volume conservation error = -1.79763358e-13/-6.293747803e-19/1.265961096e-13
+    Cell min/average/max old-time volume conservation error = -1.450051783e-13/-8.057367883e-19/1.300602379e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001606435027/0.6034356253
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6034356253 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004660349375, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07948873927, Final residual = 0.005090708884, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7081918557, Final residual = 0.06658314245, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.6956680552, Final residual = 0.06698671888, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7260847147, Final residual = 0.06759775133, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.9459491768, Final residual = 0.02546117735, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.054407601, Final residual = 5.56224878e-07, No Iterations 22
+time step continuity errors : sum local = 1.772666052e+10, global = -48572275.77
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.728963871, Final residual = 0.2576473307, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7310622872, Final residual = 0.2356112595, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7558116475, Final residual = 0.08583521594, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9732725058, Final residual = 0.02568196822, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.02872682401, Final residual = 6.80572006e-07, No Iterations 14
+time step continuity errors : sum local = 2.741280124e+13, global = -4.671251617e+10, cumulative = -4.676189558e+10
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02163063886, Final residual = 7.772646484e-08, No Iterations 26
+smoothSolver:  Solving for k, Initial residual = 0.01023592784, Final residual = 8.262095498e-08, No Iterations 17
+bounding k, min: -0.003507806652 max: 29.5463938 average: 2.524184774
+ExecutionTime = 593.684976 s  ClockTime = 595 s
+
+Courant Number mean: 1.404486898e+19 max: 8.156343967e+21
+Time = 0.0006896556s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6316773469/0.9999520508/1
+    Target min/average/max coverage = 0.7165246834/0.99995241/1.002247157
+    Source average openness/error/depth/angle = 1.484009865e-16/1.661839465e-05/0.01523778859/2.352356841
+    Source max openness/error/depth/angle = 9.015036032e-16/0.2013401149/0.2607484305/48.6304071
+    13306328 couplings calculated in 0.836579s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.951923368e-17/4.084945813e-16
+    Cell min/average/max volume conservation error = -1.790443983e-13/-1.255431012e-19/1.450371018e-13
+    Cell min/average/max old-time volume conservation error = -1.79763358e-13/-6.403333265e-19/1.265961096e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001608535363/0.5795995264
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5795995264 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004162213733, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07636111157, Final residual = 0.004940727157, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7106490918, Final residual = 0.07030209587, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7044980602, Final residual = 0.06736983472, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.731220301, Final residual = 0.06424188906, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.7444375668, Final residual = 0.02219216173, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.02250600472, Final residual = 9.979002214e-07, No Iterations 17
+time step continuity errors : sum local = 1.789495354e+13, global = -5.077631751e+10
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7335865551, Final residual = 0.3054019132, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7343229442, Final residual = 0.3033988077, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7584497565, Final residual = 0.09057148764, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9428732716, Final residual = 0.03008325559, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.009734035858, Final residual = 6.166852276e-07, No Iterations 14
+time step continuity errors : sum local = 2.109849184e+16, global = 2.615363661e+13, cumulative = 2.610687471e+13
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.019185739, Final residual = 9.731741009e-08, No Iterations 29
+smoothSolver:  Solving for k, Initial residual = 0.008909309989, Final residual = 7.854944495e-08, No Iterations 19
+bounding k, min: -0.005016681054 max: 29.20282052 average: 2.522525726
+ExecutionTime = 651.539946 s  ClockTime = 653 s
+
+Courant Number mean: 4.097849187e+21 max: 5.130987362e+24
+Time = 0.0007471269s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6487327724/0.9999541797/1
+    Target min/average/max coverage = 0.7260251458/0.9999545383/1.009836415
+    Source average openness/error/depth/angle = 1.478324437e-16/1.264226915e-05/0.01510878682/2.331506008
+    Source max openness/error/depth/angle = 8.67691666e-16/0.1786955311/0.2709102754/45.07513392
+    13303676 couplings calculated in 0.83659s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.923761251e-17/3.862122064e-16
+    Cell min/average/max volume conservation error = -1.520279647e-13/1.57634509e-18/1.358344253e-13
+    Cell min/average/max old-time volume conservation error = -1.790443983e-13/-1.000413318e-19/1.430796602e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001601360842/0.5677710556
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5677710556 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004551181808, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07025970997, Final residual = 0.004613656793, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7034730959, Final residual = 0.06360816915, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.7022436344, Final residual = 0.06727954484, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7289604494, Final residual = 0.07062464631, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.7279308871, Final residual = 0.02158160902, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.01238242482, Final residual = 7.100237794e-07, No Iterations 18
+time step continuity errors : sum local = 6.82152524e+15, global = 4.34879365e+12
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7364944294, Final residual = 0.2812511518, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7372641851, Final residual = 0.2838695735, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7657234385, Final residual = 0.0458914534, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9257707014, Final residual = 0.02731889285, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.01086544197, Final residual = 9.703533105e-07, No Iterations 11
+time step continuity errors : sum local = 7.016555062e+18, global = -1.565744274e+17, cumulative = -1.565483205e+17
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02063499221, Final residual = 9.437183589e-08, No Iterations 34
+smoothSolver:  Solving for k, Initial residual = 0.01026614114, Final residual = 8.418556972e-08, No Iterations 18
+ExecutionTime = 708.190349 s  ClockTime = 710 s
+
+Courant Number mean: 1.017862819e+24 max: 5.287491278e+26
+Time = 0.0008045982s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6684488844/0.9999595161/1
+    Target min/average/max coverage = 0.7668776703/0.9999596952/1.000087443
+    Source average openness/error/depth/angle = 1.473542508e-16/1.215614091e-05/0.01567515193/2.431743306
+    Source max openness/error/depth/angle = 9.300134179e-16/0.2502683393/0.2891110896/60.36142984
+    13313882 couplings calculated in 0.84478s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.921251231e-17/4.289030115e-16
+    Cell min/average/max volume conservation error = -1.276697188e-13/-1.309539952e-19/1.529700816e-13
+    Cell min/average/max old-time volume conservation error = -1.477358207e-13/1.586024762e-18/1.358344253e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001674696507/0.6209214159
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6209214159 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.00458903819, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.08222396654, Final residual = 0.005398756939, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7013046624, Final residual = 0.06457383161, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.702223464, Final residual = 0.06654093714, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7313613901, Final residual = 0.06703297334, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.7232383589, Final residual = 0.02146965724, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.01076653844, Final residual = 8.395971998e-07, No Iterations 17
+time step continuity errors : sum local = 2.251020495e+18, global = -3.394986541e+15
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7296215753, Final residual = 0.3070628561, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7293020275, Final residual = 0.3103569906, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7680298891, Final residual = 0.04408696978, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9389844443, Final residual = 0.0346363325, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.01404827698, Final residual = 5.551971717e-07, No Iterations 17
+time step continuity errors : sum local = 1.01173459e+21, global = -1.202667309e+18, cumulative = -1.359215629e+18
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.01933455539, Final residual = 9.822470845e-08, No Iterations 36
+smoothSolver:  Solving for k, Initial residual = 0.009098242226, Final residual = 7.492133224e-08, No Iterations 18
+ExecutionTime = 768.584091 s  ClockTime = 770 s
+
+Courant Number mean: 3.275208313e+26 max: 5.90625319e+29
+Time = 0.0008620695s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7683158175/0.9999643237/1
+    Target min/average/max coverage = 0.7040565316/0.9999644812/1.001901618
+    Source average openness/error/depth/angle = 1.476255453e-16/1.075911941e-05/0.01571767396/2.476193901
+    Source max openness/error/depth/angle = 8.708558695e-16/0.2431865481/0.2755380416/54.74075166
+    13341548 couplings calculated in 0.847275s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.890842869e-17/4.346731597e-16
+    Cell min/average/max volume conservation error = -1.227995286e-13/-5.686412715e-19/1.449071639e-13
+    Cell min/average/max old-time volume conservation error = -1.275973972e-13/-1.26642618e-19/1.529700816e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001675560932/0.8236629582
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.8236629582 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004698004701, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07829258606, Final residual = 0.005129120332, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7019015355, Final residual = 0.06978830818, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7009471091, Final residual = 0.06496317726, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7301359647, Final residual = 0.07063242748, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.4062757882, Final residual = 0.01398000163, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.003477078295, Final residual = 9.311236036e-07, No Iterations 15
+time step continuity errors : sum local = 2.669808122e+21, global = 1.653049089e+18
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7269918311, Final residual = 0.2858916819, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7306687855, Final residual = 0.2540926076, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7643477969, Final residual = 0.05822667395, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.870148507, Final residual = 0.02538937665, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.004463298547, Final residual = 9.105732394e-07, No Iterations 9
+time step continuity errors : sum local = 1.409049214e+24, global = -2.446557826e+21, cumulative = -2.447917042e+21
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.01842557658, Final residual = 9.65565297e-08, No Iterations 42
+smoothSolver:  Solving for k, Initial residual = 0.009353663488, Final residual = 9.359316728e-08, No Iterations 19
+ExecutionTime = 822.209289 s  ClockTime = 824 s
+
+Courant Number mean: 8.716746492e+28 max: 5.793364183e+31
+Time = 0.0009195408s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7167239434/0.9999579455/1
+    Target min/average/max coverage = 0.7560582784/0.9999582488/1.004851051
+    Source average openness/error/depth/angle = 1.478141886e-16/1.261441073e-05/0.01559691214/2.436295062
+    Source max openness/error/depth/angle = 8.773460437e-16/0.179482464/0.2857531027/59.41875725
+    13382272 couplings calculated in 0.844659s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.857171596e-17/4.072475364e-16
+    Cell min/average/max volume conservation error = -1.823600353e-13/-1.59426738e-19/1.378477333e-13
+    Cell min/average/max old-time volume conservation error = -1.241881708e-13/-5.52855465e-19/1.449071639e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001649184475/0.6396155305
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6396155305 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004209127311, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07558560586, Final residual = 0.004999903604, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7019266822, Final residual = 0.06538513367, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.7014599249, Final residual = 0.06682608634, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7274742111, Final residual = 0.06578630553, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.4781991519, Final residual = 0.01440331721, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.004065552972, Final residual = 6.560433973e-07, No Iterations 16
+time step continuity errors : sum local = 4.084336224e+23, global = 2.733622647e+20
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7415399693, Final residual = 0.3253576037, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7397631919, Final residual = 0.3256852572, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7704325704, Final residual = 0.1216291592, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8260454688, Final residual = 0.02755150728, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.003878536361, Final residual = 9.583634447e-07, No Iterations 11
+time step continuity errors : sum local = 5.416314102e+26, global = 1.902528599e+24, cumulative = 1.900080681e+24
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.01941071813, Final residual = 9.216380051e-08, No Iterations 50
+smoothSolver:  Solving for k, Initial residual = 0.009303751121, Final residual = 8.368612414e-08, No Iterations 17
+bounding k, min: -0.0103139987 max: 27.3283347 average: 2.497378883
+ExecutionTime = 877.944575 s  ClockTime = 880 s
+
+Courant Number mean: 2.833793094e+31 max: 5.738386663e+34
+Time = 0.0009770121s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7196068342/0.9999542755/1
+    Target min/average/max coverage = 0.751210647/0.9999546004/1.003174607
+    Source average openness/error/depth/angle = 1.46814888e-16/1.260850541e-05/0.01608300933/2.476795136
+    Source max openness/error/depth/angle = 8.848148176e-16/0.1736232183/0.3006366894/59.55994264
+    13367476 couplings calculated in 0.839072s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.743270882e-17/4.131835606e-16
+    Cell min/average/max volume conservation error = -1.931596593e-13/1.068333152e-18/1.466763314e-13
+    Cell min/average/max old-time volume conservation error = -1.823600353e-13/-1.648200699e-19/1.381336688e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001697475197/0.666142131
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.666142131 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004377957097, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.07260877097, Final residual = 0.004799820104, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7009226682, Final residual = 0.06880735826, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7014022231, Final residual = 0.06974855044, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.7250391353, Final residual = 0.07092379633, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.6189463578, Final residual = 0.02018934279, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.006425090705, Final residual = 5.963072789e-07, No Iterations 18
+time step continuity errors : sum local = 7.756166173e+25, global = 9.252133978e+22
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7296661152, Final residual = 0.2779496471, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7258687657, Final residual = 0.2445930068, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7636008001, Final residual = 0.1409622893, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8921465231, Final residual = 0.02727298285, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.004898719012, Final residual = 4.924401536e-07, No Iterations 13
+time step continuity errors : sum local = 5.956777902e+28, global = -1.208964126e+26, cumulative = -1.189963319e+26
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.01795653477, Final residual = 8.777930363e-08, No Iterations 41
+smoothSolver:  Solving for k, Initial residual = 0.00892824526, Final residual = 9.475289841e-08, No Iterations 20
+bounding k, min: -0.0006721996021 max: 26.84648209 average: 2.48856522
+ExecutionTime = 937.233692 s  ClockTime = 939 s
+
+Courant Number mean: 7.518621378e+33 max: 4.404595727e+36
+Time = 0.0010344834s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6256893353/0.999953437/1
+    Target min/average/max coverage = 0.7010435969/0.9999537821/1.005001998
+    Source average openness/error/depth/angle = 1.469009529e-16/1.418956238e-05/0.01640504848/2.513119017
+    Source max openness/error/depth/angle = 1.060885914e-15/0.1608231765/0.2739124751/52.79918438
+    13404050 couplings calculated in 0.83743s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.61923926e-17/4.366204868e-16
+    Cell min/average/max volume conservation error = -1.206217284e-13/-1.451325101e-18/1.77825666e-13
+    Cell min/average/max old-time volume conservation error = -1.931596593e-13/1.093190616e-18/1.466763314e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001726026352/0.6080818554
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6080818554 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004056086832, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.06517644616, Final residual = 0.004406892481, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7053491296, Final residual = 0.06808252943, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7041833403, Final residual = 0.06658710683, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7238007773, Final residual = 0.06745743079, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.5347102793, Final residual = 0.0170774882, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.006915661193, Final residual = 5.391368688e-07, No Iterations 15
+time step continuity errors : sum local = 1.672300961e+28, global = 7.663764859e+25
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7330379477, Final residual = 0.293890751, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7298395856, Final residual = 0.2843768692, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7668819408, Final residual = 0.2334027881, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8060632184, Final residual = 0.0280438266, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.002851724137, Final residual = 9.766173027e-07, No Iterations 12
+time step continuity errors : sum local = 6.037166623e+31, global = 1.34749746e+29, cumulative = 1.346307497e+29
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.01945853984, Final residual = 9.384731388e-08, No Iterations 44
+smoothSolver:  Solving for k, Initial residual = 0.008983132874, Final residual = 8.628216639e-08, No Iterations 20
+ExecutionTime = 993.853902 s  ClockTime = 996 s
+
+Courant Number mean: 2.268451964e+36 max: 4.886039737e+39
+Time = 0.0010919547s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7183946289/0.9999525246/1
+    Target min/average/max coverage = 0.7005219002/0.9999530065/1.00406242
+    Source average openness/error/depth/angle = 1.466800289e-16/1.242468782e-05/0.01600776228/2.532554866
+    Source max openness/error/depth/angle = 9.173135831e-16/0.192710158/0.3080491265/47.25986177
+    13418532 couplings calculated in 0.830779s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.526954256e-17/4.207351216e-16
+    Cell min/average/max volume conservation error = -1.616377401e-13/6.906060748e-19/1.192403233e-13
+    Cell min/average/max old-time volume conservation error = -1.206215312e-13/-1.494330608e-18/1.77825666e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001677349849/0.6821325241
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6821325241 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.009898174941, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.06285186338, Final residual = 0.004770575901, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7047759991, Final residual = 0.06579429671, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.7022815483, Final residual = 0.06910808278, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7200658188, Final residual = 0.0667240781, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.5741451615, Final residual = 0.02082159533, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.006955273292, Final residual = 5.788714323e-07, No Iterations 21
+time step continuity errors : sum local = 5.708825988e+30, global = -8.232293731e+26
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7355604813, Final residual = 0.274513618, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7348639454, Final residual = 0.2224149129, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7730535475, Final residual = 0.2601718164, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8148524403, Final residual = 0.03434735425, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.002565796956, Final residual = 6.094588477e-07, No Iterations 15
+time step continuity errors : sum local = 1.231118068e+34, global = 1.594886286e+32, cumulative = 1.596232593e+32
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02008379417, Final residual = 8.966664195e-08, No Iterations 44
+smoothSolver:  Solving for k, Initial residual = 0.009963440176, Final residual = 9.838293329e-08, No Iterations 16
+bounding k, min: -0.004245645269 max: 25.61229413 average: 2.480737537
+ExecutionTime = 1056.464506 s  ClockTime = 1058 s
+
+Courant Number mean: 6.435904977e+38 max: 4.384580598e+41
+Time = 0.001149426s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7374364008/0.9999533095/1
+    Target min/average/max coverage = 0.7572816451/0.9999535666/1.002952572
+    Source average openness/error/depth/angle = 1.463270464e-16/1.261035917e-05/0.0161339222/2.538810102
+    Source max openness/error/depth/angle = 9.311182622e-16/0.2376699727/0.2981224597/57.10733699
+    13430986 couplings calculated in 0.810672s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.473159084e-17/4.010918482e-16
+    Cell min/average/max volume conservation error = -1.26982142e-13/-1.84762414e-18/1.937416579e-13
+    Cell min/average/max old-time volume conservation error = -1.616377401e-13/6.943329065e-19/1.177290114e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001678609807/0.603588831
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.603588831 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.009455599618, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.05731946909, Final residual = 0.004489349078, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7009051259, Final residual = 0.06301782491, No Iterations 7
+smoothSolver:  Solving for Uy, Initial residual = 0.6979415992, Final residual = 0.06664667092, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7115144698, Final residual = 0.06441302193, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.6323641946, Final residual = 0.02033322749, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.01642579113, Final residual = 5.313887177e-07, No Iterations 18
+time step continuity errors : sum local = 6.001084554e+32, global = -1.230969468e+30
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7351753366, Final residual = 0.2583216471, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7371592765, Final residual = 0.2399135009, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.768793361, Final residual = 0.3406575145, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8728099286, Final residual = 0.03510024142, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.003274989429, Final residual = 5.484797621e-07, No Iterations 14
+time step continuity errors : sum local = 2.670820558e+36, global = -2.707241874e+34, cumulative = -2.691279548e+34
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02003392763, Final residual = 9.125813849e-08, No Iterations 38
+smoothSolver:  Solving for k, Initial residual = 0.008908611509, Final residual = 7.722731442e-08, No Iterations 16
+bounding k, min: -0.007295920167 max: 25.26059414 average: 2.472191416
+ExecutionTime = 1115.355937 s  ClockTime = 1117 s
+
+Courant Number mean: 1.949292507e+41 max: 2.237645902e+44
+Time = 0.0012068973s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.731055557/0.9999542464/1
+    Target min/average/max coverage = 0.7194753519/0.9999544205/1.006968119
+    Source average openness/error/depth/angle = 1.466204166e-16/1.504071249e-05/0.01626333257/2.567977404
+    Source max openness/error/depth/angle = 9.353328202e-16/0.2234128587/0.2977583066/58.9818832
+    13467278 couplings calculated in 0.827444s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.422666914e-17/4.198144703e-16
+    Cell min/average/max volume conservation error = -1.328123026e-13/1.710462244e-18/1.537726719e-13
+    Cell min/average/max old-time volume conservation error = -1.269821204e-13/-1.86004506e-18/1.937416579e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001713847876/0.6480250914
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6480250914 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.0045344571, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.05477262238, Final residual = 0.003928525591, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7041207033, Final residual = 0.06878818293, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7035922033, Final residual = 0.06884112689, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.717011748, Final residual = 0.07025018203, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7060731274, Final residual = 0.02395443569, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.05373920087, Final residual = 4.940725136e-07, No Iterations 21
+time step continuity errors : sum local = 5.209016353e+34, global = 9.937915146e+31
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7288934771, Final residual = 0.193984463, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7279029173, Final residual = 0.1768215489, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7577285215, Final residual = 0.3068814996, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9305041869, Final residual = 0.04432627925, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.00595754856, Final residual = 7.466931752e-07, No Iterations 16
+time step continuity errors : sum local = 5.33639106e+38, global = -2.17275844e+36, cumulative = -2.199671235e+36
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02118503819, Final residual = 8.992943967e-08, No Iterations 33
+smoothSolver:  Solving for k, Initial residual = 0.01015644666, Final residual = 9.329518149e-08, No Iterations 17
+bounding k, min: -0.02038929263 max: 24.82930045 average: 2.468789563
+ExecutionTime = 1178.212373 s  ClockTime = 1180 s
+
+Courant Number mean: 5.098408116e+43 max: 2.096843566e+46
+Time = 0.0012643686s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7322303349/0.9999612281/1
+    Target min/average/max coverage = 0.7311304082/0.9999613806/1.001040622
+    Source average openness/error/depth/angle = 1.457666266e-16/1.141642671e-05/0.01640320774/2.55236777
+    Source max openness/error/depth/angle = 8.963281038e-16/0.2123852887/0.2873217545/54.83322119
+    13456004 couplings calculated in 0.81734s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.384974536e-17/3.892052662e-16
+    Cell min/average/max volume conservation error = -1.383649893e-13/-3.049902765e-19/1.443754954e-13
+    Cell min/average/max old-time volume conservation error = -1.328123026e-13/1.702841088e-18/1.537726719e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001698593393/0.8080618716
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.8080618716 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004316152879, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.05073023845, Final residual = 0.003850845828, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7063938132, Final residual = 0.06677378088, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7022465237, Final residual = 0.06363066389, No Iterations 7
+smoothSolver:  Solving for Uz, Initial residual = 0.7193249494, Final residual = 0.07166619793, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.4346735593, Final residual = 0.01757452142, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.02785882819, Final residual = 6.651673111e-07, No Iterations 18
+time step continuity errors : sum local = 3.615411588e+37, global = 1.232864698e+35
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7375808164, Final residual = 0.136800387, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7394981626, Final residual = 0.1010980766, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7702073249, Final residual = 0.3361637202, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.8910773438, Final residual = 0.0299219484, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.002524729946, Final residual = 4.191822502e-07, No Iterations 14
+time step continuity errors : sum local = 2.029376809e+41, global = -5.685717982e+38, cumulative = -5.707714694e+38
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.024914047, Final residual = 8.620360879e-08, No Iterations 29
+smoothSolver:  Solving for k, Initial residual = 0.01170224758, Final residual = 7.618603991e-08, No Iterations 19
+bounding k, min: -0.01433869502 max: 24.43472533 average: 2.465127432
+ExecutionTime = 1237.650395 s  ClockTime = 1239 s
+
+Courant Number mean: 1.392240531e+46 max: 1.436502021e+49
+Time = 0.0013218399s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6102490287/0.9999600394/1
+    Target min/average/max coverage = 0.7581627469/0.999960249/1.00288191
+    Source average openness/error/depth/angle = 1.458168865e-16/1.142564246e-05/0.01641269952/2.599332209
+    Source max openness/error/depth/angle = 8.835541426e-16/0.1655358594/0.2887226404/55.66040322
+    13478686 couplings calculated in 0.82068s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.348806075e-17/4.064489045e-16
+    Cell min/average/max volume conservation error = -1.369491998e-13/1.260678522e-18/1.237505856e-13
+    Cell min/average/max old-time volume conservation error = -1.383649893e-13/-2.769756552e-19/1.443754954e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00172356661/0.7338784121
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.7338784121 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004485707287, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.04460854646, Final residual = 0.003762885079, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7090160501, Final residual = 0.06826447299, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7047390523, Final residual = 0.06984899832, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.7317263006, Final residual = 0.07165305725, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.6587289711, Final residual = 0.02852032615, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07315305887, Final residual = 8.300213803e-07, No Iterations 22
+time step continuity errors : sum local = 5.030045763e+39, global = -7.453430236e+36
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7384565655, Final residual = 0.05530821754, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7409228748, Final residual = 0.0340972641, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.765977459, Final residual = 0.339154978, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9792397036, Final residual = 0.03337376495, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.01156895866, Final residual = 7.431154711e-07, No Iterations 17
+time step continuity errors : sum local = 2.573290451e+43, global = -5.172204643e+41, cumulative = -5.177912358e+41
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02995627914, Final residual = 8.434240623e-08, No Iterations 28
+smoothSolver:  Solving for k, Initial residual = 0.01345919346, Final residual = 9.857725139e-08, No Iterations 23
+bounding k, min: -0.1032805567 max: 23.92496972 average: 2.462353469
+ExecutionTime = 1302.211227 s  ClockTime = 1304 s
+
+Courant Number mean: 4.686014504e+48 max: 1.068239993e+52
+Time = 0.0013793112s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6240093812/0.9999551598/1
+    Target min/average/max coverage = 0.7222076589/0.9999553509/1.004078364
+    Source average openness/error/depth/angle = 1.458565518e-16/1.465322768e-05/0.01656590573/2.612074197
+    Source max openness/error/depth/angle = 8.574863477e-16/0.1717977874/0.2907669403/54.96532195
+    13501308 couplings calculated in 0.827029s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.327411915e-17/3.877544727e-16
+    Cell min/average/max volume conservation error = -1.107655374e-13/-3.738457888e-19/2.078344996e-13
+    Cell min/average/max old-time volume conservation error = -1.384998988e-13/1.277317218e-18/1.237505856e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001720657943/0.6138167171
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6138167171 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.004280075302, No Iterations 5
+GAMG:  Solving for pcorr, Initial residual = 0.04403262968, Final residual = 0.003967896975, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7076552996, Final residual = 0.0695254574, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7054379662, Final residual = 0.07008638271, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.7379516481, Final residual = 0.07047067806, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7377365505, Final residual = 0.03605648252, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.06602114317, Final residual = 6.929099346e-07, No Iterations 21
+time step continuity errors : sum local = 1.705292013e+42, global = -4.19333601e+38
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7320500674, Final residual = 0.05417091094, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7263574934, Final residual = 0.0267490328, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7561236173, Final residual = 0.3052378916, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.95665116, Final residual = 0.03268533307, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.00740202495, Final residual = 8.704926144e-07, No Iterations 15
+time step continuity errors : sum local = 1.887774963e+46, global = 1.556354562e+44, cumulative = 1.55117665e+44
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.03086697174, Final residual = 8.85690579e-08, No Iterations 31
+smoothSolver:  Solving for k, Initial residual = 0.01354897056, Final residual = 8.405436284e-08, No Iterations 29
+bounding k, min: -0.1263478444 max: 23.45548001 average: 2.459864653
+ExecutionTime = 1364.437727 s  ClockTime = 1366 s
+
+Courant Number mean: 1.850108465e+51 max: 2.472944461e+54
+Time = 0.0014367825s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6671882563/0.9999538844/1
+    Target min/average/max coverage = 0.6423813671/0.9999543437/1.002463464
+    Source average openness/error/depth/angle = 1.45385411e-16/1.183906752e-05/0.01651933349/2.561986144
+    Source max openness/error/depth/angle = 8.679162429e-16/0.185138387/0.2734977976/49.6051223
+    13498290 couplings calculated in 0.825374s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.306353126e-17/3.994887332e-16
+    Cell min/average/max volume conservation error = -2.253006263e-13/-6.87389915e-19/1.295519124e-13
+    Cell min/average/max old-time volume conservation error = -1.107655374e-13/-3.355177347e-19/2.078344996e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001710248121/0.5802379865
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5802379865 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.009269039366, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.04059763282, Final residual = 0.00452026377, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7137953162, Final residual = 0.06148329288, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7113671427, Final residual = 0.06190755291, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.7418604933, Final residual = 0.06673354693, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7453736104, Final residual = 0.03660040646, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.06942006198, Final residual = 6.856946244e-07, No Iterations 21
+time step continuity errors : sum local = 6.266995617e+44, global = -6.635229975e+41
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7267019745, Final residual = 0.03293719148, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7251498803, Final residual = 0.01743659676, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7551684143, Final residual = 0.3095155232, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9757774706, Final residual = 0.02978852809, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.009980258726, Final residual = 7.206878504e-07, No Iterations 17
+time step continuity errors : sum local = 4.031856046e+48, global = 4.204149072e+46, cumulative = 4.219660838e+46
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.03566781491, Final residual = 9.749436418e-08, No Iterations 37
+smoothSolver:  Solving for k, Initial residual = 0.01581135402, Final residual = 8.477001799e-08, No Iterations 32
+bounding k, min: -0.09901176107 max: 23.1917442 average: 2.454651163
+ExecutionTime = 1428.041424 s  ClockTime = 1430 s
+
+Courant Number mean: 6.936532929e+53 max: 2.184570567e+57
+Time = 0.0014942538s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.5575925501/0.9999533471/1
+    Target min/average/max coverage = 0.7173757668/0.9999538918/1.000295767
+    Source average openness/error/depth/angle = 1.456713407e-16/1.506745938e-05/0.01660711573/2.594484862
+    Source max openness/error/depth/angle = 8.68239254e-16/0.1717340967/0.2841020228/60.03529849
+    13533474 couplings calculated in 0.814421s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.280954313e-17/3.894922764e-16
+    Cell min/average/max volume conservation error = -1.690692205e-13/-6.782670794e-19/1.25536877e-13
+    Cell min/average/max old-time volume conservation error = -2.253006263e-13/-7.044222609e-19/1.295519124e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001714092351/0.5693901736
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5693901736 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.0085538756, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03869109434, Final residual = 0.004224522005, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7150630853, Final residual = 0.06246216834, No Iterations 6
+smoothSolver:  Solving for Uy, Initial residual = 0.7159151311, Final residual = 0.06386066559, No Iterations 6
+smoothSolver:  Solving for Uz, Initial residual = 0.7448891006, Final residual = 0.06669033411, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.5776184782, Final residual = 0.02713967174, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.04052401339, Final residual = 8.672160818e-07, No Iterations 19
+time step continuity errors : sum local = 4.950513716e+47, global = 1.043578532e+45
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7208024272, Final residual = 0.04647379408, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7251930769, Final residual = 0.009704934061, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7498401313, Final residual = 0.3032667497, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9589747168, Final residual = 0.03937847107, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.00498176853, Final residual = 8.836101571e-07, No Iterations 13
+time step continuity errors : sum local = 4.77159801e+51, global = 1.076105673e+48, cumulative = 1.118302282e+48
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.03092144842, Final residual = 9.531861059e-08, No Iterations 33
+smoothSolver:  Solving for k, Initial residual = 0.0144612922, Final residual = 9.671245656e-08, No Iterations 29
+bounding k, min: -0.1074831147 max: 22.56420773 average: 2.448518639
+ExecutionTime = 1487.425438 s  ClockTime = 1489 s
+
+Courant Number mean: 3.07974436e+56 max: 2.773834304e+59
+Time = 0.0015517251s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.683999368/0.9999525743/1
+    Target min/average/max coverage = 0.7020855737/0.9999530581/1.008226006
+    Source average openness/error/depth/angle = 1.453810677e-16/1.300213031e-05/0.01639396773/2.571508022
+    Source max openness/error/depth/angle = 1.058828645e-15/0.1701157068/0.3010376033/56.32991002
+    13537946 couplings calculated in 0.819211s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.268760574e-17/4.029209756e-16
+    Cell min/average/max volume conservation error = -1.870007479e-13/2.236803565e-18/2.474851969e-13
+    Cell min/average/max old-time volume conservation error = -1.690692205e-13/-7.106396208e-19/1.25536877e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001692786647/0.5890537246
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5890537246 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008329960021, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.0374102086, Final residual = 0.004077911314, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7201821244, Final residual = 0.07170036258, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7163719729, Final residual = 0.07137587027, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7448223861, Final residual = 0.06329611503, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.8826722933, Final residual = 0.04404611453, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08108080549, Final residual = 7.337119023e-07, No Iterations 21
+time step continuity errors : sum local = 9.615383728e+49, global = 3.166427948e+47
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7258479974, Final residual = 0.05649516713, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7237709334, Final residual = 0.02132503729, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7508966199, Final residual = 0.2719745602, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.983269716, Final residual = 0.04853055946, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.02473124971, Final residual = 5.507034688e-07, No Iterations 21
+time step continuity errors : sum local = 2.028965678e+53, global = 1.060031847e+51, cumulative = 1.061150149e+51
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02934505998, Final residual = 9.922023109e-08, No Iterations 30
+smoothSolver:  Solving for k, Initial residual = 0.01235013072, Final residual = 9.283570333e-08, No Iterations 26
+bounding k, min: -0.09597004525 max: 22.33034874 average: 2.44285048
+ExecutionTime = 1553.397809 s  ClockTime = 1555 s
+
+Courant Number mean: 1.05124646e+59 max: 1.184891326e+62
+Time = 0.0016091964s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6754389566/0.9999540931/1
+    Target min/average/max coverage = 0.70932611/0.9999544184/1.006282448
+    Source average openness/error/depth/angle = 1.454365689e-16/1.644218352e-05/0.01646780708/2.573105538
+    Source max openness/error/depth/angle = 9.073950508e-16/0.2561528393/0.3115229303/57.94589898
+    13561094 couplings calculated in 0.824498s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.279305267e-17/3.875105201e-16
+    Cell min/average/max volume conservation error = -2.792679984e-13/5.020708443e-19/1.212167416e-13
+    Cell min/average/max old-time volume conservation error = -1.870007479e-13/2.22477546e-18/2.474851969e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00171421898/0.5965570555
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5965570555 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008062189007, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03665345476, Final residual = 0.003982123148, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7179163706, Final residual = 0.06454274341, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7161286535, Final residual = 0.0678359249, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7458179306, Final residual = 0.05933703937, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.8523063032, Final residual = 0.04150913127, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08596014422, Final residual = 5.078830531e-07, No Iterations 21
+time step continuity errors : sum local = 2.076752826e+52, global = 5.233960201e+49
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7192399661, Final residual = 0.03993798417, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7212258194, Final residual = 0.01750334898, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7464540033, Final residual = 0.3293264443, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9733982182, Final residual = 0.03090980489, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.009636638583, Final residual = 9.47886396e-07, No Iterations 15
+time step continuity errors : sum local = 3.380231964e+56, global = 2.572364745e+53, cumulative = 2.582976246e+53
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.03240322189, Final residual = 8.401863408e-08, No Iterations 32
+smoothSolver:  Solving for k, Initial residual = 0.01345940688, Final residual = 8.482865066e-08, No Iterations 30
+bounding k, min: -0.1582693686 max: 22.07215835 average: 2.434164967
+ExecutionTime = 1615.859163 s  ClockTime = 1618 s
+
+Courant Number mean: 4.019772267e+61 max: 5.76338034e+64
+Time = 0.0016666677s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7119051764/0.9999586365/1
+    Target min/average/max coverage = 0.6942474745/0.999958856/1.005628754
+    Source average openness/error/depth/angle = 1.457221437e-16/1.268953792e-05/0.01650579011/2.550150989
+    Source max openness/error/depth/angle = 8.791804426e-16/0.2355886134/0.2973193009/54.69276175
+    13561678 couplings calculated in 0.828598s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.339478947e-17/3.741497168e-16
+    Cell min/average/max volume conservation error = -1.40246148e-13/-2.344531992e-18/1.899544843e-13
+    Cell min/average/max old-time volume conservation error = -2.792679984e-13/4.930694244e-19/1.212167416e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00169480772/0.8588901576
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.8588901576 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007935368003, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03608790329, Final residual = 0.003990369488, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7179213323, Final residual = 0.06557449297, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.718343945, Final residual = 0.06986940223, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7463773328, Final residual = 0.06179917004, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.6328724473, Final residual = 0.03030574794, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08755121609, Final residual = 8.645172175e-07, No Iterations 21
+time step continuity errors : sum local = 1.326020728e+55, global = -5.474439442e+51
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.715712249, Final residual = 0.04174699942, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7200885549, Final residual = 0.009666479825, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7469345349, Final residual = 0.3275458026, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9601249686, Final residual = 0.04037876295, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.006955980088, Final residual = 4.302315876e-07, No Iterations 15
+time step continuity errors : sum local = 1.022047463e+59, global = -3.686007694e+56, cumulative = -3.683424717e+56
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02764465801, Final residual = 9.411392279e-08, No Iterations 36
+smoothSolver:  Solving for k, Initial residual = 0.01291244596, Final residual = 9.255548559e-08, No Iterations 33
+bounding k, min: -0.372543096 max: 21.90603996 average: 2.426301546
+ExecutionTime = 1677.699893 s  ClockTime = 1679 s
+
+Courant Number mean: 1.829258064e+64 max: 2.34592127e+67
+Time = 0.001724139s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7326503396/0.9999625935/1
+    Target min/average/max coverage = 0.683048448/0.999962707/1.001544901
+    Source average openness/error/depth/angle = 1.452065048e-16/1.404871814e-05/0.0164482435/2.537363816
+    Source max openness/error/depth/angle = 8.92931617e-16/0.1710433242/0.2889644349/58.56535464
+    13576668 couplings calculated in 0.825813s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.337669826e-17/4.232789844e-16
+    Cell min/average/max volume conservation error = -2.631719947e-13/3.029377963e-19/2.220384372e-13
+    Cell min/average/max old-time volume conservation error = -1.410152815e-13/-2.308478622e-18/1.899544843e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001697365418/0.7107050164
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.7107050164 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007985277054, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03657639419, Final residual = 0.003955178284, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7222881202, Final residual = 0.06498143707, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7214301331, Final residual = 0.06686224748, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7457083629, Final residual = 0.05991491504, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.6599082357, Final residual = 0.03267768406, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.06057708821, Final residual = 9.181321239e-07, No Iterations 20
+time step continuity errors : sum local = 9.472030008e+57, global = 1.33904458e+55
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7217463497, Final residual = 0.05055897573, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7234027948, Final residual = 0.01830431288, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.747935294, Final residual = 0.267042028, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9591541853, Final residual = 0.03056142445, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.009144369719, Final residual = 9.890649878e-07, No Iterations 15
+time step continuity errors : sum local = 5.449921253e+61, global = 4.385966489e+59, cumulative = 4.382283064e+59
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02889849419, Final residual = 8.066412462e-08, No Iterations 29
+smoothSolver:  Solving for k, Initial residual = 0.01194304231, Final residual = 9.687189168e-08, No Iterations 27
+bounding k, min: -0.167451611 max: 21.6700115 average: 2.416064941
+ExecutionTime = 1739.635353 s  ClockTime = 1741 s
+
+Courant Number mean: 5.985334997e+66 max: 6.622681099e+69
+Time = 0.0017816103s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6601153288/0.9999578686/1
+    Target min/average/max coverage = 0.7248855649/0.9999582309/1.00161539
+    Source average openness/error/depth/angle = 1.455825605e-16/1.288391153e-05/0.01622303331/2.534985927
+    Source max openness/error/depth/angle = 8.499064461e-16/0.134562959/0.3160063163/54.03305609
+    13595358 couplings calculated in 0.809232s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.33098005e-17/3.932176206e-16
+    Cell min/average/max volume conservation error = -1.553855522e-13/1.410841529e-18/1.741629401e-13
+    Cell min/average/max old-time volume conservation error = -2.631719947e-13/3.148062722e-19/2.220384372e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001689633908/0.625863528
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.625863528 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008121464865, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03651710348, Final residual = 0.003996636814, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7192926592, Final residual = 0.06612315101, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7165273395, Final residual = 0.06718001265, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7464830664, Final residual = 0.06002810443, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.6593668637, Final residual = 0.03169477948, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07877525837, Final residual = 5.303865636e-07, No Iterations 23
+time step continuity errors : sum local = 1.329723926e+60, global = 9.561838188e+56
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7158827371, Final residual = 0.04078013158, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7151883326, Final residual = 0.01361518159, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7439070755, Final residual = 0.3318944307, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9752523442, Final residual = 0.04115933805, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.0179160125, Final residual = 5.673052896e-07, No Iterations 19
+time step continuity errors : sum local = 6.288168974e+63, global = 1.269551015e+61, cumulative = 1.313373845e+61
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02943848918, Final residual = 8.721031752e-08, No Iterations 35
+smoothSolver:  Solving for k, Initial residual = 0.01240162019, Final residual = 9.017740625e-08, No Iterations 28
+bounding k, min: -0.1510438652 max: 21.51512808 average: 2.405289552
+ExecutionTime = 1805.439011 s  ClockTime = 1807 s
+
+Courant Number mean: 2.359849657e+69 max: 3.054688543e+72
+Time = 0.0018390816s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.5664532905/0.9999539591/1
+    Target min/average/max coverage = 0.608646086/0.9999545272/1.00226232
+    Source average openness/error/depth/angle = 1.454703225e-16/1.33443651e-05/0.01588373988/2.474919594
+    Source max openness/error/depth/angle = 1.093948071e-15/0.1767040701/0.2868838491/53.25534688
+    13591786 couplings calculated in 0.804557s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.325583577e-17/3.923349068e-16
+    Cell min/average/max volume conservation error = -1.310183953e-13/-8.777520585e-19/1.116702717e-13
+    Cell min/average/max old-time volume conservation error = -1.553855522e-13/1.436629376e-18/1.741629401e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00161536157/0.5875257964
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5875257964 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007880592992, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03642504982, Final residual = 0.003939646378, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7198690151, Final residual = 0.06700508769, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7198864703, Final residual = 0.06840223551, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7463576575, Final residual = 0.06175924967, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.6688015309, Final residual = 0.01748675899, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.04304831565, Final residual = 6.384286628e-07, No Iterations 19
+time step continuity errors : sum local = 1.124803795e+63, global = 8.772686487e+59
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7126062223, Final residual = 0.03069017415, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7168021193, Final residual = 0.01279702517, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7446208025, Final residual = 0.3210370448, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9564718797, Final residual = 0.04372752553, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.00771643529, Final residual = 8.057079545e-07, No Iterations 15
+time step continuity errors : sum local = 1.03055873e+67, global = 1.308599469e+64, cumulative = 1.309912843e+64
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02508668635, Final residual = 9.777523117e-08, No Iterations 36
+smoothSolver:  Solving for k, Initial residual = 0.01134153083, Final residual = 9.908728539e-08, No Iterations 34
+bounding k, min: -0.1801314129 max: 21.21890258 average: 2.395026266
+ExecutionTime = 1866.409581 s  ClockTime = 1868 s
+
+Courant Number mean: 1.087862807e+72 max: 1.070473866e+75
+Time = 0.0018965529s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.5982917318/0.9999523308/1
+    Target min/average/max coverage = 0.7070270116/0.9999529547/1.000821394
+    Source average openness/error/depth/angle = 1.449939139e-16/1.307559295e-05/0.01621088186/2.473199484
+    Source max openness/error/depth/angle = 1.05878872e-15/0.1947741746/0.2763759178/53.7805199
+    13593024 couplings calculated in 0.805806s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.317714236e-17/3.913352843e-16
+    Cell min/average/max volume conservation error = -1.281148713e-13/-4.495401767e-19/1.396701035e-13
+    Cell min/average/max old-time volume conservation error = -1.310183953e-13/-8.8163493e-19/1.116705826e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001654579086/0.7478264487
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.7478264487 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008275940483, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03779893488, Final residual = 0.004089180369, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.722531187, Final residual = 0.06478663555, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7199791683, Final residual = 0.06684833837, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7459961361, Final residual = 0.06167624028, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7628826884, Final residual = 0.0379059041, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07667970199, Final residual = 7.545146048e-07, No Iterations 20
+time step continuity errors : sum local = 3.846368639e+65, global = -1.081542568e+62
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7157697335, Final residual = 0.05132166727, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7174032411, Final residual = 0.01828224774, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7453708372, Final residual = 0.3032570151, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9743331899, Final residual = 0.04597231426, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.01888968222, Final residual = 9.113208244e-07, No Iterations 17
+time step continuity errors : sum local = 1.854517867e+69, global = -1.249678687e+67, cumulative = -1.248368774e+67
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02587380582, Final residual = 8.303862876e-08, No Iterations 31
+smoothSolver:  Solving for k, Initial residual = 0.01100449388, Final residual = 9.404225427e-08, No Iterations 29
+bounding k, min: -0.1325604523 max: 21.05604545 average: 2.384221957
+ExecutionTime = 1928.778377 s  ClockTime = 1931 s
+
+Courant Number mean: 4.244253097e+74 max: 3.531714055e+77
+Time = 0.0019540242s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6845326234/0.9999536979/1
+    Target min/average/max coverage = 0.629678581/0.9999541533/1.002560112
+    Source average openness/error/depth/angle = 1.455719406e-16/1.376258594e-05/0.01617585107/2.477189277
+    Source max openness/error/depth/angle = 8.873538956e-16/0.1751962378/0.3018173883/56.0420312
+    13616808 couplings calculated in 0.803053s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.314715946e-17/4.310704315e-16
+    Cell min/average/max volume conservation error = -1.222782769e-13/1.549555155e-18/1.447717689e-13
+    Cell min/average/max old-time volume conservation error = -1.281143646e-13/-4.354772115e-19/1.396701035e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001656373361/0.559222546
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.559222546 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008018483113, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03554169356, Final residual = 0.003964595525, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7254485238, Final residual = 0.0617900096, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7213314505, Final residual = 0.06119432797, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7469685916, Final residual = 0.07399382931, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.7663937975, Final residual = 0.03478014973, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07000236891, Final residual = 5.122357915e-07, No Iterations 21
+time step continuity errors : sum local = 1.024887222e+68, global = 9.575724741e+64
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7078931068, Final residual = 0.03847811232, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7055448836, Final residual = 0.01483900454, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7361860493, Final residual = 0.3137524559, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9788999219, Final residual = 0.04346477226, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.01534342793, Final residual = 5.400686338e-07, No Iterations 17
+time step continuity errors : sum local = 4.806865133e+71, global = 3.609200608e+68, cumulative = 3.484363731e+68
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02639654012, Final residual = 9.438694734e-08, No Iterations 29
+smoothSolver:  Solving for k, Initial residual = 0.01140535492, Final residual = 8.774238738e-08, No Iterations 29
+bounding k, min: -0.1800826178 max: 20.90413747 average: 2.370680148
+ExecutionTime = 1991.979359 s  ClockTime = 1994 s
+
+Courant Number mean: 1.573744604e+77 max: 2.720079558e+80
+Time = 0.0020114955s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6534065468/0.999952491/1
+    Target min/average/max coverage = 0.6702218308/0.9999528379/1.00317229
+    Source average openness/error/depth/angle = 1.457480153e-16/1.429842025e-05/0.01598801131/2.473059945
+    Source max openness/error/depth/angle = 9.027052005e-16/0.1823919345/0.284471445/54.35190128
+    13618396 couplings calculated in 0.789752s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.308273758e-17/3.989445872e-16
+    Cell min/average/max volume conservation error = -1.524124087e-13/-1.673214116e-18/1.586108695e-13
+    Cell min/average/max old-time volume conservation error = -1.222782769e-13/1.561041818e-18/1.452213232e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001648352422/0.6108113311
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6108113311 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008147719131, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.0372228313, Final residual = 0.004030198982, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7240055343, Final residual = 0.06496499796, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7226398475, Final residual = 0.06600122507, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7458702605, Final residual = 0.05921961329, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7916810855, Final residual = 0.03759481696, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07548540932, Final residual = 4.965151963e-07, No Iterations 22
+time step continuity errors : sum local = 3.433583058e+70, global = 5.189877172e+67
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.716992859, Final residual = 0.03041628167, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7168098326, Final residual = 0.03224808044, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7469925494, Final residual = 0.3058413516, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9747545283, Final residual = 0.04147399526, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.01640297152, Final residual = 9.199387266e-07, No Iterations 17
+time step continuity errors : sum local = 3.129638808e+74, global = 8.369766369e+71, cumulative = 8.373250733e+71
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02568951861, Final residual = 8.6532813e-08, No Iterations 35
+smoothSolver:  Solving for k, Initial residual = 0.01109859721, Final residual = 9.045015454e-08, No Iterations 31
+bounding k, min: -0.2021020826 max: 20.79227511 average: 2.355893928
+ExecutionTime = 2055.458945 s  ClockTime = 2057 s
+
+Courant Number mean: 6.198561463e+79 max: 5.899318416e+82
+Time = 0.0020689668s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6666168295/0.9999564382/1
+    Target min/average/max coverage = 0.7440439149/0.9999564918/1.001254232
+    Source average openness/error/depth/angle = 1.453566045e-16/1.227136168e-05/0.01579687529/2.412260174
+    Source max openness/error/depth/angle = 9.295118978e-16/0.2631949694/0.2863792348/51.000411
+    13619270 couplings calculated in 0.785898s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.301947415e-17/3.655081281e-16
+    Cell min/average/max volume conservation error = -1.288690247e-13/6.891035689e-19/1.875802624e-13
+    Cell min/average/max old-time volume conservation error = -1.524124087e-13/-1.674018677e-18/1.586108695e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00163497375/0.5782836389
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5782836389 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008238067102, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03672832593, Final residual = 0.004048548189, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7243977005, Final residual = 0.06322317757, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7225446639, Final residual = 0.06155700806, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7463806704, Final residual = 0.0742273633, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.6760822673, Final residual = 0.03167545181, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.06983057772, Final residual = 6.932607068e-07, No Iterations 20
+time step continuity errors : sum local = 2.050833095e+73, global = 4.367566148e+69
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7103929694, Final residual = 0.0292125584, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7092351199, Final residual = 0.04569810247, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7349374587, Final residual = 0.3049202463, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9645933445, Final residual = 0.04173830103, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.009317965864, Final residual = 9.388336091e-07, No Iterations 15
+time step continuity errors : sum local = 1.980690215e+77, global = 1.472015141e+74, cumulative = 1.480388392e+74
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.0258884341, Final residual = 8.10348677e-08, No Iterations 30
+smoothSolver:  Solving for k, Initial residual = 0.01103129892, Final residual = 8.692488548e-08, No Iterations 28
+bounding k, min: -0.1803081489 max: 20.58702335 average: 2.338560232
+ExecutionTime = 2116.644963 s  ClockTime = 2118 s
+
+Courant Number mean: 2.286093203e+82 max: 3.778689569e+85
+Time = 0.0021264381s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6775892182/0.9999597164/1
+    Target min/average/max coverage = 0.67546413/0.9999599291/1.006439319
+    Source average openness/error/depth/angle = 1.450873086e-16/1.495801879e-05/0.01631133639/2.440119405
+    Source max openness/error/depth/angle = 8.958461091e-16/0.192970289/0.3054391122/51.06797061
+    13633106 couplings calculated in 0.788795s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.302611706e-17/4.586046147e-16
+    Cell min/average/max volume conservation error = -1.711498745e-13/-1.178537177e-19/1.47063368e-13
+    Cell min/average/max old-time volume conservation error = -1.288690247e-13/6.625543367e-19/1.875802624e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001651018235/0.5836535491
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5836535491 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007811503667, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03595820878, Final residual = 0.003941362105, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7225720963, Final residual = 0.06389913137, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7235665525, Final residual = 0.06246430225, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7462948894, Final residual = 0.05863546735, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.8264003029, Final residual = 0.03973776554, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08840193848, Final residual = 5.734360388e-07, No Iterations 22
+time step continuity errors : sum local = 4.980225262e+75, global = -2.056542131e+73
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7161525267, Final residual = 0.02509854951, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7234167435, Final residual = 0.05046630109, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7465740836, Final residual = 0.3091172092, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9835585821, Final residual = 0.03450983828, No Iterations 7
+GAMG:  Solving for p, Initial residual = 0.02973660954, Final residual = 6.298195146e-07, No Iterations 20
+time step continuity errors : sum local = 1.589677932e+79, global = -2.264983042e+77, cumulative = -2.263502653e+77
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02681442781, Final residual = 8.259878098e-08, No Iterations 29
+smoothSolver:  Solving for k, Initial residual = 0.01097463074, Final residual = 8.413600913e-08, No Iterations 28
+bounding k, min: -0.2203326949 max: 20.27982316 average: 2.321522324
+ExecutionTime = 2182.510722 s  ClockTime = 2184 s
+
+Courant Number mean: 8.442016362e+84 max: 9.901616129e+87
+Time = 0.0021839094s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.734815059/0.999961229/1
+    Target min/average/max coverage = 0.7377374825/0.9999613029/1.001891064
+    Source average openness/error/depth/angle = 1.450225491e-16/1.125798184e-05/0.01572948918/2.336213519
+    Source max openness/error/depth/angle = 9.315237372e-16/0.1675163686/0.2888377949/49.64508613
+    13623656 couplings calculated in 0.762994s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.301028175e-17/3.944645901e-16
+    Cell min/average/max volume conservation error = -1.797303922e-13/1.225597244e-18/1.788835718e-13
+    Cell min/average/max old-time volume conservation error = -1.711498745e-13/-1.04379762e-19/1.47063368e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001585322281/0.5637219599
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5637219599 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007866706853, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03718837395, Final residual = 0.003984670026, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7220753174, Final residual = 0.06027215996, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7244980204, Final residual = 0.06213648592, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.746023028, Final residual = 0.07322908151, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.6984731187, Final residual = 0.03115279975, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07049375646, Final residual = 5.373723492e-07, No Iterations 22
+time step continuity errors : sum local = 2.075253602e+78, global = -3.028386056e+75
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7064404019, Final residual = 0.02289102015, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.714047472, Final residual = 0.05393051687, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7346308777, Final residual = 0.3202804907, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9599788711, Final residual = 0.04233941664, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.007843194825, Final residual = 9.979638272e-07, No Iterations 15
+time step continuity errors : sum local = 4.078092544e+82, global = 3.293354251e+79, cumulative = 3.270719225e+79
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.0249824266, Final residual = 8.872703522e-08, No Iterations 36
+smoothSolver:  Solving for k, Initial residual = 0.01124404457, Final residual = 8.834296802e-08, No Iterations 34
+bounding k, min: -0.1396234898 max: 20.05088187 average: 2.303938197
+ExecutionTime = 2245.190399 s  ClockTime = 2247 s
+
+Courant Number mean: 3.537652588e+87 max: 2.111161254e+90
+Time = 0.0022413807s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7284865324/0.9999559598/1
+    Target min/average/max coverage = 0.7316990534/0.999956204/1.00019213
+    Source average openness/error/depth/angle = 1.455752225e-16/1.32977991e-05/0.01567888409/2.379390022
+    Source max openness/error/depth/angle = 1.058751339e-15/0.2000278038/0.2780152056/52.40066379
+    13648184 couplings calculated in 0.777931s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.305483324e-17/4.087888382e-16
+    Cell min/average/max volume conservation error = -1.364734961e-13/-8.182483955e-19/1.20256137e-13
+    Cell min/average/max old-time volume conservation error = -1.797303922e-13/1.228664375e-18/1.788835718e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.00161159696/0.5832093058
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5832093058 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007866215086, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03634668167, Final residual = 0.003952665569, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7231338726, Final residual = 0.06443113553, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7230706708, Final residual = 0.0618134184, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7469382575, Final residual = 0.05954614423, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.791775704, Final residual = 0.03830105137, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.07540744999, Final residual = 5.657894344e-07, No Iterations 22
+time step continuity errors : sum local = 9.18680185e+80, global = 1.283647693e+78
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7190532813, Final residual = 0.03348298393, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7239525193, Final residual = 0.03911251604, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7488997173, Final residual = 0.2884597154, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9773296953, Final residual = 0.04466000649, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.01730590137, Final residual = 7.140953249e-07, No Iterations 19
+time step continuity errors : sum local = 4.261178699e+84, global = 1.815453388e+82, cumulative = 1.818724107e+82
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02818932816, Final residual = 8.447958663e-08, No Iterations 34
+smoothSolver:  Solving for k, Initial residual = 0.01155261799, Final residual = 9.917097656e-08, No Iterations 32
+bounding k, min: -0.2005110391 max: 19.89574392 average: 2.285273708
+ExecutionTime = 2310.811546 s  ClockTime = 2313 s
+
+Courant Number mean: 1.201212479e+90 max: 1.292728004e+93
+Time = 0.002298852s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.6912115398/0.9999531239/1
+    Target min/average/max coverage = 0.6801074136/0.9999536973/1.003661921
+    Source average openness/error/depth/angle = 1.45361788e-16/1.384441868e-05/0.01599803701/2.387827561
+    Source max openness/error/depth/angle = 9.110740178e-16/0.2135954856/0.299040023/53.03926904
+    13644716 couplings calculated in 0.762474s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.327681968e-17/4.024571271e-16
+    Cell min/average/max volume conservation error = -1.239145478e-13/5.640414675e-19/1.26249953e-13
+    Cell min/average/max old-time volume conservation error = -1.34260447e-13/-8.18917751e-19/1.20256137e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001614617331/0.5940980773
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.5940980773 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007755721175, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03517602421, Final residual = 0.003880628495, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7224805527, Final residual = 0.06344140596, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.718916721, Final residual = 0.06363917585, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7458835348, Final residual = 0.05893697295, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.8303218985, Final residual = 0.0408201456, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08064004929, Final residual = 5.180308282e-07, No Iterations 22
+time step continuity errors : sum local = 2.578876615e+83, global = -1.338853729e+79
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.714127893, Final residual = 0.02721726714, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7158608688, Final residual = 0.0363634587, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7455184649, Final residual = 0.3256830367, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9645984876, Final residual = 0.04745887812, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.00780161079, Final residual = 4.817804422e-07, No Iterations 16
+time step continuity errors : sum local = 2.699794166e+87, global = 2.693985037e+84, cumulative = 2.712172278e+84
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02879423086, Final residual = 9.159119071e-08, No Iterations 28
+smoothSolver:  Solving for k, Initial residual = 0.01229070355, Final residual = 9.226478926e-08, No Iterations 29
+bounding k, min: -0.189613181 max: 19.65082738 average: 2.265149785
+ExecutionTime = 2374.439113 s  ClockTime = 2376 s
+
+Courant Number mean: 5.037195064e+92 max: 9.499417458e+95
+Time = 0.0023563233s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7119587438/0.9999536223/1
+    Target min/average/max coverage = 0.7055622126/0.9999541053/1.000553999
+    Source average openness/error/depth/angle = 1.454509186e-16/1.616315084e-05/0.01576373677/2.350569942
+    Source max openness/error/depth/angle = 1.058817932e-15/0.2960408406/0.2897972527/52.42601276
+    13654228 couplings calculated in 0.767587s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.330871985e-17/3.969419554e-16
+    Cell min/average/max volume conservation error = -1.29366464e-13/-1.143493966e-18/1.163369464e-13
+    Cell min/average/max old-time volume conservation error = -1.239145478e-13/5.717529168e-19/1.26249953e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001609522237/0.6694297733
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.6694297733 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.008099812371, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03670190954, Final residual = 0.003965800571, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7214793773, Final residual = 0.0652398755, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7217440175, Final residual = 0.06856217823, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7466275793, Final residual = 0.06105765485, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.7595745324, Final residual = 0.03703791937, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08312452401, Final residual = 9.154778832e-07, No Iterations 21
+time step continuity errors : sum local = 1.855496554e+86, global = 8.828630914e+83
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7171635944, Final residual = 0.03105096266, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7202102365, Final residual = 0.02284746833, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7446671739, Final residual = 0.3075186831, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9624901429, Final residual = 0.03969995736, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.009069302843, Final residual = 5.041337135e-07, No Iterations 17
+time step continuity errors : sum local = 1.010102613e+90, global = -1.255749529e+87, cumulative = -1.253037357e+87
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02576360159, Final residual = 9.546755306e-08, No Iterations 32
+smoothSolver:  Solving for k, Initial residual = 0.01113860688, Final residual = 9.273514303e-08, No Iterations 30
+bounding k, min: -0.07801510417 max: 19.36902253 average: 2.245580767
+ExecutionTime = 2438.159966 s  ClockTime = 2440 s
+
+Courant Number mean: 2.013670389e+95 max: 2.529472286e+98
+Time = 0.0024137946s
+
+PIMPLE: Iteration 1
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
+    Source min/average/max coverage = 0.7307736877/0.9999538255/1
+    Target min/average/max coverage = 0.6132516088/0.9999540813/1.002287286
+    Source average openness/error/depth/angle = 1.454519007e-16/1.515663201e-05/0.01558127516/2.330774064
+    Source max openness/error/depth/angle = 8.793112525e-16/0.2579848668/0.3043766054/52.4955068
+    13656320 couplings calculated in 0.761872s
+fvMeshStitcher: Connecting
+    Cell min/average/max openness = 0/6.331219072e-17/3.812875814e-16
+    Cell min/average/max volume conservation error = -1.381118623e-13/-3.948883651e-19/1.515367721e-13
+    Cell min/average/max old-time volume conservation error = -1.316398963e-13/-1.155397945e-18/1.163369464e-13
+    nonConformalCyclic_on_impeller_rotor min/average/max mesh flux error = 0/0/0
+    Cell min/average/max projected volume fraction = 0/0.001594564453/0.9455750032
+--> FOAM Warning: 
+    From function bool Foam::fvMeshStitcher::connectThis(bool, bool, bool)
+    in file fvMesh/fvMeshStitchers/fvMeshStitcher/fvMeshStitcher.C at line 1955
+    Maximum projected volume fraction 0.9455750032 may cause instability.
+    Volumetric distortion can be minimised by making the side of the interface
+    with smaller or more finely layered cells the neighbour.
+    This is done by specifying this side second to createNonConformalCouples;
+    either on the command line, or in the patches (and regions) entries within
+    the createNonConformalCouplesDict.
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.007685586684, No Iterations 4
+GAMG:  Solving for pcorr, Initial residual = 0.03483637472, Final residual = 0.003819807267, No Iterations 1
+smoothSolver:  Solving for Ux, Initial residual = 0.7252679529, Final residual = 0.0629214216, No Iterations 5
+smoothSolver:  Solving for Uy, Initial residual = 0.7211204009, Final residual = 0.06401998985, No Iterations 5
+smoothSolver:  Solving for Uz, Initial residual = 0.7454783138, Final residual = 0.07453365633, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.7906728019, Final residual = 0.03654176352, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.08708528443, Final residual = 8.210743708e-07, No Iterations 20
+time step continuity errors : sum local = 6.281105226e+88, global = 2.32528549e+86
+PIMPLE: Iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.7106451014, Final residual = 0.03713565568, No Iterations 1000
+smoothSolver:  Solving for Uy, Initial residual = 0.7122709031, Final residual = 0.02846284933, No Iterations 1000
+smoothSolver:  Solving for Uz, Initial residual = 0.7356684641, Final residual = 0.309429388, No Iterations 1000
+GAMG:  Solving for p, Initial residual = 0.9803274147, Final residual = 0.04445999399, No Iterations 6
+GAMG:  Solving for p, Initial residual = 0.02348491718, Final residual = 7.892098038e-07, No Iterations 19
+time step continuity errors : sum local = 2.148867395e+92, global = 7.20748606e+89, cumulative = 7.194955686e+89
+
+Selecting patchDistMethod meshWave
+smoothSolver:  Solving for omega, Initial residual = 0.02684354163, Final residual = 9.37919725e-08, No Iterations 32
+smoothSolver:  Solving for k, Initial residual = 0.01167987435, Final residual = 9.043013417e-08, No Iterations 32
+bounding k, min: -0.1781659841 max: 19.16876027 average: 2.227287806
+ExecutionTime = 2502.736939 s  ClockTime = 2505 s
+
+Courant Number mean: 7.301723826e+97 max: 1.124925647e+101
+Time = 0.0024712659s
+
+PIMPLE: Iteration 1
+srun: forcing job termination
+patchToPatch: Calculating couplings between ...
+    source patch impeller_rotor with 1467202 faces and ...
+    target patch impeller_stator with 1467202 faces
