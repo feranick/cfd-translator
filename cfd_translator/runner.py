@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.16
+Version: 2026.11.12.17
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -320,6 +320,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             from .cavitation import results as _cav
             res["cavitation"], w = _cav(study, mesh, plan, fields, res)
             warns += w
+        warns += _onset_into(study, mesh, plan, fields, res)
         if solver != "ref" and plan.get("monitors"):
             from .average import average_results
             try:
@@ -497,6 +498,7 @@ def reprocess_study(folder: Path, name: str) -> dict:
         ps = pressure_statistics(study, mesh, plan, fields)
         if ps:
             res["pressure_statistics"] = ps
+    w = list(w) + _onset_into(study, mesh, plan, fields, res)
     if plan.get("vof"):
         if fields.get("alpha") is not None:
             from .cavitation import results as _cav
@@ -623,6 +625,21 @@ def zero_fields(fields: dict, plan: dict) -> list[str]:
         if c.size and float(np.ptp(c)) <= 1e-6 * max(float(np.abs(c).max()), 1e-300):
             out.append(n)
     return out
+
+
+def _onset_into(study: dict, mesh, plan: dict, fields: dict, res: dict) -> list:
+    """study.onset: results.onset and the p_eff field (images, render_images); its warnings."""
+    if not study.get("onset"):
+        return []
+    from .onset import evaluate
+    try:
+        ob, p_eff, w = evaluate(study, mesh, plan, fields, res)
+    except Exception as exc:  # noqa: BLE001 (a screen must never fail a finished run)
+        return [f"onset: not evaluated ({type(exc).__name__}: {exc})"]
+    if ob:
+        res["onset"] = ob
+        fields.setdefault("scalars", {})["p_eff"] = {"internal": p_eff, "patches": {}}
+    return w
 
 
 def _verdict(out: dict, res: dict) -> tuple[bool, list]:

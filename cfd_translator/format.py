@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.12.8
+Version: 2026.11.12.17
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -175,6 +175,8 @@ STUDY_KEYS = {
     "scalars": "[{name, inlets: {<inlet bc>: value} (others 0), Sc (1) | diffusivity m2/s, Sct (0.7)}]: passive "
                "tracers (mixing); results.scalars.<name>.outlets.<bc>.mean/mixing_index, volume_mean",
     "age": "true | {Sc, Sct}: mean age of fluid (s); results.age: mean_residence_time_s, V_over_Q_s, dead zones",
+    "onset": "true | {c, npsh, below: [vapour|{air_release: Pa}|Pa], regions: [eye|tip_clearance|vane_leading_edges|"
+             "{name, box|cylinder}]}: p_abs - c rho k screen",
     "porous": "[{name, region: {box: [x0,y0,z0,x1,y1,z1]} | {cylinder: {center, axis, radius, span}} | {sphere: "
               "{center, radius}} (mm), darcy 1/m2, forchheimer 1/m (number | [e1,e2,e3]) | ergun: {particle_diameter mm, "
               "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]], on_part}]; results.porous",
@@ -344,6 +346,8 @@ def _field_names(st: dict) -> tuple:
     out = _scalar_names(st)
     if st.get("model", "laminar") != "laminar":
         out += ("k", "nut")
+    if st.get("onset"):
+        out += ("p_eff",)
     tr = (st.get("solve") or {}).get("transient")
     if isinstance(tr, dict):
         from .foam import p_below_key
@@ -1014,6 +1018,8 @@ def validate_study(st: dict) -> dict:
     # cavitation (cavitation.py)
     from .cavitation import errors as _cavitation_errors
     errs += _cavitation_errors(st)
+    from .onset import errors as _onset_errors
+    errs += _onset_errors(st)
     # images
     if "images" in st:
         errs += image_errors(st["images"], two_d, _field_names(st), bool((st.get("reference") or {}).get("velocity")))

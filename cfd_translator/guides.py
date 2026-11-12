@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.13
+Version: 2026.11.12.17
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -53,6 +53,12 @@ GUIDES = {
             "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
             "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
             "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+            "Screening impeller variants before two-phase sweeps: a steady MRF run with onset {c: 0.3, below: "
+            "['vapour', {air_release: <saturation Pa>}], regions: ['eye', 'vane_leading_edges', 'tip_clearance']} "
+            "gives per region the volume with p_eff = p_abs - c rho k below each threshold, the deepest point and the "
+            "margin (results.onset; image field p_eff). conditions.p sets the absolute level. The regions come from "
+            "the rotating zone and its walls (no boxes per variant). Calibrate c against a transient run's p_below "
+            "at the same thresholds.",
             "Pressure statistics of a sliding (or any transient) run: solve.transient.p_below [Pa absolute, e.g. "
             "2339, 20000, 50000: vapour pressure and air-release levels] writes, per cell, the fraction of the "
             "averaging window spent below each (image field p_below_<Pa>), summarised for the domain and each "

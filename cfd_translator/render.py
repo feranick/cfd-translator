@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.11.12.4
+Version: 2026.11.12.17
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
         isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
@@ -26,7 +26,7 @@ FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)"
           "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)",
           "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)", "vapour": "vapour volume fraction",
           "k": "k (m²/s²; turbulent p fluctuation ~0.2-0.4 ρk)", "nut": "ν_t (m²/s)",
-          "p_rms": "p rms over the averaging window (Pa)"}
+          "p_rms": "p rms over the averaging window (Pa)", "p_eff": "p_eff = p_abs - c ρk (Pa absolute; onset)"}
 
 
 def field_label(field: str) -> str:
