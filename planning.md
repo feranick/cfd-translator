@@ -386,6 +386,8 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.12.4**: image fields k, nut, p_rms, p_below_<Pa>; solve.transient.p_below (coded function object, time below per cell) and per-region summaries. Verify: the coded FO compiles on mochi/sparks and in parallel with NCC.
+
 **2026.11.12.3**: inlet_gas_fraction per NPSH point: a list, or {saturated_at} (Henry's law at each inlet pressure).
 
 **2026.11.12.2**: cavitation.inlet_gas_fraction: liquid + compressible air (compressibleVoF, isothermal, no vapour).

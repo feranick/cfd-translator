@@ -1,5 +1,5 @@
 """render.py — pictures of a solved study: slices (velocity or pressure, with streamlines) and wall surfaces.
-Version: 2026.11.06.1
+Version: 2026.11.12.4
 
     render(study, mesh, plan, fields, folder, specs) -> ({name: {path, what}}, warnings)
         isosurfaces and surfaces with "quality": "high" go to render_vtk (VTK, offscreen); the rest is drawn here
@@ -24,7 +24,18 @@ from .polymesh import SCALE, PolyMesh
 AXES = {"x": 0, "y": 1, "z": 2}
 FIELDS = {"u": "|U| (m/s)", "ux": "Ux (m/s)", "uy": "Uy (m/s)", "uz": "Uz (m/s)", "p": "p (Pa, gauge)",
           "T": "T (°C)", "mach": "Mach number", "wall_shear": "wall shear (Pa)", "q": "wall heat flux into the fluid (W/m²)",
-          "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)", "vapour": "vapour volume fraction"}
+          "cp": "Cp = (p - p_ref) / (½ ρ U_ref²)", "vapour": "vapour volume fraction",
+          "k": "k (m²/s²; turbulent p fluctuation ~0.2-0.4 ρk)", "nut": "ν_t (m²/s)",
+          "p_rms": "p rms over the averaging window (Pa)"}
+
+
+def field_label(field: str) -> str:
+    """The colour bar's label: FIELDS, the pressure-threshold fractions, else a tracer's name."""
+    if field in FIELDS:
+        return FIELDS[field]
+    if field.startswith("p_below_"):
+        return f"fraction of time with p below {field[8:].replace('p', '.').replace('m', '-')} Pa (absolute)"
+    return "mean age of fluid (s)" if field == "age" else f"{field} (tracer)"
 CMAPS = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "q": "inferno", "mach": "magma", "age": "cividis",
          "u": "viridis", "wall_shear": "viridis"}
 
@@ -190,10 +201,12 @@ def _slice(study, mesh, plan, fields, spec, title, path):
     val = vals[field]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=130)
     win = spec.get("window")
-    cmap = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "mach": "magma", "age": "cividis"}.get(field, "plasma" if scal else "viridis")
+    cmap = {"p": "coolwarm", "cp": "coolwarm", "T": "inferno", "mach": "magma", "age": "cividis", "k": "magma",
+            "nut": "magma", "p_rms": "inferno"}.get(field, "Reds" if field.startswith("p_below_") else
+                                                    "plasma" if scal else "viridis")
     lo_c, hi_c, ext = _limits(val, spec, "full")
     tp = ax.tripcolor(tri, val, shading="gouraud", cmap=cmap, vmin=lo_c, vmax=hi_c)
-    fig.colorbar(tp, ax=ax, label=FIELDS.get(field, "mean age of fluid (s)" if field == "age" else f"{field} (tracer)"),
+    fig.colorbar(tp, ax=ax, label=field_label(field),
                  shrink=0.85, extend=ext)
     if spec.get("streamlines"):
         x0, x1 = (win[0], win[1]) if win else (X[:, 0].min(), X[:, 0].max())
@@ -359,7 +372,7 @@ def render(study, mesh, plan, fields, folder, specs, name="study", state_dir=Non
         sp = dict(sp, field=field)
         try:
             if "slice" in sp:
-                what = f"{name}: {FIELDS.get(field, field)}" + (" with streamlines" if sp.get("streamlines") else "")
+                what = f"{name}: {field_label(field)}" + (" with streamlines" if sp.get("streamlines") else "")
                 info = _slice(study, mesh, plan, fields, sp, what, path)
             else:
                 what = f"{name}: {FIELDS[field]} on {sp.get('surface', 'walls')}"

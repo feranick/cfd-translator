@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.12.3
+Version: 2026.11.12.4
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -30,7 +30,7 @@ FLUIDS = {
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
-                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields"}
+                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -151,7 +151,8 @@ STUDY_KEYS = {
              "transient: {end_time s, average_from, max_co (null: fixed dt), write_interval, init (steady its first), max_jobs, "
              "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
-             "transient), init_fields (last | mean)}",
+             "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
+             "p_below_regions}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -335,6 +336,19 @@ def _selector_errors(sel, where: str, external: bool) -> list[str]:
 def _scalar_names(st: dict) -> tuple:
     names = tuple(s.get("name") for s in (st.get("scalars") or []) if isinstance(s, dict) and isinstance(s.get("name"), str))
     return names + (("age",) if st.get("age") else ()) + (("vapour",) if st.get("cavitation") else ())
+
+
+def _field_names(st: dict) -> tuple:
+    """Cell fields an image may show besides u, p, T...: tracers, age, vapour (_scalar_names), and k and nut (turbulent
+    runs), p_rms and p_below_<Pa> (transient runs: the pressure's statistics over the averaging window)."""
+    out = _scalar_names(st)
+    if st.get("model", "laminar") != "laminar":
+        out += ("k", "nut")
+    tr = (st.get("solve") or {}).get("transient")
+    if isinstance(tr, dict):
+        from .foam import p_below_key
+        out += ("p_rms",) + tuple(f"p_below_{p_below_key(v)}" for v in tr.get("p_below") or [] if _num(v))
+    return out
 
 
 def image_errors(im, two_d: bool = False, scalars: tuple = (), ref_velocity: bool = True) -> list[str]:
@@ -880,6 +894,29 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
             if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
                 errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
+            pb = tr.get("p_below")
+            if pb is not None and (not isinstance(pb, list) or not pb or len(pb) > 8
+                                   or not all(_num(v) and v > 0 for v in pb) or len(set(pb)) != len(pb)):
+                errs.append("solve.transient.p_below: 1-8 different absolute pressures (Pa), e.g. [2339, 20000, 50000]: "
+                            "the fraction of the averaging window each cell spends below each (fields p_below_<Pa>; "
+                            "absolute = conditions.p + the gauge pressure)")
+            regs = tr.get("p_below_regions")
+            if regs is not None:
+                if not pb:
+                    errs.append("solve.transient.p_below_regions goes with p_below")
+                if not isinstance(regs, list):
+                    errs.append("solve.transient.p_below_regions: [{name, box: [x0,y0,z0,x1,y1,z1]} | {name, cylinder: "
+                                "{center, axis, radius, span, inner_radius}}]")
+                else:
+                    for i, rg in enumerate(regs):
+                        ok = isinstance(rg, dict) and isinstance(rg.get("name"), str) and rg["name"] != "domain" and (
+                            (_vec(rg.get("box"), 6) and all(rg["box"][j] < rg["box"][j + 3] for j in range(3)))
+                            or (isinstance(rg.get("cylinder"), dict) and _vec(rg["cylinder"].get("axis"))
+                                and _num(rg["cylinder"].get("radius")) and rg["cylinder"]["radius"] > 0))
+                        if not ok:
+                            errs.append(f"solve.transient.p_below_regions[{i}]: {{name (not 'domain'), box: [x0,y0,z0,"
+                                        "x1,y1,z1]}} or {{name, cylinder: {{center, axis, radius, span, inner_radius}}}} "
+                                        "(mm)")
             if "init_from" in tr and (not isinstance(tr["init_from"], str) or not tr["init_from"].strip()):
                 errs.append("solve.transient.init_from: '<request>/<study>' of a finished run on this machine or "
                             "'<study>' of this request (its U, p, k, omega are mapped onto this mesh as the start; no "
@@ -979,7 +1016,7 @@ def validate_study(st: dict) -> dict:
     errs += _cavitation_errors(st)
     # images
     if "images" in st:
-        errs += image_errors(st["images"], two_d, _scalar_names(st), bool((st.get("reference") or {}).get("velocity")))
+        errs += image_errors(st["images"], two_d, _field_names(st), bool((st.get("reference") or {}).get("velocity")))
     # reference, probes, expect
     ref = st.get("reference", {})
     if not isinstance(ref, dict):

@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.12.1
+Version: 2026.11.12.4
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -82,7 +82,9 @@ def settings(study: dict, mesh=None) -> dict | None:
            "max_jobs": int(tr.get("max_jobs", 10)), "dt": float(f"{dt:.4g}"), "model": model, "velocity": U,
            "length_m": float((study.get("reference") or {}).get("length", 0)) * SCALE or None,
            "max_dt": float(f"{min(W / 10, T / 500):.4g}"),
-           **({"init_from": init_ref(study)[0], "init_fields": init_ref(study)[1]} if init_ref(study)[0] else {})}
+           **({"init_from": init_ref(study)[0], "init_fields": init_ref(study)[1]} if init_ref(study)[0] else {}),
+           **({"p_below": [float(v) for v in tr["p_below"]], "p_below_regions": list(tr.get("p_below_regions") or []),
+               "p_operating": float((study.get("conditions") or {}).get("p", 101325.0))} if tr.get("p_below") else {})}
     if fixed and tr.get("dt"):
         out["dt"] = out["max_dt"] = float(tr["dt"])
     sl = sliding_zone(study)
@@ -103,6 +105,115 @@ def settings(study: dict, mesh=None) -> dict | None:
         out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),
                    degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)))
     return out
+
+
+def p_below_function(tr: dict, rho: float) -> str:
+    """A coded function object (OpenFOAM 14: type coded, libutilityFunctionObjects; codeRead gets `dict`, the code
+    mesh()) adding, every time step after average_from, the step's length to pBelowTime_<Pa> in each cell whose
+    absolute pressure, rho p + p_operating (conditions.p), is below the threshold. The fields are registered
+    AUTO_WRITE, so they are written with the run, and read back when a later SLURM job continues it. OpenFOAM has no
+    function object that thresholds a field; the code is compiled at the run's start (wmake, allowSystemOperations)."""
+    from .foam import p_below_field
+    thr = [float(v) for v in tr["p_below"]]
+    names = " ".join(p_below_field(v) for v in thr)
+    return ("    cfdtPBelow\n    {\n        type            coded;\n"
+            "        libs            (\"libutilityFunctionObjects.so\");\n"
+            f"        thresholds      ({' '.join(f'{v:.10g}' for v in thr)});\n        names           ({names});\n"
+            f"        averageFrom     {tr['average_from']:.10g};\n        pOperating      {tr['p_operating']:.10g};\n"
+            f"        rho             {rho:.10g};\n\n"
+            "        codeInclude\n        #{\n            #include \"volFields.H\"\n        #};\n\n"
+            "        codeData\n        #{\n            scalarList thr_;\n            wordList names_;\n"
+            "            scalar t0_ = 0;\n            scalar pOp_ = 0;\n            scalar rho_ = 1;\n"
+            "            PtrList<volScalarField> below_;\n        #};\n\n"
+            "        codeRead\n        #{\n"
+            "            thr_ = dict.lookup<scalarList>(\"thresholds\");\n"
+            "            names_ = dict.lookup<wordList>(\"names\");\n"
+            "            t0_ = dict.lookup<scalar>(\"averageFrom\");\n"
+            "            pOp_ = dict.lookup<scalar>(\"pOperating\");\n"
+            "            rho_ = dict.lookup<scalar>(\"rho\");\n"
+            "            if (below_.empty())\n            {\n                below_.setSize(names_.size());\n"
+            "                forAll(names_, i)\n                {\n"
+            "                    typeIOobject<volScalarField> io\n                    (\n"
+            "                        names_[i], mesh().time().name(), mesh(),\n"
+            "                        IOobject::MUST_READ, IOobject::AUTO_WRITE\n                    );\n"
+            "                    if (io.headerOk())\n                    {\n"
+            "                        below_.set(i, new volScalarField(io, mesh()));\n                    }\n"
+            "                    else\n                    {\n"
+            "                        below_.set(i, new volScalarField(IOobject(names_[i], mesh().time().name(), "
+            "mesh(), IOobject::NO_READ, IOobject::AUTO_WRITE), mesh(), dimensionedScalar(dimTime, 0)));\n"
+            "                    }\n                }\n            }\n        #};\n\n"
+            "        codeExecute\n        #{\n            const scalar t = mesh().time().value();\n"
+            "            if (t > t0_)\n            {\n                const scalar dt = mesh().time().deltaTValue();\n"
+            "                const volScalarField& p = mesh().lookupObject<volScalarField>(\"p\");\n"
+            "                const scalarField pa(rho_*p.primitiveField() + pOp_);\n"
+            "                forAll(below_, i)\n                {\n"
+            "                    below_[i].primitiveFieldRef() += dt*pos0(thr_[i] - pa);\n"
+            "                }\n            }\n        #};\n    }")
+
+
+def _region_mask(reg: dict, C: np.ndarray) -> np.ndarray:
+    """Cells (centres C, mm) in a p_below region: {box: [x0, y0, z0, x1, y1, z1]} or {cylinder: {center, axis, radius,
+    span, inner_radius}}."""
+    if "box" in reg:
+        b = np.asarray(reg["box"], float)
+        return np.all((C >= b[:3]) & (C <= b[3:]), axis=1)
+    c = reg["cylinder"]
+    a = np.asarray(c["axis"], float)
+    a = a / np.linalg.norm(a)
+    d = C - np.asarray(c.get("center", [0, 0, 0]), float)
+    s = d @ a
+    r = np.linalg.norm(d - np.outer(s, a), axis=1)
+    m = (r <= float(c["radius"])) & (r >= float(c.get("inner_radius", 0.0)))
+    if "span" in c:
+        m &= (s >= float(c["span"][0])) & (s <= float(c["span"][1]))
+    return m
+
+
+def pressure_statistics(study: dict, mesh, plan: dict, fields: dict) -> dict | None:
+    """The pressure's statistics over a transient run's averaging window, from the fields read (foam.read_fields):
+    p rms (pPrime2Mean) and, per p_below threshold (Pa absolute = conditions.p + the gauge pressure), the fraction of
+    the window each cell spent below it: for the whole domain and each p_below_regions region, the volume-time below
+    (m3 s), the volume-weighted mean fraction, the largest, and the volume below for over 10 % of the time."""
+    tr = plan.get("transient") or {}
+    sc = fields.get("scalars") or {}
+    V = mesh.geometry()["V"] * 1e-9
+    C = mesh.geometry()["C"]
+    out = {}
+    if "p_rms" in sc:
+        pr = np.asarray(sc["p_rms"]["internal"], float)
+        k = int(np.argmax(pr))
+        out["p_rms_Pa"] = {"max": float(f"{pr[k]:.5g}"), "at_mm": np.round(C[k], 1).tolist(),
+                           "mean": float(f"{(pr * V).sum() / max(V.sum(), 1e-300):.5g}")}
+    if tr.get("p_below"):
+        from .foam import p_below_key
+        span = fields.get("p_stats_window_s")
+        regions = [{"name": "domain"}] + list(tr.get("p_below_regions") or [])
+        below = {}
+        for thr in tr["p_below"]:
+            key = f"p_below_{p_below_key(thr)}"
+            if key not in sc:
+                continue
+            fr = np.asarray(sc[key]["internal"], float)
+            per = {}
+            for reg in regions:
+                m = np.ones(len(V), bool) if reg["name"] == "domain" else _region_mask(reg, C)
+                if not m.any():
+                    per[reg["name"]] = {"cells": 0}
+                    continue
+                vm = V[m]
+                per[reg["name"]] = {"volume_time_m3s": float(f"{(fr[m] * vm).sum() * (span or 0):.4g}"),
+                                    "mean_fraction": float(f"{(fr[m] * vm).sum() / vm.sum():.4g}"),
+                                    "max_fraction": float(f"{fr[m].max():.4g}"),
+                                    "volume_over_10pct_mm3": float(f"{vm[fr[m] > 0.1].sum() * 1e9:.4g}")}
+            below[f"{thr:g}"] = per
+        if below:
+            out["below"] = below
+            out["window_s"] = span
+            out["p_absolute"] = (f"conditions.p ({tr['p_operating']:g} Pa) + the gauge pressure: set conditions.p so "
+                                 "the gauge levels (e.g. the outlet's pressure) give the real absolute pressure")
+        elif tr["p_below"]:
+            out["below_note"] = "no pBelowTime fields were written (the run ended before average_from, or an older run)"
+    return out or None
 
 
 def courant_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
@@ -160,8 +271,10 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
     funcs.append("    cfdtAverage\n    {\n        type            fieldAverage;\n"
                  "        libs            (\"libfieldFunctionObjects.so\");\n        writeControl    writeTime;\n"
                  f"        startTime       {tr['average_from']:.8g};\n        restartOnRestart false;\n"
-                 "        fields\n        (\n            U { mean on; prime2Mean on; }\n            p { mean on; prime2Mean off; }\n"
+                 "        fields\n        (\n            U { mean on; prime2Mean on; }\n            p { mean on; prime2Mean on; }\n"
                  "        );\n    }")
+    if tr.get("p_below"):
+        funcs.append(p_below_function(tr, float(plan.get("rho") or 1.0)))
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       latestTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {tr['end_time']:.8g};\n\ndeltaT          {tr['dt']:.6g};\n\n"
           + ("adjustTimeStep  no;\n\nwriteControl    runTime;\n\n" if tr.get("fixed_step") else

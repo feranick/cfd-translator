@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.3
+Version: 2026.11.12.4
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -48,6 +48,14 @@ GUIDES = {
             "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
             "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
             "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+            "Pressure statistics of a sliding (or any transient) run: solve.transient.p_below [Pa absolute, e.g. "
+            "2339, 20000, 50000: vapour pressure and air-release levels] writes, per cell, the fraction of the "
+            "averaging window spent below each (image field p_below_<Pa>), summarised for the domain and each "
+            "p_below_regions box or cylinder (results.pressure_statistics: volume-time below, mean and largest "
+            "fraction, volume below for over 10 % of the time); absolute = conditions.p + the gauge pressure, so set "
+            "conditions.p (or the outlet's pressure) to the pump's real level. p rms over the window is the image "
+            "field p_rms. Steady and cavitation runs: image fields k and nut (the turbulent pressure fluctuation is "
+            "about 0.2-0.4 rho k in the eye and the clearances). kOmegaSSTDES works with a sliding zone.",
             "Narrow gaps (an impeller's 0.5 mm clearances): snappyHexMesh leaves a few micrometre cells there, and a "
             "Courant limit then shrinks the step to a sliver (S50 at max_co 2: 0.02 deg a step, ~150,000 steps for 8 "
             "revolutions). Use max_co null: a fixed step of exactly degrees_per_step (1 deg ran stable on the S50 with "

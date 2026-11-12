@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.11.2
+Version: 2026.11.12.4
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc (or 'PATH' when the environment is already sourced), else foamRun on the
@@ -575,6 +575,33 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
         out["scalars"] = {sn: {"internal": scc, "patches": scal_b.get(sn, {})} for sn, (sf, scc) in scal.items()}
     if T:
         out["T"], out["rho"] = Tc, rc
+    # cell fields for pictures (render: field k, nut, p_rms, p_below_<Pa>), as scalars: turbulence (the pressure's
+    # turbulent fluctuation is about 0.2-0.4 rho k), and a transient run's pressure statistics over its averaging window
+    extra = out.setdefault("scalars", {})
+    kf = load("k")
+    if kf is not None:
+        extra["k"] = {"internal": internal(kf, 1), "patches": {}}
+    if nut is not None:
+        extra["nut"] = {"internal": internal(nut, 1), "patches": {}}
+    tr = plan.get("transient") or {}
+    if tr:
+        rho_ = float(plan.get("rho") or 1.0)
+        p2 = load("pPrime2Mean")
+        if p2 is not None:                     # kinematic in incompressibleFluid: the rms in Pa is rho sqrt(.)
+            extra["p_rms"] = {"internal": rho_ * np.sqrt(np.clip(internal(p2, 1), 0, None)), "patches": {}}
+        try:
+            span = max(float(t.name) - float(tr.get("average_from", 0.0)), 0.0)
+        except ValueError:
+            span = 0.0
+        for thr in tr.get("p_below") or []:
+            acc = load(p_below_field(thr))
+            if acc is not None and span > 0:
+                extra[f"p_below_{p_below_key(thr)}"] = {"internal": np.clip(internal(acc, 1) / span, 0, 1),
+                                                        "patches": {}}
+        if tr.get("p_below"):
+            out["p_stats_window_s"] = span
+    if not extra:
+        out.pop("scalars", None)
     if vof:
         out["p_abs"] = p_abs
         if ac is not None:
@@ -584,6 +611,17 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
                 "internal": 1.0 - ac,
                 "patches": {n: (1.0 - np.asarray(r["alpha"], float)) for n, r in patches.items() if r.get("alpha") is not None}}
     return out
+
+
+def p_below_key(thr) -> str:
+    """'2339' for 2339 Pa (a field name part: digits, and 'p' for a decimal point)."""
+    v = float(thr)
+    return f"{v:g}".replace(".", "p").replace("+", "").replace("-", "m")
+
+
+def p_below_field(thr) -> str:
+    """The accumulated time (s) below thr Pa absolute that the case's cfdtPBelow function object writes."""
+    return f"pBelowTime_{p_below_key(thr)}"
 
 
 def cavitation_kinematic(p: dict, vof: dict) -> dict:

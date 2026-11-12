@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.11.2
+Version: 2026.11.12.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -860,8 +860,8 @@ def render_images(study_folder: str, images=True) -> dict:
     if not (d / "state.npz").is_file():
         return {"error": f"no saved state in {d} (a finished study's folder: <request>/<name>)"}
     mesh, plan, fields, study = load_state(d)
-    from .format import _scalar_names
-    errs = image_errors(images, bool(study.get("2d")), _scalar_names(study),
+    from .format import _field_names
+    errs = image_errors(images, bool(study.get("2d")), _field_names(study),
                         bool((study.get("reference") or {}).get("velocity")))
     if errs:
         return {"error": "invalid images", "errors": errs}
