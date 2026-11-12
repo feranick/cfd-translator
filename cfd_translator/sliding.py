@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.11.1
+Version: 2026.11.12.11
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -101,6 +101,70 @@ def ring_ratio(Cf, Lin, Lout, a, o, h: float) -> dict:
     return {"max": round(float(rg.max()), 2), "at_mm": np.round(Cf[k], 1).tolist(),
             "axial_mm": round(float(sx[k]), 2), "radius_mm": round(float(rr[k]), 2),
             "faces_over_2": round(float((face_r > 2).mean()), 4)}
+
+
+PVF_WARN = 0.3          # OpenFOAM's fvMeshStitcher warns above this (minWarnProjectedVolumeFraction_)
+PVF_REFUSE = 1.0        # spark1, 2026.11.04: 1.06 and pcorr NaN; Perlmutter sliding7: 0.54-0.64 warned, diverged
+
+
+def _rotate(P, a, o, deg: float):
+    """Points P turned deg degrees about the axis a through o (Rodrigues)."""
+    t = np.radians(deg)
+    d = P - o
+    return o + d * np.cos(t) + np.cross(a, d) * np.sin(t) + np.outer(d @ a, a) * (1 - np.cos(t))
+
+
+def projected_fraction(Cf, Sf, cin, cout, V, a, o, step_deg: float, top: int = 4) -> dict:
+    """An estimate, before the run, of OpenFOAM's 'projected volume fraction' |sum(Sf . Cf) / 3V - 1| in the cells on
+    each side of the couple once the rotor has turned. The stitcher replaces the owner side's coupled faces by their
+    intersections with the neighbour's surface, so each owner cell's volume is off by about the gap between the two
+    faceted surfaces (delta) times the coupled area: pvf ~ sum(delta A) / V on the owner side. delta: the distance
+    from the zone's face centres, turned by the step and by angles up to about one face's width, to the plane of the
+    nearest face of the other side (the two sides are the same faces at rest). Also the share of turned faces that
+    find no face of the other side within half a face's width (they leave the other surface: OpenFOAM's coverage
+    drops there, at the interface's ends). Owner choice: the side whose cells take less of it."""
+    from scipy.spatial import cKDTree
+    A = np.linalg.norm(Sf, axis=1)
+    n = Sf / np.maximum(A, 1e-300)[:, None]
+    w = np.sqrt(A)                                          # a face's width
+    d = Cf - o
+    rr = np.linalg.norm(d - np.outer(d @ a, a), axis=1)
+    pitch = float(np.degrees(np.median(w / np.maximum(rr, 1e-9))))
+    step = max(float(step_deg), 1e-3)
+    angles = sorted({round(step, 6), *[round(float(x), 6) for x in np.linspace(0, max(step, 1.5 * pitch), 7)[1:]]})
+    tree = cKDTree(Cf)
+    delta = np.zeros(len(Cf))
+    off = np.zeros(len(Cf), bool)
+    for ang in angles:
+        for sgn in (1.0, -1.0):                             # the rotor turned, or the stator seen from the rotor
+            P = _rotate(Cf, a, o, sgn * ang)
+            dist, j = tree.query(P)
+            dn = np.abs(np.einsum("ij,ij->i", n[j], P - Cf[j]))
+            lateral = np.sqrt(np.maximum(dist ** 2 - dn ** 2, 0))
+            delta = np.maximum(delta, dn)
+            off |= lateral > 0.75 * w[j]
+    err = delta * A
+    nc = len(V)
+    out = {"step_deg": round(step, 4), "angles_deg": [round(x, 3) for x in angles],
+           "face_pitch_deg": round(pitch, 4), "gap_max_mm": round(float(delta.max()), 5),
+           "uncovered_share": round(float(off.mean()), 4)}
+    for side, cells in (("zone_owner", cin), ("other_owner", cout)):
+        e = np.bincount(cells, err, nc)[cells]
+        frac = e / np.maximum(np.abs(V[cells]), 1e-300)
+        k = np.argsort(-frac)
+        places = []
+        sep = 10 * float(np.median(w))
+        for i in k[:2000]:
+            if all(np.linalg.norm(Cf[i] - np.asarray(p_["at"])) > sep for p_ in places):
+                places.append({"at": np.round(Cf[i], 2).tolist(), "pvf": round(float(frac[i]), 3)})
+                if len(places) >= top:
+                    break
+        out[side] = {"max": round(float(frac.max()), 3), "p99": round(float(np.percentile(frac, 99)), 3),
+                     "over_warn": round(float((frac > PVF_WARN).mean()), 4), "places": places}
+    if off.any():
+        k = np.nonzero(off)[0]
+        out["uncovered_at"] = np.round(Cf[k[np.argsort(-delta[k])][:3]], 2).tolist()
+    return out
 
 
 def off_surface(Cf, Sf, h, a, o, R: float, s0: float, s1: float, top: int = 6) -> dict:
@@ -261,6 +325,12 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         off = off_surface(g["Cf"][f], g["Sf"][f], np.minimum(Lin, Lout), a, o, float(zone["radius"]),
                           float(s0), float(s1))
         q_if["off_surface"] = off
+        # the stitcher's volume error before the run: which side should own the couple, and whether it is safe
+        cin = np.where(inz[mesh.owner[f]], mesh.owner[f], mesh.neighbour[f])
+        cout = np.where(inz[mesh.owner[f]], mesh.neighbour[f], mesh.owner[f])
+        step_deg = float((plan.get("transient") or {}).get("degrees_per_step") or 1.0)
+        pvf = projected_fraction(g["Cf"][f], g["Sf"][f], cin, cout, g["V"], a, o, step_deg)
+        q_if["projected_volume_fraction"] = pvf
         plan["sliding_quality"] = q_if
         notes.append(f"sliding interface cells: worst non-orthogonality {q_if['max_non_ortho']} deg, skewness "
                      f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell sizes across the interface differ up to "
@@ -290,6 +360,33 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                 "cylinder would break the mesh: where the cylinder runs closer to walls than about two cells (vane "
                 "tips, a casing bore). Put the zone's boundary where the gap holds 4 or more cells, or refine that "
                 "gap (a hollow mesh.refine cylinder over it) until it does")
+        zo, oo = pvf["zone_owner"], pvf["other_owner"]
+        best = min(zo["max"], oo["max"])
+        own = "the rotor (zone) side" if zo["max"] <= oo["max"] else "the stator side"
+        pick = zo if zo["max"] <= oo["max"] else oo
+        where = "; ".join(f"{p_['pvf']} at {p_['at']} mm" for p_ in pick["places"][:3])
+        if best > PVF_REFUSE:
+            # Perlmutter sliding7 (2026.11.12): OpenFOAM warned 0.54-0.64 at every step and the run diverged after
+            # 4-5 steps (Courant 62 -> 1.3e5); spark1 (2026.11.04): 1.06 and pcorr NaN. Stop before the solve
+            raise SlidingError(
+                f"sliding zone {zn!r}: as the rotor turns, the stitched interface would distort the cells next to it "
+                f"too much: estimated projected volume fraction {best:g} with {own} owning the couple ({where}; "
+                f"rotor side {zo['max']:g}, stator side {oo['max']:g}; OpenFOAM warns above {PVF_WARN:g}, runs blew up "
+                f"at 0.54-1.06). The two sides' faceted surfaces lie up to {pvf['gap_max_mm']:g} mm apart once turned, "
+                "which is large against the thin cells there (layers, cells in narrow gaps). Make the interface's faces "
+                "smaller along it (refine the zone's cylinder evenly: a hollow mesh.refine cylinder on the axis), keep "
+                "prism layers and narrow gaps away from it (the zone's radius and span), or make the cells next to it "
+                "thicker")
+        if best > PVF_WARN:
+            notes.append(f"sliding interface: estimated projected volume fraction {best:g} with {own} owning the "
+                         f"couple (rotor side {zo['max']:g}, stator side {oo['max']:g}; OpenFOAM warns above "
+                         f"{PVF_WARN:g}), worst at {where}: the stitched cells there are distorted as the rotor turns; "
+                         "refine the zone's cylinder evenly, or keep thin cells (layers, narrow gaps) away from it")
+        if pvf["uncovered_share"] > 0.001:
+            notes.append(f"{pvf['uncovered_share']:.2%} of the interface's faces, once turned, find no face of the other "
+                         f"side (e.g. at {pvf.get('uncovered_at', [])[:2]} mm): the interface ends or bends there, so "
+                         "the coupling's coverage drops below 1 (fluxes leak into the walls). The zone's cylinder must "
+                         "end in open fluid, clear of walls and narrow gaps")
         if off["max_cells"] > 0.3 or off["max_deg"] > 30:
             notes.append(f"the sliding interface strays from its cylinder: up to {off['max_cells']} of a cell and "
                          f"{off['max_deg']} degrees, e.g. at " + "; ".join(f"{p_['at']} mm ({p_['part']})"
@@ -531,8 +628,18 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
     # the side with the smaller cells second (the neighbour): OpenFOAM's stitcher puts the volume error of the
     # couple on the owner side ('Volumetric distortion can be minimised by making the side of the interface with
     # smaller or more finely layered cells the neighbour', fvMeshStitcher.C; S50, 2026.11.04)
+    # cfdt 2026.11.12.11: by the estimated projected volume fraction on each side (projected_fraction), which
+    # follows the cells' thickness at the faces, not their mean size (Perlmutter sliding7: 0.54-0.64 at every step
+    # with the rotor owning the couple); the mean cell size when there is no estimate
+    pv = (sl.get("interface_cells") or {}).get("projected_volume_fraction") or {}
     mc = (sl.get("interface_cells") or {}).get("mean_cell_mm") or {}
-    pair = (sl["stator"], sl["rotor"]) if mc and mc.get("zone_side", 1) < mc.get("other_side", 1) else (sl["rotor"], sl["stator"])
+    if pv.get("zone_owner") and pv.get("other_owner"):
+        stator_owns = pv["other_owner"]["max"] < pv["zone_owner"]["max"]
+        sl["ncc_owner_by"] = "estimated projected volume fraction"
+    else:
+        stator_owns = bool(mc) and mc.get("zone_side", 1) < mc.get("other_side", 1)
+        sl["ncc_owner_by"] = "mean cell size"
+    pair = (sl["stator"], sl["rotor"]) if stator_owns else (sl["rotor"], sl["stator"])
     sl["ncc_owner"] = pair[0]
     run_step(f"{par}createNonConformalCouples" + (" -parallel" if par else "") +
              f" -fields {pair[0]} {pair[1]}", "log.createNonConformalCouples")

@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.11.04.1
+Version: 2026.11.12.11
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -161,10 +161,20 @@ class PolyMesh:
         d = g["C"][self.neighbour] - g["C"][self.owner[:ni]]
         cosang = np.einsum("ij,ij->i", d, Sf[:ni]) / np.maximum(np.linalg.norm(d, axis=1) * np.linalg.norm(Sf[:ni], axis=1), 1e-300)
         nonorth = np.degrees(np.arccos(np.clip(cosang, -1, 1))) if ni else np.zeros(0)
-        order_ok = bool(np.all(self.owner[:ni] < self.neighbour)) and bool(
-            np.all(np.diff(self.owner[:ni] * (nc + 1) + self.neighbour) > 0)) if ni else True
+        key = self.owner[:ni].astype(np.int64) * (nc + 1) + self.neighbour
+        not_upper = int((self.owner[:ni] >= self.neighbour).sum()) if ni else 0
+        dk = np.diff(key) if ni > 1 else np.zeros(0, np.int64)
+        out_of_order, duplicates = int((dk < 0).sum()), int((dk == 0).sum())
+        order_ok = not (not_upper or out_of_order or duplicates)
+        # boundary faces must point out of their cell: the pyramid on the face with its apex at the cell centre has a
+        # positive volume. OpenFOAM's checkMesh (checkFacePyramids) flags only volumes below -1e-15 m3 (-1e-6 mm3):
+        # cells in micrometre gaps (mochi, sliding7 at 18 ranks: 1.2e-06 mm) have pyramids far smaller than that,
+        # whose sign is round-off; cfdt flagged any value <= 0 and stopped meshes checkMesh passed
         bvec = g["Cf"][ni:] - g["C"][self.owner[ni:]]
-        outward = bool(np.all(np.einsum("ij,ij->i", bvec, Sf[ni:]) > 0))
+        pyr = np.einsum("ij,ij->i", bvec, Sf[ni:]) / 3.0
+        inward = np.nonzero(pyr < -1e-6)[0]
+        marginal = int(((pyr <= 0) & (pyr >= -1e-6)).sum())
+        outward = not len(inward)
         bad = np.nonzero(nonorth > 70.0)[0] if ni else np.zeros(0, int)
         sep = 0.03 * float(np.linalg.norm(self.points.max(axis=0) - self.points.min(axis=0)))
         worst = _places(g["Cf"], bad, nonorth, sep, "deg")
@@ -183,6 +193,11 @@ class PolyMesh:
                 "max_open_cell": open_rel, "max_non_orthogonality": float(nonorth.max()) if ni else 0.0,
                 "mean_non_orthogonality": float(nonorth.mean()) if ni else 0.0,
                 "upper_triangular": order_ok, "boundary_outward": outward,
+                **({"order": {"owner_not_below_neighbour": not_upper, "out_of_order": out_of_order,
+                              "duplicate_cell_pairs": duplicates}} if not order_ok else {}),
+                **({"inward_boundary_faces": int(len(inward)),
+                    "inward_at": _places(g["Cf"][ni:], inward, -pyr, sep, "pyramid_mm3", 6)} if len(inward) else {}),
+                **({"boundary_faces_flat_pyramid": marginal} if marginal else {}),
                 "ok": bool(nc and V.min() > 0 and open_rel < 1e-6 and order_ok and outward
                            and (nonorth.max() if ni else 0) < 89.0)}
 

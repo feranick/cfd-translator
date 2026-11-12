@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.04.2
+Version: 2026.11.12.11
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -265,8 +265,15 @@ def _quality_message(q: dict, mesh, g) -> str:
                    "above 70): inverted or nearly flat cells")
     if q.get("max_open_cell", 0) >= 1e-6:
         why.append(f"cells that are not closed (openness {q['max_open_cell']:.3g})")
-    if not q.get("boundary_outward", True) or not q.get("upper_triangular", True):
-        why.append("faces ordered or oriented wrongly")
+    if not q.get("boundary_outward", True):
+        where = "; ".join(f"{w['at']} mm" for w in (q.get("inward_at") or [])[:4])
+        why.append(f"{q.get('inward_boundary_faces', '?')} boundary faces point into their cells (pyramid volume below "
+                   f"-1e-6 mm3, as OpenFOAM's checkMesh counts it)" + (f", e.g. at {where}" if where else ""))
+    if not q.get("upper_triangular", True):
+        o = q.get("order") or {}
+        why.append("internal faces not in OpenFOAM's upper-triangular order (" +
+                   ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in o.items() if v) + "): the mesh files were "
+                   "written or changed by a step that left them unordered (renumberMesh would reorder them)")
     msg = "the mesh cannot be solved on: " + "; ".join(why or ["failed checks"])
     worst = q.get("worst_non_ortho") or []
     if worst:

@@ -209,6 +209,7 @@ def test_case_files_and_the_topology_steps(tmp_path):
     # the zone's cells (r 5-12 mm, 1.5-2 mm apart) are smaller than the stator's: the stator side is the owner
     mc = plan["sliding"]["interface_cells"]["mean_cell_mm"]
     assert mc["zone_side"] < mc["other_side"] and plan["sliding"]["ncc_owner"] == "rotor_stator"
+    assert plan["sliding"]["ncc_owner_by"] == "estimated projected volume fraction"
     assert calls == ["createBaffles", "splitBaffles", "createNonConformalCouples -fields rotor_stator rotor_rotor"]
     ic = plan["sliding"]["interface_cells"]
     assert ic["faces"] == len(f) and ic["max_skewness"] < 1 and ic["size_ratio_max"] >= 1
@@ -601,3 +602,75 @@ def test_fixed_time_step(tmp_path):
     log.write_text("".join(f"Courant Number mean: 0.12 max: {mx}\nTime = {k}\n" for k, mx in enumerate((20, 25, 31, 24))))
     c = courant_stats(log)
     assert c == {"mean_last": 0.12, "max_last": 24.0, "max": 31.0, "max_median": 25.0, "steps_seen": 4}
+
+
+def test_projected_volume_fraction_estimate_chooses_the_owner_and_stops_bad_interfaces(monkeypatch):
+    """Perlmutter sliding7 (2026.11.12): OpenFOAM warned 'maximum projected volume fraction 0.54-0.64' at every step
+    with the rotor owning the couple, and diverged after 4-5 steps. cfdt now estimates it per side before the run,
+    gives the couple to the side that takes less, and stops above 1."""
+    from cfd_translator import sliding as SL
+    # thin cells on the zone's side (0.1 mm under r 12), thick ones outside, 12 sectors (30-degree facets; the
+    # cells' centres lie at about 0.97 r)
+    monkeypatch.setitem(pump_mesh.__globals__, "RADII", [5, 8, 11, 11.9, 12, 16, 20])
+    m = pump_mesh(nt=12, vane=None, blade=None)
+    pts = patches_for(m, blade_rot=None)
+    m.zones = {"rotor": zone_of(m, 11.6)}
+    plan = plan_for(12)
+    check(m, m.geometry(), dict(ZONE, radius=12), plan, pts)
+    pv = plan["sliding"]["interface_cells"]["projected_volume_fraction"]
+    assert pv["zone_owner"]["max"] > SL.PVF_REFUSE > SL.PVF_WARN > pv["other_owner"]["max"], pv   # the thick side owns it
+    # thin cells on both sides: no side can own it
+    monkeypatch.setitem(pump_mesh.__globals__, "RADII", [5, 8, 11, 11.9, 12, 12.1, 16, 20])
+    m = pump_mesh(nt=12, vane=None, blade=None)
+    pts = patches_for(m, blade_rot=None)
+    m.zones = {"rotor": zone_of(m, 11.6)}
+    with pytest.raises(SlidingError, match="projected volume fraction"):
+        check(m, m.geometry(), dict(ZONE, radius=12), plan_for(12), pts)
+    # 72 sectors (5-degree facets): the zone's side takes ~0.1, the stator's nearly nothing
+    monkeypatch.setitem(pump_mesh.__globals__, "RADII", [5, 8, 11, 11.9, 12, 16, 20])
+    m = pump_mesh(nt=72, vane=None, blade=None)
+    pts = patches_for(m, blade_rot=None)
+    m.zones = {"rotor": zone_of(m, 11.97)}
+    plan = plan_for(12)
+    check(m, m.geometry(), dict(ZONE, radius=12), plan, pts)
+    pv = plan["sliding"]["interface_cells"]["projected_volume_fraction"]
+    assert pv["other_owner"]["max"] < pv["zone_owner"]["max"] < SL.PVF_WARN, pv
+    assert pv["gap_max_mm"] > 0 and pv["uncovered_share"] == 0 and pv["step_deg"] == 1.0
+    # sagitta of a 5-degree facet at r 12: 12 (1 - cos 2.5 deg) = 0.0114 mm; the thin side's 0.1 mm cells take ~0.1
+    assert 0.05 < pv["zone_owner"]["max"] < 0.25 and pv["other_owner"]["max"] < 0.01
+
+
+def test_step_profile_and_stitcher_stats(tmp_path):
+    from cfd_translator.transient import step_profile, stitcher_stats
+    step = ("Courant Number mean: 0.01 max: 62\ndeltaT = 1e-05\nTime = {t}s\n\n"
+            "Cell min/average/max projected volume fraction = 0/0.001/{pvf}\n"
+            "PIMPLE: Iteration 1\nsmoothSolver:  Solving for Ux, Initial residual = 0.1, Final residual = 0.01, No Iterations 4\n"
+            "GAMG:  Solving for p, Initial residual = 0.1, Final residual = 0.001, No Iterations 12\n"
+            "PIMPLE: Iteration 2\nsmoothSolver:  Solving for Ux, Initial residual = 0.01, Final residual = 1e-08, No Iterations 90\n"
+            "GAMG:  Solving for p, Initial residual = 0.01, Final residual = 1e-07, No Iterations 20\n"
+            "ExecutionTime = {c} s  ClockTime = {c} s\n\n")
+    text = "".join(step.format(t=k, pvf=0.54 + 0.01 * k, c=50 * k) for k in range(1, 6))
+    sp = step_profile(text)
+    assert sp["steps"] == 4 and sp["s_per_step"] == 50 and sp["iterations_per_step"] == {"Ux": 94.0, "p": 32.0}
+    assert sp["solvers"]["Ux"] == "smoothSolver" and sp["projected_volume_fraction_max"] == 0.58
+    log = tmp_path / "log.foamRun"
+    log.write_text(text)
+    st = stitcher_stats(log)
+    assert st["projected_volume_fraction_max"] == 0.59 and st["over_0.3"] == 5
+
+
+def test_sliding_final_momentum_solve_is_not_to_1e_7(tmp_path):
+    from cfd_translator.transient import write_transient
+    m = pump_mesh()
+    pts = patches_for(m)
+    st = _study()
+    st["model"] = "kOmegaSST"
+    st["solve"]["transient"]["init"] = 0
+    st["rotating"] = [dict(ZONE)]
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    case = tmp_path / "case"
+    plan = write_case(st, m, pts, case)
+    write_transient(case, st, plan)
+    fv = (case / "system" / "fvSolution").read_text()
+    final = fv[fv.index('"(U|k|omega)Final"'):]
+    assert "relTol          0.01;" in final[:300] and "maxIter         50;" in final[:300]

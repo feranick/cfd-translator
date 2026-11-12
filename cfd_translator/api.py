@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.10
+Version: 2026.11.12.11
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -431,6 +431,10 @@ def _progress_of(d: Path, study: dict) -> dict:
         pr = _tp(text, T)
         el = max(float(pr.pop("job_clock_s", 0.0)), 1e-3)
         out = {"stage": "solving (transient)", **pr, "elapsed_min": round(el / 60, 1)}
+        from .transient import step_profile
+        sp = step_profile(text)
+        if sp:
+            out["step_profile"] = sp
         try:
             head = log.open("r", errors="replace").read(200000)
             t_first = float(_re.findall(r"^Time = ([-+0-9.eE]+)", head, _re.M)[0])

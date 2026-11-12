@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.12.4
+Version: 2026.11.12.11
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -234,6 +234,63 @@ def courant_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
             "steps_seen": len(co)}
 
 
+_SOLVE = re.compile(r"(\w+):\s+Solving for (\w+), Initial residual = [^,]+, Final residual = [^,]+, No Iterations (\d+)")
+_PVF = re.compile(r"projected volume fraction = ([-+0-9.eE]+)/([-+0-9.eE]+)/([-+0-9.eE]+)")
+
+
+def step_profile(text: str, last: int = 8) -> dict | None:
+    """Where a transient run's time steps go, from its log (the last `last` whole steps): wall seconds per step
+    (ClockTime), each solved field's linear-solver iterations per step (all outer correctors; 'Ux' and 'UxFinal'
+    together) and its solver, and on a sliding mesh the stitcher's projected volume fraction (max per step).
+    OpenFOAM.org prints no timings per part: the iteration counts say which solve dominates (Perlmutter sliding7,
+    2026.11.12: 42-55 s a 1-degree step, U's final smoothSolver at 33-118 sweeps)."""
+    marks = [m.start() for m in _TIME.finditer(text)]
+    if len(marks) < 2:
+        return None
+    allb = [text[marks[i]:marks[i + 1]] for i in range(len(marks) - 1)]     # the last one may still be running
+    blocks = allb[-last:]
+    its, solver, pvf = {}, {}, []
+    clocks = []
+    for b in allb[-(last + 1):]:
+        ck = _CLOCK.findall(b)
+        clocks.append(float(ck[-1]) if ck else None)
+    secs = [b - a for a, b in zip(clocks, clocks[1:]) if a is not None and b is not None and b >= a]
+    for b in blocks:
+        for sv, field, n in _SOLVE.findall(b):
+            its[field] = its.get(field, 0) + int(n)
+            solver[field] = sv
+        pv = _PVF.findall(b)
+        if pv:
+            pvf.append(max(float(x[2]) for x in pv))
+    nb = len(blocks)
+    out = {"steps": nb,
+           "iterations_per_step": {f: round(v / nb, 1) for f, v in sorted(its.items(), key=lambda kv: -kv[1])},
+           "solvers": solver}
+    if secs:
+        ss = sorted(secs)
+        out["s_per_step"] = round(ss[len(ss) // 2], 2)
+        out["s_per_step_max"] = round(ss[-1], 2)
+    if pvf:
+        out["projected_volume_fraction_max"] = round(max(pvf), 3)
+        out["projected_volume_fraction_last"] = round(pvf[-1], 3)
+    return out
+
+
+def stitcher_stats(log: Path, tail_mb: float = 8.0) -> dict | None:
+    """The stitcher's projected volume fraction over the end of a sliding run's log: max, last, steps over 0.3."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, Path(log).stat().st_size - int(tail_mb * 1024 * 1024)))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    v = [float(m[2]) for m in _PVF.findall(text)]
+    if not v:
+        return None
+    return {"projected_volume_fraction_max": round(max(v), 3), "projected_volume_fraction_last": round(v[-1], 3),
+            "over_0.3": sum(x > 0.3 for x in v), "seen": len(v)}
+
+
 def sliding_zone(study: dict) -> dict | None:
     """The study's sliding zone (rotating[].motion 'sliding'), or None."""
     for z in study.get("rotating") or []:
@@ -308,7 +365,11 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
           f"    \"({fields})\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
           "        tolerance       1e-07;\n        relTol          0.1;\n    }\n\n"
           f"    \"({fields})Final\"\n    {{\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n"
-          "        tolerance       1e-07;\n        relTol          0;\n    }\n}\n\n" +
+          # a sliding mesh runs two outer correctors: the last one's momentum solve need not go to 1e-7 (Perlmutter
+          # sliding7, 13.1 M cells: 33-118 sweeps a step, 42-55 s a 1-degree step against 5.1 s for a hand-built
+          # case on the same cores); a 100-fold drop within the step, or 1e-6
+          + ("        tolerance       1e-06;\n        relTol          0.01;\n        maxIter         50;\n    }\n}\n\n"
+             if slide else "        tolerance       1e-07;\n        relTol          0;\n    }\n}\n\n") +
           ("PIMPLE\n{\n    correctPhi      yes;\n    correctMeshPhi  " +
            ("yes" if tr.get("correct_mesh_phi", True) else "no") + ";\n    nOuterCorrectors 2;\n    nCorrectors     1;\n"
            if slide else "PIMPLE\n{\n    nOuterCorrectors 1;\n    nCorrectors     2;\n") +

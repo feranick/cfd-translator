@@ -1010,3 +1010,29 @@ def test_surfaces_of_revolution_and_own_rotation_walls():
     U2 = own_rotation_velocity(m, g, f, spec, plan)
     from cfd_translator.case import swirl_velocity
     assert np.allclose(U2, swirl_velocity(g["Cf"][f], spec))
+
+
+def test_boundary_orientation_tolerance_and_order_details():
+    """mochi, sliding7 at 18 ranks: 'faces ordered or oriented wrongly' after meshing, on a mesh checkMesh passed
+    (cells in 1.2e-06 mm gaps). cfdt flagged any boundary pyramid <= 0; OpenFOAM only those below -1e-15 m3."""
+    def flipped(scale):
+        m = box_mesh(10 * scale, 10 * scale, 10 * scale, 2, 2, 2)
+        k = m.nfaces - 1
+        f = m.faces[k]
+        n = int((f >= 0).sum())
+        m.faces[k, :n] = f[:n][::-1]
+        m._geo = None
+        return m.quality()
+    q = flipped(1.0)
+    assert not q["boundary_outward"] and q["inward_boundary_faces"] == 1 and q["inward_at"]
+    q = flipped(1e-4)                       # 0.5 um cells: the pyramid's sign is below OpenFOAM's tolerance
+    assert q["boundary_outward"] and q["boundary_faces_flat_pyramid"] == 1
+    m = box_mesh(10, 10, 10, 2, 2, 2)
+    ni = m.ninternal
+    m.owner[[0, 1]] = m.owner[[1, 0]]
+    m.neighbour[[0, 1]] = m.neighbour[[1, 0]]
+    m._geo = None
+    q = m.quality()
+    assert not q["upper_triangular"] and q["order"]["out_of_order"] >= 1
+    from cfd_translator.case import _quality_message
+    assert "upper-triangular" in _quality_message(q, m, m.geometry()) and ni

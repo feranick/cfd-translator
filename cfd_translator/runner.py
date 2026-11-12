@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.4
+Version: 2026.11.12.11
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -259,7 +259,29 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         "degrees_per_step": tr.get("degrees_per_step"), "interface_faces": sl["interface_faces"],
                         "interface_lean_deg": sl["interface_lean_deg"], "rotor_walls": sl["moving_walls"],
                         "spinning_walls": sl.get("spinning_walls", []), "interface_cells": sl.get("interface_cells"),
-                        "correct_mesh_phi": tr.get("correct_mesh_phi", True)}
+                        "correct_mesh_phi": tr.get("correct_mesh_phi", True),
+                        **({"ncc_owner": sl["ncc_owner"], "ncc_owner_by": sl.get("ncc_owner_by")}
+                           if sl.get("ncc_owner") else {})}
+                    from .transient import stitcher_stats
+                    sst = stitcher_stats(case / "log.foamRun")
+                    if sst:
+                        out["solve"]["sliding"]["stitcher"] = sst
+                        pv = (sl.get("interface_cells") or {}).get("projected_volume_fraction") or {}
+                        side = "zone_owner" if sl.get("ncc_owner") == sl.get("rotor") else "other_owner"
+                        est = (pv.get(side) or {}).get("max")
+                        sst["estimated_before_run"] = est
+                        if sst["projected_volume_fraction_max"] > 0.3:
+                            warns.append(f"sliding interface: OpenFOAM's projected volume fraction reached "
+                                         f"{sst['projected_volume_fraction_max']:g} ({sst['over_0.3']} of the last "
+                                         f"{sst['seen']} steps above 0.3; estimated before the run: {est}): the "
+                                         "stitched cells are distorted; results there may be noisy")
+                try:
+                    from .transient import step_profile
+                    sp = step_profile((case / "log.foamRun").read_text(errors="replace")[-400000:])
+                    if sp:
+                        out["solve"]["step_profile"] = sp
+                except OSError:
+                    pass
                 lg = dict(lg, converged=True)            # residual convergence is not the question in time
             if "continuity" in lg:
                 out["solve"]["continuity"] = lg["continuity"]
