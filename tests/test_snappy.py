@@ -756,12 +756,14 @@ def test_sliding_caps_on_background_grid_planes():
 def test_meshing_ranks_fit_the_memory():
     """S50 on mochi (58 GB, 18 ranks): snappyHexMesh killed while snapping at 8.3 M and at 3.7-4.2 M cells: every rank
     holds the whole surface. Without mesh.procs the meshing ranks are fitted to the job's memory."""
-    e = snappy.memory_estimate(18, 4e6, 2_000_000)
-    assert e["per_rank_mb"] == pytest.approx(300 + 2.5 * 2_000_000 / 1024, abs=1) and e["total_mb"] > 58 * 1024 * 0.85
-    p, mem, note = snappy.meshing_procs(18, 4e6, 2_000_000, 58 * 1024, False)
+    # mochi, 6 ranks, 756,633 triangles, 3.9 M cells: 8.65 GB measured; the estimate within 20 %
+    assert snappy.memory_estimate(6, 3.9e6, 756_633)["total_mb"] == pytest.approx(8.65 * 1024, rel=0.2)
+    e = snappy.memory_estimate(18, 4e6, 3_000_000)
+    assert e["per_rank_mb"] == pytest.approx(300 + 3_000_000 / 1024, abs=1) and e["total_mb"] > 58 * 1024 * 0.85
+    p, mem, note = snappy.meshing_procs(18, 4e6, 3_000_000, 58 * 1024, False)
     assert 1 <= p < 18 and mem["total_mb"] <= 0.85 * 58 * 1024 and "instead of 18" in note and mem["procs"] == p
-    assert snappy.memory_estimate(p + 1, 4e6, 2_000_000)["total_mb"] > 0.85 * 58 * 1024
-    p2, _, note2 = snappy.meshing_procs(18, 4e6, 2_000_000, 58 * 1024, True)          # mesh.procs given: kept
+    assert snappy.memory_estimate(p + 1, 4e6, 3_000_000)["total_mb"] > 0.85 * 58 * 1024
+    p2, _, note2 = snappy.meshing_procs(18, 4e6, 3_000_000, 58 * 1024, True)          # mesh.procs given: kept
     assert p2 == 18 and "may run out of memory" in note2
     assert snappy.meshing_procs(4, 1e5, 10_000, 58 * 1024, False)[2] is None
 
@@ -812,3 +814,63 @@ def test_step_peak_memory(tmp_path):
     foam.PEAK_MB.clear()
     foam._step({}, "sleep 1.6", "log.sleep", tmp_path, 30)
     assert foam.PEAK_MB.get("log.sleep", 0) > 0
+
+
+MOCHI_CRASH = (
+    "Snapping phase\n---------------\n"
+    "[mochi:53815] *** Process received signal ***\n[mochi:53815] Signal: Segmentation fault (11)\n"
+    "[mochi:53815] Signal code: Address not mapped (1)\n"
+    "[mochi:53815] [ 9] /opt/openfoam14/platforms/linux64GccDPInt32Opt/lib/libsnappyHexMesh.so(_ZN4Foam16snappySnapDriver6"
+    "doSnapERKNS_10dictionaryES3_ddRKNS_14snapParametersE+0x1a5b) [0x6c7b1516fdb]\n"
+    "[mochi:53815] [10] snappyHexMesh(+0x19c02) [0x64f4a9635c02]\n[mochi:53815] *** End of error message ***\n"
+    "Sorry!  You were supposed to get help about:\n    prun:proc-aborted-strsignal\n")
+
+
+def test_crash_is_not_a_memory_kill():
+    """mochi, S50 coarse base (job 3240): 'killed ... out of memory' while snapping at 8.7 GB of 58 GB; the log had
+    OpenMPI's backtrace of a SIGSEGV in snappySnapDriver::doSnap."""
+    from cfd_translator import foam
+    cr = foam.crash_of(MOCHI_CRASH, 1)
+    assert cr["name"] == "SIGSEGV" and cr["in"] == "Foam::snappySnapDriver::doSnap"
+    assert not foam.was_killed(MOCHI_CRASH, 1)
+    assert foam.crash_of("prterun noticed ... exited on\nsignal 9 (Killed).\n[proc-aborted-strsignal]\n", 137) is None
+    of = "#0  Foam::error::printStack(Foam::Ostream&)\n#1  Foam::sigFpe::sigHandler(int)\n#2  ?\n" \
+         "#3  Foam::GAMGSolver::solve(...)\n"
+    assert foam.crash_of(of, 136) == {"signal": 8, "name": "SIGFPE", "in": "Foam::GAMGSolver::solve",
+                                      "frames": ["Foam::GAMGSolver::solve"]}
+    assert foam.build_of is not None
+
+
+def test_parallel_snappy_crash_is_meshed_again_in_serial(tmp_path, monkeypatch):
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+    _stand_in(monkeypatch, tmp_path, lambda *a: 0)
+    monkeypatch.setenv("SLURM_NTASKS", "2")
+    cmds = []
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):
+        case = Path(case)
+        cmds.append(cmd)
+        if "snappyHexMesh" in cmd:
+            if "-parallel" in cmd:
+                (case / logname).write_text("Build  : 14-mochi0000\n" + MOCHI_CRASH)
+                return 1
+            return _good_mesh(case, logname)
+        if cmd.startswith("checkMesh"):
+            (case / logname).write_text("    Mesh non-orthogonality Max: 0 average: 0\n\nMesh OK.\n")
+        return 0
+    monkeypatch.setattr(foam, "_step", step)
+    st = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], procs=2))
+    mesh, patches, sel, plan, warns = prepare(st, tmp_path)
+    assert any("snappyHexMesh crashed (SIGSEGV) while snapping to the surface in Foam::snappySnapDriver::doSnap" in w
+               and "made again in serial" in w and "14-mochi0000" in w for w in warns), warns
+    assert any(c.startswith("snappyHexMesh") and "-parallel" not in c for c in cmds)
+    # in serial too: an error that says crash, not memory
+    def step2(fm, cmd, logname, case, timeout, raise_on_error=True):
+        if "snappyHexMesh" in cmd:
+            (Path(case) / logname).write_text("Build  : 14-mochi0000\n" + MOCHI_CRASH)
+            return 1
+        return step(fm, cmd, logname, case, timeout, raise_on_error)
+    monkeypatch.setattr(foam, "_step", step2)
+    with pytest.raises(snappy.MeshError, match="crashed .SIGSEGV.*it crashed on 2 ranks too.*not in the study's size"):
+        prepare(st, tmp_path / "again")

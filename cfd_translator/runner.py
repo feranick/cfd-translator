@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.18
+Version: 2026.11.13.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -233,7 +233,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
             fields = foam.read_fields(case, mesh, plan, mean=transient)
             lg = info["log"]
-            out["solve"] = {"openfoam": info.get("openfoam"), "procs": info.get("procs"), "iterations": lg["iterations"],
+            out["solve"] = {"openfoam": info.get("openfoam"), **({"openfoam_build": info["openfoam_build"]}
+                                                                if info.get("openfoam_build") else {}),
+                            "procs": info.get("procs"), "iterations": lg["iterations"],
                             "converged": lg["converged"], "residuals": lg["residuals"],
                             "first_residuals": lg["first_residuals"], "time": fields["time"],
                             "checkMesh": info["checkMesh"]}

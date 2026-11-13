@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.12.18
+Version: 2026.11.13.1
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -859,10 +859,10 @@ def cut_off_regions(mesh, open_patches: set) -> dict | None:
 # snappyHexMesh's memory, an estimate to calibrate with mesh.snappy.memory.peak_mb: every rank holds the whole
 # surface (triangles, its search tree, the feature edges) and a share of the cells
 RANK_BASE_MB = 300.0
-TRI_KB = 2.5                     # per surface triangle, on every rank (the surface, its octree, the feature edges):
-                                 # provisional, from S50 on mochi (18 ranks killed in 58 GB at 4 M cells with a
-                                 # surface of an estimated 1.5-3 M triangles)
-CELL_KB = 2.0                    # per cell, over all ranks (snapping's peak)
+TRI_KB = 1.0                     # per surface triangle, on every rank (the surface, its octree, the feature edges)
+CELL_KB = 1.0                    # per cell, over all ranks
+# measured: S50 coarse on mochi, 6 ranks, 756,633 triangles, 3.9 M cells: 8.65 GB refining, 7.33 GB snapping
+# (estimate 10.1 GB). The earlier '18 ranks killed in 58 GB' were crashes (SIGSEGV in doSnap), not memory
 MEM_FILL = 0.85                  # at most this share of the job's memory
 
 
@@ -1216,6 +1216,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     merge_faces, flatness, attempt, quality_retried = True, 0.5, 0, False
     layers_dropped = False
     kept_layered = None
+    crashes = []
     for layered in (True, False):
         quality_retried = False
         while True:
@@ -1259,6 +1260,33 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                                   f". It ran on {procs} rank(s), each holding the whole surface ({ntri:,} triangles): "
                                   "fewer meshing ranks (mesh.procs, e.g. "
                                   f"{max(1, procs // 3)}) need less" + "\n" + foam._tail(sd / "log.snappyHexMesh", 15))
+            txt_ = _read(sd / "log.snappyHexMesh")[-60000:] if rc != 0 else ""
+            cr = foam.crash_of(txt_, rc) if rc != 0 else None
+            if cr and "checkFaceFlatness" in txt_ and flatness > -1:
+                cr = None                       # a known one, made again below without the flatness check
+            if cr:
+                # a crash (SIGSEGV, SIGABRT, SIGFPE), not a memory kill (mochi, S50 coarse base and standard recipe,
+                # 2026.11.13: SIGSEGV in snappySnapDriver::doSnap at 8.7 GB of 58 GB with 6 and 18 ranks; the same
+                # study meshes on spark1 and spark2): once more in serial, which tells a parallel fault from one
+                # of this machine's OpenFOAM build
+                import socket
+                stg = stage_of(_read(sd / "log.snappyHexMesh"))
+                build = foam.build_of(sd / "log.snappyHexMesh")
+                where = f"{socket.gethostname()}, OpenFOAM {build or '?'}"
+                msg = foam.crash_message("snappyHexMesh", cr, stg)
+                crashes.append({"procs": procs, "signal": cr["name"], "in": cr.get("in"), "stage": stg,
+                                "build": build, "host": socket.gethostname()})
+                if procs > 1:
+                    notes.append(f"{msg} on {procs} ranks ({where}): made again in serial")
+                    procs = 1
+                    attempt += 1
+                    continue
+                raise MeshError(f"{msg} ({where}" + (f"; it crashed on {crashes[0]['procs']} ranks too" if len(crashes) > 1
+                                                    else "") + "). A fault in snappyHexMesh, not in the study's size: "
+                                "if the same study meshes on another machine, this machine's OpenFOAM build is the "
+                                "suspect (run.host another machine meanwhile); else change the mesh where it snaps "
+                                "(mesh.surface, mesh.gap, refinement near narrow gaps).\n" +
+                                foam._tail(sd / "log.snappyHexMesh", 15))
             if rc != 0 or "fatal" in log:
                 text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
                 if "checkFaceFlatness" in text and flatness > -1:
@@ -1480,6 +1508,8 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                    "cells_by_stage": report.get("cells", {}), "seconds": report.get("seconds"),
                    "illegal_faces": report.get("illegal_faces", 0), "gap_cells": report.get("gap_cells", 0),
                    "attempts": attempts, "narrow_gaps": gaps, "procs": procs,
+                   **({"crashes": crashes} if crashes else {}),
+                   "openfoam_build": foam.build_of(sd / "log.snappyHexMesh"),
                    "memory": {**snappy_memory, "peak_mb": {k.replace("log.", ""): v for k, v in foam.PEAK_MB.items()
                                                            if k.startswith(("log.snappyHexMesh", "log.blockMesh",
                                                                             "log.surfaceFeatures", "log.decomposePar",

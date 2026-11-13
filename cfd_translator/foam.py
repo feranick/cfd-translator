@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.12.18
+Version: 2026.11.13.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -307,6 +307,29 @@ def _kill_group(p) -> None:
             continue
 
 
+def _end(path: Path, nbytes: int = 60000) -> str:
+    """The last nbytes of a log (a crash's signal line lies above its backtrace)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - nbytes))
+            return f.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+
+_BUILD = re.compile(r"^Build\s*:\s*(\S+)", re.M)
+
+
+def build_of(path: Path) -> str | None:
+    """The OpenFOAM build a log's header names ('14-a4867fc914c1')."""
+    try:
+        with open(path, "rb") as f:
+            m = _BUILD.search(f.read(4000).decode(errors="replace"))
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
 def _tail(path: Path, n: int = 40) -> str:
     try:
         return "\n".join(path.read_text(errors="replace").splitlines()[-n:])
@@ -318,14 +341,77 @@ class Killed(Exception):
     """An OpenFOAM program was killed from outside (SIGKILL), nearly always for lack of memory."""
 
 
-_KILLED = re.compile(r"proc-aborted-strsignal|exited on signal 9|signal 9 \(Killed\)|^Killed|oom[-_ ]kill|"
+# OpenMPI's 'proc-aborted-strsignal' is said for any signal: it is no sign of memory by itself (mochi, S50 coarse
+# base, 2026.11.13: a SIGSEGV in snappySnapDriver::doSnap at 8.7 GB of 58 GB was reported as out of memory)
+_KILLED = re.compile(r"exited on signal 9\b|signal 9 \(Killed\)|Signal: Killed \(9\)|^Killed|oom[-_ ]kill|"
                      r"Out of memory|std::bad_alloc|Cannot allocate memory", re.I | re.M)
+_SIGNALS = {4: "SIGILL", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL", 11: "SIGSEGV", 15: "SIGTERM"}
+_SIG_NUM = re.compile(r"Signal: [A-Za-z ]+? \((\d+)\)|exited on signal (\d+)|received signal (\d+)", re.I)
+_SIG_FOAM = re.compile(r"Foam::sig(Segv|Fpe|Int|Quit|Stop)::sigHandler")
+_MANGLED = re.compile(r"_ZN((?:\d+[A-Za-z_]\w*?)+)E")
+_DEMANGLED = re.compile(r"(Foam::[A-Za-z_][\w:<>]*?)\s*\(")
+_SKIP = ("printStack", "sigHandler", "Foam::error", "Foam::sigSegv", "Foam::sigFpe", "abort", "raise")
+
+
+def _demangle(m: str) -> str:
+    """'4Foam16snappySnapDriver6doSnap' -> 'Foam::snappySnapDriver::doSnap' (nested names only)."""
+    out, i = [], 0
+    while i < len(m) and m[i].isdigit():
+        j = i
+        while j < len(m) and m[j].isdigit():
+            j += 1
+        n = int(m[i:j])
+        out.append(m[j:j + n])
+        i = j + n
+    return "::".join(out)
+
+
+def crash_of(text: str, rc: int | None = None) -> dict | None:
+    """A program that stopped on a signal other than SIGKILL (a crash: SIGSEGV, SIGABRT, SIGFPE, SIGBUS): {signal,
+    name, in (the first OpenFOAM function of the backtrace, OpenMPI's or OpenFOAM's), frames}; None otherwise."""
+    t = (text or "")[-60000:]
+    nums = [int(next(g for g in m if g)) for m in _SIG_NUM.findall(t)]
+    fo = _SIG_FOAM.search(t)
+    if fo:
+        nums.append({"Segv": 11, "Fpe": 8, "Int": 2, "Quit": 3, "Stop": 19}[fo.group(1)])
+    if rc is not None and rc > 128 and rc - 128 in _SIGNALS:
+        nums.append(rc - 128)
+    elif rc is not None and rc < 0 and -rc in _SIGNALS:
+        nums.append(-rc)
+    crash = [n for n in nums if n not in (9, 15, 2)]
+    if not crash:
+        return None
+    frames = []
+    for line in t.splitlines():
+        for nm in [_demangle(x) for x in _MANGLED.findall(line)] + _DEMANGLED.findall(line):
+            if nm.startswith("Foam::") and not any(k in nm for k in _SKIP) and nm not in frames:
+                frames.append(nm)
+    sig = crash[0]
+    return {"signal": sig, "name": _SIGNALS.get(sig, f"signal {sig}"), "in": frames[0] if frames else None,
+            "frames": frames[:6]}
 
 
 def was_killed(text: str, rc: int | None = None) -> bool:
-    """Signs that a program was killed (SIGKILL: exit 137 or -9; OpenMPI's 'proc-aborted-strsignal', 'exited on
-    signal 9 (Killed)'; the kernel's or SLURM's OOM killer; a failed allocation)."""
+    """Signs that a program was killed for memory (SIGKILL: exit 137 or -9; 'exited on signal 9 (Killed)'; the
+    kernel's or SLURM's OOM killer; a failed allocation), and did not crash on another signal."""
+    if crash_of(text, rc):
+        return False
     return rc in (137, -9) or bool(_KILLED.search((text or "")[-30000:]))
+
+
+def crash_message(what: str, crash: dict, stage: str | None = None) -> str:
+    """What a crash was and where, for a result's error."""
+    lim = None
+    try:
+        from llmt_runtime.memory import memory_limit_mb
+        lim = memory_limit_mb()
+    except Exception:  # noqa: BLE001
+        pass
+    pk = max((v for k, v in PEAK_MB.items() if k.startswith(f"log.{what}")), default=None)
+    mem = (f"; it held {pk / 1024:.3g} GB" + (f" of the job's {lim / 1024:.3g} GB" if lim else "") + ": not a memory kill"
+           if pk else "")
+    return (f"{what} crashed ({crash['name']}){' while ' + stage if stage else ''}" +
+            (f" in {crash['in']}" if crash.get("in") else "") + mem)
 
 
 def memory_hint(what: str, stage: str | None = None, cells: int | None = None) -> str:
@@ -360,6 +446,10 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
             PEAK_MB[k] = round(max(PEAK_MB.get(k, 0.0), mb), 1)
     if rc != 0 and raise_on_error:
         tail = _tail(case / logname)
+        cr = crash_of(_end(case / logname), rc)
+        if cr:
+            raise FoamError(crash_message(cmd.split(" -np ")[-1].split()[1] if " -np " in cmd else cmd.split()[0], cr)
+                            + ":\n" + tail[-1500:])
         if was_killed(tail, rc):
             raise Killed(memory_hint(cmd.split(" -np ")[-1].split()[1] if " -np " in cmd else cmd.split()[0]) +
                          "\n" + tail[-1500:])
@@ -428,8 +518,12 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     out["log"] = foamio.parse_log(log)
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
+    out["openfoam_build"] = build_of(case / "log.foamRun")
     if rc != 0:
         tail = _tail(case / solve[1])
+        cr = crash_of(_end(case / solve[1]), rc)
+        if cr:
+            raise FoamError(crash_message("foamRun", cr) + ":\n" + tail[-1500:])
         if was_killed(tail, rc):
             raise Killed(memory_hint("foamRun") + "\n" + tail[-1500:])
         raise FoamError(f"{solve[0]} exited with code {rc}:\n" + tail)
