@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.06.4
+Version: 2026.11.13.2
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 G0 = 9.80665
-DEFAULTS = {"window": 0.25, "min_iterations": 500, "drift": 0.01, "scatter": 0.02}
+DEFAULTS = {"window": 0.25, "min_iterations": 500, "drift": 0.01, "scatter": 0.02, "stderr": 0.005}
 AGREE = 0.05
 
 
@@ -315,10 +315,47 @@ def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict, scale: float | None 
     h = w // 2
     d = float(x[h:].mean() - x[:h].mean())
     scale = abs(mean) if scale is None else max(abs(mean), float(scale))
+    se, tau = mean_stderr(x)
     return {"mean": _r(mean), "std": _r(std), "min": _r(x.min()), "max": _r(x.max()), "last": _r(x[-1]),
             "drift": _r(abs(d) / scale) if scale > 0 else float("inf"),
             "scatter": _r(std / scale) if scale > 0 else float("inf"),
+            "stderr": _r(se / scale) if scale > 0 else float("inf"), "stderr_abs": _r(se),
+            "tau_iterations": _r(tau, 3), "n_eff": _r(w / max(tau, 1.0), 3),
+            # the halves' difference against its own noise (each half's mean has about twice the variance)
+            "drift_sigma": _r(abs(d) / (2.0 * se), 3) if se > 0 else (0.0 if d == 0 else float("inf")),
             "window": [int(its[-w]), int(its[-1])], "n": int(w)}
+
+
+def mean_stderr(x: np.ndarray) -> tuple[float, float]:
+    """(standard error of the mean, integrated autocorrelation time in samples) of a correlated series: the
+    autocorrelation summed in pairs while the pairs stay positive (Geyer's initial positive sequence), and never less
+    than ten batch means give, both of the series less its straight-line trend. A frozen-rotor run's head oscillates over hundreds of iterations, so the plain
+    std / sqrt(n) understates the mean's error many times (S50 variants, 2026.11.13)."""
+    x = np.asarray(x, float)
+    n = len(x)
+    if n < 4:
+        return float("inf"), 1.0
+    # the fluctuation about a straight line: a trend is drift (drift_sigma), not a long correlation time
+    t = np.arange(n, dtype=float)
+    y = x - np.polyval(np.polyfit(t, x, 1), t)
+    var = float(y.var())
+    if var <= 0:
+        return 0.0, 1.0
+    f = np.fft.rfft(y, 2 * n)
+    acf = np.fft.irfft(f * np.conj(f))[:n] / (var * n)
+    tau = -1.0
+    for k in range(0, n // 2 - 1):
+        pair = acf[2 * k] + acf[2 * k + 1]
+        if pair <= 0:
+            break
+        tau += 2.0 * pair
+    tau = max(tau, 1.0)
+    se = float(np.sqrt(var * tau / n))
+    nb = 10
+    if n >= 2 * nb:
+        bm = [b.mean() for b in np.array_split(y, nb)]
+        se = max(se, float(np.std(bm, ddof=1) / np.sqrt(nb)))
+    return se, tau
 
 
 def _calibrate(last: float, ref: float, rho: float, tol: float = AGREE) -> float | None:
@@ -608,13 +645,22 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
     bad = []
     for k in judged:
         st = stats[k]
-        if st["drift"] > cfg["drift"]:
-            bad.append(f"{k} drifts {st['drift']:.2%} (> {cfg['drift']:.0%})")
         if tr:
+            if st["drift"] > cfg["drift"]:
+                bad.append(f"{k} drifts {st['drift']:.2%} (> {cfg['drift']:.0%})")
             if st["stderr"] > cfg["stderr"]:
                 bad.append(f"{k}: the mean's standard error is {st['stderr']:.2%} (> {cfg['stderr']:.0%}): run longer")
-        elif st["scatter"] > cfg["scatter"]:
-            bad.append(f"{k} scatters {st['scatter']:.2%} (> {cfg['scatter']:.0%})")
+            continue
+        # steady (frozen rotor): a quantity that oscillates but whose window mean is known (its standard error, with
+        # the autocorrelation, within stderr) and whose halves do not differ beyond their noise is settled too
+        se_ok = st.get("stderr", float("inf")) <= cfg.get("stderr", DEFAULTS["stderr"])
+        if st["drift"] > cfg["drift"] and not (se_ok and st.get("drift_sigma", float("inf")) <= 2.0):
+            bad.append(f"{k} drifts {st['drift']:.2%} (> {cfg['drift']:.0%}; {st.get('drift_sigma', float('nan')):.2g} "
+                       "times its noise)")
+        if st["scatter"] > cfg["scatter"] and not se_ok:
+            bad.append(f"{k} scatters {st['scatter']:.2%} (> {cfg['scatter']:.0%}) and its mean's standard error is "
+                       f"{st.get('stderr', float('nan')):.2%} (> {cfg.get('stderr', DEFAULTS['stderr']):.1%}): a longer "
+                       "window (solve.average.window) or more iterations")
     if tr:
         block = {"basis": f"time averages from {cfg['from']:g} s to the end (time-weighted); *_last: the last time step",
                  "settings": cfg, "judged": judged, "settled": not bad, **({"why": bad} if bad else {}),
@@ -683,6 +729,8 @@ def _apply_means(res: dict, stats: dict, plan: dict) -> None:
                 pump[f"{k}_last"] = pump.get(k)
                 pump[k] = stats[k]["mean"]
                 pump[f"{k}_std"] = stats[k]["std"]
+                if "stderr_abs" in stats[k]:
+                    pump[f"{k}_stderr"] = stats[k]["stderr_abs"]
         if "head_m" in stats:
             pump["averaged_over"] = stats["head_m"]["window"]
             # efficiency of the means (rho g Q mean(H) / mean(P)) is steadier than the mean of the ratio

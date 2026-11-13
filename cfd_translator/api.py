@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.18
+Version: 2026.11.13.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -664,10 +664,11 @@ def import_results(path: str, name: str | None = None) -> dict:
     return {**r, "status": {k: st[k] for k in ("done", "studies", "variants") if k in st}}
 
 
-def reprocess(request: str, studies: list[str] | None = None) -> dict:
+def reprocess(request: str, studies: list[str] | None = None, onset=None) -> dict:
     """Results again for the finished studies of a request (all, or those named), from their cases, with the
-    current post-processing: no solving. Running or failed studies are skipped."""
-    from .runner import reprocess_study
+    current post-processing: no solving. Running or failed studies are skipped. onset: a new onset block for them
+    (regions, thresholds, c; false removes it): the screen again without solving."""
+    from .runner import _KEEP, reprocess_study
     folder = Path(request).expanduser().resolve()
     root = out_root().resolve()
     if root not in folder.parents or not (folder / "request.json").is_file():
@@ -681,7 +682,7 @@ def reprocess(request: str, studies: list[str] | None = None) -> dict:
     out = {}
     for n in names:
         try:
-            out[n] = reprocess_study(folder / n, n)
+            out[n] = reprocess_study(folder / n, n, _KEEP if onset is None else onset)
         except Exception as exc:  # noqa: BLE001
             out[n] = {"name": n, "ok": False, "why": f"{type(exc).__name__}: {exc}"}
     return {"request": str(folder), "translator": __version__, "studies": out,

@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.13.1
+Version: 2026.11.13.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -466,7 +466,10 @@ def _cpu_note(summary: dict | None, out: dict) -> None:
     out.setdefault("warnings", []).append(warning(summary))
 
 
-def reprocess_study(folder: Path, name: str) -> dict:
+_KEEP = object()
+
+
+def reprocess_study(folder: Path, name: str, onset=_KEEP) -> dict:
     """The results of a finished study again, from its case (the last time directory; transient: the mean fields)
     or its saved state, with the current post-processing and averaging, without solving. The old result is kept
     as <name>.json.<its version>.bak; the new one records reprocessed: {by, at, from, changes}."""
@@ -486,6 +489,19 @@ def reprocess_study(folder: Path, name: str) -> dict:
     mesh, plan, fields, study = load_state(folder)
     if not study:
         return {"name": name, "ok": False, "why": "the saved state does not hold the study"}
+    replaced = onset is not _KEEP
+    if replaced:
+        # a changed onset block (regions, thresholds, c): screened again without solving (S50 impeller variants,
+        # 2026.11.13: a wrong hole_jets box, new robust statistics). The saved state keeps the new block
+        study = dict(study)
+        if onset in (None, False):
+            study.pop("onset", None)
+        else:
+            study["onset"] = onset
+            from .onset import errors as _oe
+            bad = _oe(study)
+            if bad:
+                return {"name": name, "ok": False, "why": "invalid onset", "errors": bad}
     case = folder / "case"
     transient = bool((old.get("solve") or {}).get("transient"))
     source = "the saved state"
@@ -569,7 +585,11 @@ def reprocess_study(folder: Path, name: str) -> dict:
     # p_rms, p_below_* since 2026.11.12.4: run_20261108_s50_rc_open_s1's render_images field k gave KeyError 'k'
     # after reprocess, which read the case but kept the old state)
     added = []
-    if from_case:
+    if replaced:
+        out["reprocessed"]["onset"] = "replaced by the one given" if study.get("onset") else "removed"
+        if not study.get("onset"):
+            out["results"].pop("onset", None)
+    if from_case or replaced:
         from .render import save_state
         added = sorted(set(fields.get("scalars") or {}) - old_scalars)
         save_state(folder, mesh, plan, fields, study)

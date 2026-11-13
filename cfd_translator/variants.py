@@ -1,5 +1,5 @@
 """variants.py — geometry by reference, and variants of one study (mesh levels, settings).
-Version: 2026.11.12.3
+Version: 2026.11.13.2
 
 A geometry is registered once on the machine that runs the studies and then named in any number of
 studies, so a 10-15 KB goal is sent once instead of once per study:
@@ -331,7 +331,8 @@ def expand(studies: dict) -> tuple[dict, dict, dict]:
 
 # ---- comparison --------------------------------------------------------------------------------------
 QUANTITIES = ("coefficients.cd", "coefficients.cl", "pressure_drop", "total_pressure_drop", "head_loss_m",
-              "y_plus_part_mean", "pump.head_m", "pump.efficiency", "age.mean_residence_time_s",
+              "y_plus_part_mean", "pump.head_m", "pump.head_m_stderr", "pump.power_W", "pump.power_W_stderr",
+              "pump.efficiency", "age.mean_residence_time_s",
               "cavitation.npsh_inlet_m", "cavitation.vapour_volume_mm3", "cavitation.gas_volume_mm3",
               "cavitation.gas_holdup")
 
@@ -367,6 +368,34 @@ def convergence(values: list, scales: list) -> dict:
     return out
 
 
+def differences(rows: dict, done: list) -> dict | None:
+    """Each finished study against the first (variants: the base): head and power differences with their combined
+    standard error (window means, autocorrelation taken into account) and whether they stand out of it (> 2 sigma).
+    S50 impeller variants (2026.11.13): frozen-rotor heads scatter 2-2.5 %, so a 1 % difference needs its error."""
+    if len(done) < 2:
+        return None
+    base = rows[done[0]]
+    out = {}
+    for n in done[1:]:
+        r = rows[n]
+        rec = {}
+        for q in ("pump.head_m", "pump.power_W"):
+            a, b = base.get(q), r.get(q)
+            sa, sb = base.get(q + "_stderr"), r.get(q + "_stderr")
+            if a is None or b is None:
+                continue
+            e = {"diff": float(f"{b - a:.5g}"), "diff_pct": float(f"{100 * (b - a) / max(abs(a), 1e-300):.3g}")}
+            if sa is not None and sb is not None:
+                sig = math.hypot(sa, sb)
+                e.update(stderr=float(f"{sig:.3g}"), significant=bool(sig > 0 and abs(b - a) > 2 * sig))
+            rec[q.split(".", 1)[1]] = e
+        if rec:
+            out[n] = rec
+    return {"against": done[0], "studies": out,
+            "note": "significant: the difference exceeds twice the combined standard error of the two window means"} \
+        if out else None
+
+
 def compare(results: dict, group: dict) -> dict:
     """The group's studies side by side (those finished): cells, reliable, and every main quantity present."""
     rows = {}
@@ -383,6 +412,9 @@ def compare(results: dict, group: dict) -> dict:
         rows[n] = row
     out = {"studies": rows}
     done = [n for n in group["names"] if "cells" in rows[n]]
+    diff = differences(rows, done)
+    if diff:
+        out["differences"] = diff
     if group.get("scales") and len(done) >= 2 and len(done) == len(group["names"]):
         conv = {}
         for q in QUANTITIES:

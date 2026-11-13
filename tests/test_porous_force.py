@@ -198,3 +198,29 @@ def test_reprocess_saves_the_state_with_k_and_nut_from_the_case(tmp_path, monkey
     _, _, f2, _ = load_state(sd)
     assert set(f2["scalars"]) == {"k", "nut"} and float(f2["scalars"]["k"]["internal"][0]) == 0.5
     assert json.loads((sd / "pump.json").read_text())["reprocessed"]["state"]["fields_added"] == ["k", "nut"]
+
+
+def test_reprocess_with_a_new_onset_block(tmp_path, monkeypatch):
+    """S50 impeller variants (2026.11.13): a wrong hole_jets box; the seven variants screened again with corrected
+    regions and the new robust statistics, without solving."""
+    root = tmp_path / "out"
+    monkeypatch.setenv("CFDT_OUT", str(root))
+    req = root / "run_20261112_000000_onset"
+    sd = req / "v"
+    sd.mkdir(parents=True)
+    st, mesh, plan, fields = _setup(tmp_path / "prep")
+    save_state(sd, mesh, plan, fields, st)
+    (req / "request.json").write_text(json.dumps({"names": ["v"]}))
+    (sd / "v.json").write_text(json.dumps({"name": "v", "ok": True, "translator": "2026.11.12.17", "solver": "ref",
+                                           "solve": {"converged": True}, "results": {"forces": {}}}))
+    on = {"below": [1e5], "regions": [{"name": "box1", "box": [-1e3, -1e3, -1e3, 1e3, 1e3, 1e3]}], "exclude": False}
+    r = api.reprocess(str(req), onset=on)["studies"]["v"]
+    assert r["ok"], r
+    new = json.loads((sd / "v.json").read_text())
+    assert "box1" in new["results"]["onset"]["regions"] and new["reprocessed"]["onset"] == "replaced by the one given"
+    from cfd_translator.render import load_state
+    assert load_state(sd)[3]["onset"] == on                      # the saved state keeps the new block
+    bad = api.reprocess(str(req), onset={"regions": ["hub"]})["studies"]["v"]
+    assert bad["ok"] is False and bad["why"] == "invalid onset"
+    api.reprocess(str(req), onset=False)
+    assert "onset" not in json.loads((sd / "v.json").read_text())["results"]

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.12.18
+Version: 2026.11.13.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -186,7 +186,7 @@ MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers",
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
               "transient", "init_from", "init_fields"}
-AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter"}
+AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 
@@ -868,11 +868,12 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.average.window: fraction of the iterations at the end of the run (0 < w <= 0.9, default 0.25)")
             if "min_iterations" in av and (not isinstance(av["min_iterations"], int) or av["min_iterations"] < 20):
                 errs.append("solve.average.min_iterations: integer >= 20 (default 500)")
-            for k in ("drift", "scatter"):
+            for k in ("drift", "scatter", "stderr"):
                 if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
-                    errs.append(f"solve.average.{k}: relative tolerance between 0 and 1 (default {0.01 if k == 'drift' else 0.02})")
+                    errs.append(f"solve.average.{k}: relative tolerance between 0 and 1 (default "
+                                f"{ {'drift': 0.01, 'scatter': 0.02, 'stderr': 0.005}[k]})")
         elif not isinstance(av, bool):
-            errs.append("solve.average: true, false or {window, min_iterations, drift, scatter}")
+            errs.append("solve.average: true, false or {window, min_iterations, drift, scatter, stderr}")
         if av and st.get("energy"):
             warns.append("solve.average: not available with energy (the fluid solver) yet; final-iteration values are reported")
     tr = s.get("transient")

@@ -250,3 +250,42 @@ def test_reprocess_upgrades_an_old_plan():
     done = upgrade_plan(plan, study)        # axis +X at -1450 rpm turns as the zone's -X at +1450 rpm
     assert plan["zones"]["rot"]["rotating_walls"] == ["imp", "back"] and "back" in done[0]
     assert upgrade_plan(plan, study) == []                               # once only
+
+
+def test_stderr_with_autocorrelation_and_the_steady_verdict():
+    """S50 impeller variants (frozen rotor, 4000 iterations): head scatter 2-2.5 %, drift 2.2-2.6 %. The window mean's
+    standard error with the autocorrelation (Geyer, at least ten batch means) tells an oscillation around a known mean
+    from a trend."""
+    from cfd_translator.average import mean_stderr, window_stats
+    rng = np.random.default_rng(1)
+    phi, n = 0.9, 20000
+    e = rng.normal(size=n)
+    x = np.zeros(n)
+    for i in range(1, n):
+        x[i] = phi * x[i - 1] + e[i]
+    se, tau = mean_stderr(x)
+    assert tau == pytest.approx((1 + phi) / (1 - phi), rel=0.3)               # 19 for an AR(1) with 0.9
+    assert se > 3 * x.std() / np.sqrt(n)                                      # the plain error understates it
+    # an oscillation (period 400 iterations, 2.5 % of the mean): over a 4000-iteration window (ten periods) it
+    # scatters but its mean is known and there is no trend; over 1000 (2.5 periods) the mean is not known well enough
+    its = np.arange(8000)
+    head = 16.0 * (1 + 0.035 * np.sin(2 * np.pi * its / 400))
+    st = window_stats(its, head, {"window": 0.5, "min_iterations": 500})
+    assert st["scatter"] > 0.02 and st["stderr"] < 0.005 and st["drift_sigma"] < 2
+    short = window_stats(its[:4000], head[:4000], {"window": 0.25, "min_iterations": 500})
+    assert short["stderr"] > 0.005
+    # a trend: drifts beyond its noise
+    st2 = window_stats(its, 16.0 * (1 + 0.00001 * its) + 0.01 * np.sin(its / 3.0), {"window": 0.5, "min_iterations": 500})
+    assert st2["drift"] > 0.01 and st2["drift_sigma"] > 2
+
+
+def test_variant_differences_with_their_error():
+    from cfd_translator.variants import differences
+    rows = {"base": {"cells": 1, "pump.head_m": 16.0, "pump.head_m_stderr": 0.05, "pump.power_W": 2200.0,
+                     "pump.power_W_stderr": 10.0},
+            "noholes": {"cells": 1, "pump.head_m": 16.3, "pump.head_m_stderr": 0.05, "pump.power_W": 2205.0,
+                        "pump.power_W_stderr": 10.0}}
+    d = differences(rows, ["base", "noholes"])
+    h = d["studies"]["noholes"]["head_m"]
+    assert d["against"] == "base" and h["diff"] == pytest.approx(0.3) and h["significant"]
+    assert d["studies"]["noholes"]["power_W"]["significant"] is False

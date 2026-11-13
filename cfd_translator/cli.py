@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.12.8
+Version: 2026.11.13.2
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -14,7 +14,8 @@ Version: 2026.11.12.8
     cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
     cfdt jobs [--limit N] [--active]     recent requests with SLURM jobs, their states; the queue
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
-    cfdt reprocess REQUEST [NAMES...]    results again from finished cases (current post-processing, no solve)
+    cfdt reprocess REQUEST [NAMES...] [--onset JSON|FILE]   results again from finished cases (current
+                                         post-processing, no solve); --onset: a new onset block for them
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
     cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (other/supercomputers/clusters.md)
     cfdt import PATH [--name N]          a packed request (.tgz or folder) as a request of this machine
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 
 from . import api
@@ -64,6 +66,7 @@ def main(argv=None) -> None:
     p = sub.add_parser("reprocess", help="results again from finished cases, without solving")
     p.add_argument("request")
     p.add_argument("names", nargs="*")
+    p.add_argument("--onset", default=None, help="a new onset block (JSON, or a file holding it) for these studies")
     p = sub.add_parser("run-study")
     p.add_argument("request")
     p.add_argument("name")
@@ -120,7 +123,11 @@ def _command(a) -> dict:
     elif a.cmd == "cancel":
         out = api.cancel(a.request, a.names or None)
     elif a.cmd == "reprocess":
-        out = api.reprocess(a.request, a.names or None)
+        on = None
+        if getattr(a, "onset", None):
+            txt = Path(a.onset).read_text() if Path(a.onset).is_file() else a.onset
+            on = json.loads(txt)
+        out = api.reprocess(a.request, a.names or None, on)
     elif a.cmd == "pack":
         out = api.pack(a.request, a.state, a.out)
     elif a.cmd == "import":

@@ -756,14 +756,15 @@ def test_sliding_caps_on_background_grid_planes():
 def test_meshing_ranks_fit_the_memory():
     """S50 on mochi (58 GB, 18 ranks): snappyHexMesh killed while snapping at 8.3 M and at 3.7-4.2 M cells: every rank
     holds the whole surface. Without mesh.procs the meshing ranks are fitted to the job's memory."""
-    # mochi, 6 ranks, 756,633 triangles, 3.9 M cells: 8.65 GB measured; the estimate within 20 %
-    assert snappy.memory_estimate(6, 3.9e6, 756_633)["total_mb"] == pytest.approx(8.65 * 1024, rel=0.2)
-    e = snappy.memory_estimate(18, 4e6, 3_000_000)
-    assert e["per_rank_mb"] == pytest.approx(300 + 3_000_000 / 1024, abs=1) and e["total_mb"] > 58 * 1024 * 0.85
-    p, mem, note = snappy.meshing_procs(18, 4e6, 3_000_000, 58 * 1024, False)
+    # the coarse S50's measured peaks (refining): 7.13 GB on 2 ranks, 8.5-9.4 GB on 6; the estimate within 10 %
+    assert snappy.memory_estimate(2, 3.9e6, 756_633)["total_mb"] == pytest.approx(7.13 * 1024, rel=0.1)
+    assert snappy.memory_estimate(6, 3.9e6, 756_633)["total_mb"] == pytest.approx(8.95 * 1024, rel=0.1)
+    e = snappy.memory_estimate(18, 20e6, 6_000_000)
+    assert e["per_rank_mb"] == pytest.approx(50 + 0.55 * 6_000_000 / 1024, abs=1) and e["total_mb"] > 58 * 1024 * 0.85
+    p, mem, note = snappy.meshing_procs(18, 20e6, 6_000_000, 58 * 1024, False)
     assert 1 <= p < 18 and mem["total_mb"] <= 0.85 * 58 * 1024 and "instead of 18" in note and mem["procs"] == p
-    assert snappy.memory_estimate(p + 1, 4e6, 3_000_000)["total_mb"] > 0.85 * 58 * 1024
-    p2, _, note2 = snappy.meshing_procs(18, 4e6, 3_000_000, 58 * 1024, True)          # mesh.procs given: kept
+    assert snappy.memory_estimate(p + 1, 20e6, 6_000_000)["total_mb"] > 0.85 * 58 * 1024
+    p2, _, note2 = snappy.meshing_procs(18, 20e6, 6_000_000, 58 * 1024, True)          # mesh.procs given: kept
     assert p2 == 18 and "may run out of memory" in note2
     assert snappy.meshing_procs(4, 1e5, 10_000, 58 * 1024, False)[2] is None
 
@@ -863,7 +864,7 @@ def test_parallel_snappy_crash_is_meshed_again_in_serial(tmp_path, monkeypatch):
     st = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], procs=2))
     mesh, patches, sel, plan, warns = prepare(st, tmp_path)
     assert any("snappyHexMesh crashed (SIGSEGV) while snapping to the surface in Foam::snappySnapDriver::doSnap" in w
-               and "made again in serial" in w and "14-mochi0000" in w for w in warns), warns
+               and "made again on 1 rank (serial)" in w and "14-mochi0000" in w for w in warns), warns
     assert any(c.startswith("snappyHexMesh") and "-parallel" not in c for c in cmds)
     # in serial too: an error that says crash, not memory
     def step2(fm, cmd, logname, case, timeout, raise_on_error=True):
@@ -874,3 +875,72 @@ def test_parallel_snappy_crash_is_meshed_again_in_serial(tmp_path, monkeypatch):
     monkeypatch.setattr(foam, "_step", step2)
     with pytest.raises(snappy.MeshError, match="crashed .SIGSEGV.*it crashed on 2 ranks too.*not in the study's size"):
         prepare(st, tmp_path / "again")
+
+
+def test_parallel_crash_tries_fewer_ranks_then_serial(tmp_path, monkeypatch):
+    """mochi coarse S50 (2026.11.13): the doSnap crash follows the decomposition (6 ranks crashed for three variants,
+    carbonio meshed them on 2): 6 ranks, then 2, then serial."""
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+    _stand_in(monkeypatch, tmp_path, lambda *a: 0)
+    monkeypatch.setenv("SLURM_NTASKS", "6")
+    ranks = []
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):
+        case = Path(case)
+        if "snappyHexMesh" in cmd:
+            ranks.append(int(cmd.split("-np ")[1].split()[0]) if "-np " in cmd else 1)
+            (case / logname).write_text("Build  : 14-mochi0000\n" + MOCHI_CRASH)
+            return 1
+        if cmd.startswith("checkMesh"):
+            (case / logname).write_text("Mesh OK.\n")
+        return 0
+    monkeypatch.setattr(foam, "_step", step)
+    with pytest.raises(snappy.MeshError, match="it crashed on 6 and 2 ranks too"):
+        prepare(dict(ST_BOX, mesh=dict(ST_BOX["mesh"], procs=6)), tmp_path)
+    assert ranks == [6, 2, 1]
+
+
+def test_inward_boundary_face_cells_are_removed_too():
+    """Every completed coarse S50 mesh (mochi, carbonio on 2026.11.13.1) stopped on one boundary face pointing into
+    its cell at [5.4, -60.1, 33.8] mm: cfdt's check, which checkMesh passed, so the removal step never ran."""
+    from cfd_translator.polymesh import box_mesh
+    m = box_mesh(10, 10, 10, 2, 2, 2)
+    ni = m.ninternal
+    m.info["foam_patches"] = [{"name": "walls", "type": "wall", "start": ni, "n": m.nfaces - ni}]
+    f = m.nfaces - 1
+    k = int((m.faces[f] >= 0).sum())
+    m.faces[f, :k] = m.faces[f, :k][::-1]
+    m._geo = None
+    bad = snappy.inward_cells(m)
+    assert bad and list(bad["cells"]) == [int(m.owner[f])] and bad["patch"] == "walls"
+    both = snappy.merge_bad(bad, {"cells": np.array([0]), "faces": 1, "volume_mm3": 1.0, "at": [[0, 0, 0]],
+                                  "patch": "walls"})
+    assert both["faces"] == 2 and 0 in both["cells"]
+    assert snappy.inward_cells(box_mesh(10, 10, 10, 2, 2, 2)) is None
+
+
+def test_machine_cap_on_snappy_ranks(tmp_path, monkeypatch):
+    """CFDT_SNAPPY_PROCS: mochi's doSnap crash on 6 ranks (meshed on 2 on carbonio, same build and MPI)."""
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+    _stand_in(monkeypatch, tmp_path, lambda *a: 0)
+    monkeypatch.setenv("SLURM_NTASKS", "6")
+    monkeypatch.setenv("CFDT_PROCS", "6")
+    monkeypatch.setenv("CFDT_SNAPPY_PROCS", "2")
+    ranks = []
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):
+        case = Path(case)
+        if "snappyHexMesh" in cmd:
+            ranks.append(int(cmd.split("-np ")[1].split()[0]) if "-np " in cmd else 1)
+            return _good_mesh(case, logname)
+        if cmd.startswith("checkMesh"):
+            (case / logname).write_text("Mesh OK.\n")
+        return 0
+    monkeypatch.setattr(foam, "_step", step)
+    try:
+        prepare(ST_BOX, tmp_path)
+    except Exception:  # noqa: BLE001 (the stand-in's parallel mesh is not reconstructed: only the ranks matter)
+        pass
+    assert ranks and ranks[0] == 2

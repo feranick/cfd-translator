@@ -100,3 +100,42 @@ def test_npsh_sets_the_absolute_level():
     assert on["p_level"]["gauge_zero_Pa"] == pytest.approx(shift, rel=1e-5)
     assert on["regions"]["domain"]["p_eff_min_Pa"] == pytest.approx(shift - 2000.0, rel=1e-5)
     assert validate_study(st)["ok"] and any("onset.npsh" in e for e in validate_study(dict(STUDY, onset={"npsh": -1}))["errors"])
+
+
+def test_robust_statistics_leave_out_one_bad_cell_and_inlet_saturation():
+    """S50 variants (spark1, 2026.11.13): one cell at -822 kPa absolute in the disc-rim gap at the rotating zone's edge
+    set 'domain' and 'tip_clearance'. The robust values (0.1 % / 1 % volume quantiles, minimum and volumes without
+    cells of skewness > 4 or within 2 cells of the zone's boundary) do not see it. Air release relative to the
+    inlet's own saturation, with ratios."""
+    m = pump_mesh(vane=None)
+    patches_for(m)
+    m.zones = {"rotor": zone_of(m, 11.5)}
+    C = m.geometry()["C"]
+    r = np.hypot(C[:, 0], C[:, 1])
+    rho = 998.2
+    p = np.full(m.ncells, -10000.0 / rho)                    # 40 kPa absolute everywhere (conditions.p 50 kPa)
+    edge = int(np.argmin(np.abs(r - 12.98)))                 # a cell just outside the zone (its boundary at r 12)
+    p[edge] = -872000.0 / rho                                # -822 kPa absolute
+    fields = {"p": p, "U": np.zeros((m.ncells, 3)), "patches": {}, "scalars": {"k": {"internal": np.zeros(m.ncells),
+                                                                                     "patches": {}}}}
+    st = dict(STUDY, onset={"below": ["vapour", {"air_release": "inlet", "ratios": [0.5]}]})
+    res = {"pressure": {"inlet": {"p_mean": -2000.0, "p_total": 0.0}}}
+    w = _onset_into(st, m, {"rho": rho}, fields, res)
+    on = res["onset"]
+    d = on["regions"]["domain"]
+    assert d["p_eff_min_Pa"] == pytest.approx(-822000, rel=1e-6) and d["min_cell_flagged"]
+    assert d["robust"]["p_eff_min_Pa"] == pytest.approx(40000, rel=1e-6)
+    assert d["robust"]["p_eff_q0.1pct_Pa"] == pytest.approx(40000, rel=1e-6) and d["robust"]["cells_left_out"] > 0
+    assert on["left_out"]["zone_boundary"] > 0 and any("flagged cell" in x for x in w)
+    v = on["below"]["vapour"]["domain"]
+    assert v["volume_mm3"] > 0 and v["robust"]["volume_mm3"] == 0 and v["robust"]["margin_q1pct_Pa"] > 0
+    # the inlet's static 48 kPa: 40 kPa is below it (supersaturation 1.2), not below half of it
+    assert on["thresholds_Pa"]["air_release"] == pytest.approx(48000) and on["thresholds_Pa"]["air_release_x0.5"] == 24000
+    ar = on["below"]["air_release"]["domain"]["robust"]
+    assert ar["region_fraction"] == pytest.approx(1.0) and ar["supersaturation_q1pct"] == pytest.approx(1.2)
+    assert on["below"]["air_release_x0.5"]["domain"]["robust"]["volume_mm3"] == 0
+    # exclude false: every cell counts, no robust block
+    res2 = {"pressure": {"inlet": {"p_mean": -2000.0}}}
+    _onset_into(dict(STUDY, onset={"exclude": False}), m, {"rho": rho}, dict(fields), res2)
+    assert res2["onset"]["regions"]["domain"]["robust"]["cells_left_out"] == 0
+    assert validate_study(st)["ok"] and not validate_study(dict(STUDY, onset={"below": [{"air_release": "x"}]}))["ok"]

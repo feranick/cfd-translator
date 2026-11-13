@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.12.17
+Version: 2026.11.13.2
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -58,7 +58,12 @@ GUIDES = {
             "gives per region the volume with p_eff = p_abs - c rho k below each threshold, the deepest point and the "
             "margin (results.onset; image field p_eff). conditions.p sets the absolute level. The regions come from "
             "the rotating zone and its walls (no boxes per variant). Calibrate c against a transient run's p_below "
-            "at the same thresholds.",
+            "at the same thresholds. Judge variants on each region's robust values (0.1 %/1 % volume quantiles, "
+            "minimum and volumes without cells of skewness > 4 or within 2 cells of the zone's boundary); air "
+            "release relative to the inlet's own saturation: {air_release: 'inlet', ratios: [0.5]}. reprocess(request, "
+            "onset={...}) screens finished runs again with new regions or thresholds, without solving. Frozen-rotor "
+            "heads oscillate: compare variants by pump.head_m with head_m_stderr (variants.differences), and give "
+            "them solve.average {window: 0.5} and enough iterations for ten oscillations in the window.",
             "Pressure statistics of a sliding (or any transient) run: solve.transient.p_below [Pa absolute, e.g. "
             "2339, 20000, 50000: vapour pressure and air-release levels] writes, per cell, the fraction of the "
             "averaging window spent below each (image field p_below_<Pa>), summarised for the domain and each "

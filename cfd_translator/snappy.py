@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.13.1
+Version: 2026.11.13.2
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -21,6 +21,7 @@ Lengths: mm in the study, metres in the OpenFOAM files. Refinement level L means
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 from pathlib import Path
@@ -858,11 +859,12 @@ def cut_off_regions(mesh, open_patches: set) -> dict | None:
 
 # snappyHexMesh's memory, an estimate to calibrate with mesh.snappy.memory.peak_mb: every rank holds the whole
 # surface (triangles, its search tree, the feature edges) and a share of the cells
-RANK_BASE_MB = 300.0
-TRI_KB = 1.0                     # per surface triangle, on every rank (the surface, its octree, the feature edges)
-CELL_KB = 1.0                    # per cell, over all ranks
-# measured: S50 coarse on mochi, 6 ranks, 756,633 triangles, 3.9 M cells: 8.65 GB refining, 7.33 GB snapping
-# (estimate 10.1 GB). The earlier '18 ranks killed in 58 GB' were crashes (SIGSEGV in doSnap), not memory
+RANK_BASE_MB = 50.0
+TRI_KB = 0.55                    # per surface triangle, on every rank (the surface, its octree, the feature edges)
+CELL_KB = 1.6                    # per cell, over all ranks
+# fitted to the measured peaks of the coarse S50 (3.9 M cells, 0.74-0.76 M triangles; 2026.11.13): refining 7.13 GB
+# on 2 ranks (carbonio), 8.5-9.4 GB on 6 (mochi); snapping 5.9 against 6.8-8.3 GB: about 0.4 GB per extra rank on
+# ~6 GB that grows with the cells. The earlier '18 ranks killed in 58 GB' were crashes (SIGSEGV in doSnap)
 MEM_FILL = 0.85                  # at most this share of the job's memory
 
 
@@ -894,6 +896,37 @@ def meshing_procs(procs: int, cells: float | None, ntri: int, lim: float | None,
                 "fewer meshing ranks (mesh.procs) or more memory (run.mem)")
     mem.update(limit_mb=int(lim) if lim else None, procs=procs)
     return procs, mem, note
+
+
+def inward_cells(mesh) -> dict | None:
+    """The cells behind boundary faces cfdt's quality check finds pointing into them (PolyMesh.quality's
+    inward_face_ids), when there are few and they lie on walls: as wrong_oriented_cells."""
+    q = mesh.quality()
+    ids = np.asarray(q.get("inward_face_ids") or [], np.int64)
+    if not len(ids) or q.get("inward_boundary_faces", 0) > ORIENT_MAX_FACES:
+        return None
+    ni = mesh.ninternal
+    walls = [p for p in mesh.info.get("foam_patches") or [] if p.get("type") == "wall"]
+    count = {}
+    for p in walls:
+        k = int(((ids >= p["start"]) & (ids < p["start"] + p["n"])).sum())
+        if k:
+            count[p["name"]] = k
+    if not count:
+        return None
+    cells = np.unique(mesh.owner[ids])
+    g = mesh.geometry()
+    return {"cells": cells, "faces": int(len(ids)), "volume_mm3": float(np.abs(g["V"][cells]).sum()),
+            "at": [np.round(g["C"][c], 1).tolist() for c in cells[:5]], "patch": max(count, key=count.get)}
+
+
+def merge_bad(a: dict | None, b: dict | None) -> dict | None:
+    """Two sets of cells to remove (wrong_oriented_cells, inward_cells) as one; the first's wall takes the faces."""
+    if not a or not b:
+        return a or b
+    cells = np.unique(np.concatenate([a["cells"], b["cells"]]))
+    return {"cells": cells, "faces": a["faces"] + b["faces"], "volume_mm3": a["volume_mm3"] + b["volume_mm3"],
+            "at": (a["at"] + b["at"])[:5], "patch": a["patch"]}
 
 
 ORIENT_MAX_FACES = 20
@@ -1183,7 +1216,18 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                                                        f"surfaces (\"{PART}.obj\");\n\nincludedAngle   150;\n")
     foam.STAGE_OF = stage_of
     m_procs = (study.get("mesh") or {}).get("procs")
-    procs, cap_note = foam.local_procs(int(m_procs) if m_procs else procs_of(study))
+    want = int(m_procs) if m_procs else procs_of(study)
+    # a machine's own cap on snappyHexMesh's ranks (CFDT_SNAPPY_PROCS, config/env): on mochi (x86, Open MPI 5.0.10,
+    # 2026.11.13) the coarse S50 crashed in doSnap on 6 ranks for three of seven variants and meshed on 2 (carbonio,
+    # same build and MPI); mesh.procs in a study still wins
+    try:
+        cap_sn = int(os.environ.get("CFDT_SNAPPY_PROCS", "") or 0)
+    except ValueError:
+        cap_sn = 0
+    if cap_sn > 0 and not m_procs and want > cap_sn:
+        notes.append(f"snappyHexMesh on {cap_sn} rank(s) (CFDT_SNAPPY_PROCS) instead of {want}")
+        want = cap_sn
+    procs, cap_note = foam.local_procs(want)
     if cap_note:
         notes.append("snappyHexMesh: " + cap_note)
     # every rank loads the whole surface and its feature edges: the memory grows with the ranks (S50 on mochi,
@@ -1277,12 +1321,19 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                 crashes.append({"procs": procs, "signal": cr["name"], "in": cr.get("in"), "stage": stg,
                                 "build": build, "host": socket.gethostname()})
                 if procs > 1:
-                    notes.append(f"{msg} on {procs} ranks ({where}): made again in serial")
-                    procs = 1
+                    # the crash follows the decomposition (mochi coarse S50, 2026.11.13: 6 ranks crashed for three
+                    # variants and meshed for four; carbonio meshed them on 2): fewer ranks first, then serial
+                    nxt = max(2, procs // 3) if procs > 2 and not any(c["procs"] <= 2 for c in crashes[:-1]) else 1
+                    notes.append(f"{msg} on {procs} ranks ({where}): made again on "
+                                 + ("1 rank (serial)" if nxt == 1 else f"{nxt} ranks (another decomposition)"))
+                    procs = nxt
+                    if procs > 1:
+                        (sd / "system" / "decomposeParDict").write_text(
+                            decompose_dict(procs, np.asarray(st["hi"], float) - np.asarray(st["lo"], float)))
                     attempt += 1
                     continue
-                raise MeshError(f"{msg} ({where}" + (f"; it crashed on {crashes[0]['procs']} ranks too" if len(crashes) > 1
-                                                    else "") + "). A fault in snappyHexMesh, not in the study's size: "
+                raise MeshError(f"{msg} ({where}" + (f"; it crashed on {' and '.join(str(c['procs']) for c in crashes[:-1])} "
+                                                    "ranks too" if len(crashes) > 1 else "") + "). A fault in snappyHexMesh, not in the study's size: "
                                 "if the same study meshes on another machine, this machine's OpenFOAM build is the "
                                 "suspect (run.host another machine meanwhile); else change the mesh where it snaps "
                                 "(mesh.surface, mesh.gap, refinement near narrow gaps).\n" +
@@ -1345,6 +1396,10 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
         # faces joining the wall they touch (coarse S50 noholes / rot0 on mochi, 2026.11.12: one inverted boundary
         # face at [5.4, -60.1, 33.8] in the impeller's tip gap, after both attempts)
         bad = wrong_oriented_cells(sd, d, mesh, attempts[-1]["checkMesh"] if attempts else {})
+        # and those cfdt's own check finds pointing into their cells (a boundary face's pyramid below -1e-6 mm3) that
+        # checkMesh passes: every completed coarse S50 mesh (mochi, carbonio, 2026.11.13) stopped on one at
+        # [5.4, -60.1, 33.8] mm, which checkMesh did not report, so the step above never ran
+        bad = merge_bad(bad, inward_cells(mesh))
         if pockets or bad:
             # cells cut off from every inlet and outlet (closed pockets in narrow gaps): their pressure has no
             # reference, the solver's first pressure solve gives NaN (s180, 2026.10.31: 75 regions). Remove them
@@ -1359,6 +1414,9 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                                            f"{len(keep)}\n(\n" + "\n".join(map(str, keep.tolist())) + "\n)\n")
             foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields" +
                        (f" -patch {bad['patch']}" if bad else ""), "log.subsetMesh", sd, tmo)
+            # the sets index the mesh before the subset: stale now (decomposePar stops on them: 'Illegal content
+            # ... of set keep', s50_sliding_v14 on Perlmutter, 2026.11.13)
+            shutil.rmtree(sets, ignore_errors=True)
             if pockets:
                 notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
                              f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
@@ -1377,8 +1435,9 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                     if k in cm2}}
                 mesh.info["inverted_cells_removed"] = {k: bad[k] for k in ("faces", "volume_mm3", "at", "patch")}
                 mesh.info["inverted_cells_removed"]["cells"] = int(len(bad["cells"]))
-                notes.append(f"removed {len(bad['cells'])} cell(s) checkMesh found inverted after the stricter retry "
-                             f"({bad['faces']} face(s) incorrectly oriented, {bad['volume_mm3']:.3g} mm3, at "
+                notes.append(f"removed {len(bad['cells'])} cell(s) found inverted after the stricter retry (checkMesh's "
+                             f"face pyramids, or a boundary face pointing into its cell; {bad['faces']} face(s), "
+                             f"{bad['volume_mm3']:.3g} mm3, at "
                              f"{'; '.join(map(str, bad['at'][:3]))} mm); their exposed faces join wall {bad['patch']!r}. "
                              "checkMesh after: " + ("passes" if cm2.get("ok") else
                                                     "; ".join(e.strip("* ") for e in cm2.get("errors", [])[:2])

@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.11.12.11
+Version: 2026.11.13.2
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -196,7 +196,8 @@ class PolyMesh:
                 **({"order": {"owner_not_below_neighbour": not_upper, "out_of_order": out_of_order,
                               "duplicate_cell_pairs": duplicates}} if not order_ok else {}),
                 **({"inward_boundary_faces": int(len(inward)),
-                    "inward_at": _places(g["Cf"][ni:], inward, -pyr, sep, "pyramid_mm3", 6)} if len(inward) else {}),
+                    "inward_at": _places(g["Cf"][ni:], inward, -pyr, sep, "pyramid_mm3", 6),
+                    "inward_face_ids": (inward[:50] + ni).tolist()} if len(inward) else {}),
                 **({"boundary_faces_flat_pyramid": marginal} if marginal else {}),
                 "ok": bool(nc and V.min() > 0 and open_rel < 1e-6 and order_ok and outward
                            and (nonorth.max() if ni else 0) < 89.0)}
