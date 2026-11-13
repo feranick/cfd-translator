@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.12.10
+Version: 2026.11.12.18
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -200,7 +200,7 @@ def install_signal_handlers() -> None:
 
 
 def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False, cancel_file: Path | None = None,
-          deadline: float | None = None, on_deadline=None, watch_log: Path | None = None):
+          deadline: float | None = None, on_deadline=None, watch_log: Path | None = None, mem_log: Path | None = None):
     """Runs cmd in a bash that sources OpenFOAM. Long commands (not capture) run in their own process group,
     which a timeout or the cancel flag kills as a whole (mpirun and every rank, not only bash). At the epoch
     time deadline, on_deadline() is called once (a transient run asked to write and stop)."""
@@ -211,16 +211,68 @@ def _bash(foam: dict, cmd: str, cwd: Path, timeout: float, capture: bool = False
     p = subprocess.Popen(["bash", "-c", src + cmd], cwd=str(cwd), start_new_session=True, env=env)
     _ACTIVE.add(p)
     try:
-        return _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log)
+        return _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log, mem_log)
     finally:
         _ACTIVE.discard(p)
 
 
-def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log):
+MEM_SAMPLE_S = 5.0
+PEAK_MB: dict = {}                 # log name -> the largest memory its step's processes held at once (MB)
+_LAST_PEAK = [0.0]
+
+
+def session_rss_mb(sid: int) -> float:
+    """The resident memory (MB) of every process in session sid on this node (a step's bash, mpirun and its ranks;
+    ranks srun starts on other nodes are not seen)."""
+    tot = 0
+    page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+    for pid in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not pid.isdigit():
+            continue
+        try:
+            st = Path(f"/proc/{pid}/stat").read_text()
+            f = st[st.rfind(")") + 2:].split()
+            if int(f[3]) != sid:                       # field 6 of stat: the session id
+                continue
+            tot += int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * page
+        except (OSError, IndexError, ValueError):
+            continue
+    return tot / 2 ** 20
+
+
+STAGE_OF = None                    # snappy.stage_of, set by the mesher: peaks per snappyHexMesh stage
+_STAGE_PEAK: dict = {}
+
+
+def _log_stage(log: Path | None) -> str | None:
+    if log is None or STAGE_OF is None:
+        return None
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, os.path.getsize(log) - 20000))
+            return STAGE_OF(f.read().decode(errors="replace"))
+    except OSError:
+        return None
+
+
+def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log, mem_log=None):
     t0 = time.time()
     fired = False
     next_look = t0 + WATCH_S
+    next_mem = t0 + 1.0
+    _LAST_PEAK[0] = 0.0
+    _STAGE_PEAK.clear()
     while True:
+        if time.time() >= next_mem:                # the step's peak memory (snappyHexMesh per stage, the solver)
+            next_mem = time.time() + MEM_SAMPLE_S
+            try:
+                mb = session_rss_mb(p.pid)
+                _LAST_PEAK[0] = max(_LAST_PEAK[0], mb)
+                stg = _log_stage(mem_log)
+                if stg:
+                    _STAGE_PEAK[stg] = max(_STAGE_PEAK.get(stg, 0.0), mb)
+            except Exception:  # noqa: BLE001 (a measurement must never stop a run)
+                pass
         if watch_log is not None and time.time() >= next_look:
             next_look = time.time() + WATCH_S
             dv = divergence(watch_log)
@@ -296,9 +348,16 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     try:
         rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
                    cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline,
-                   watch_log=Path(case) / logname if "foamRun" in cmd else None).returncode
+                   watch_log=Path(case) / logname if "foamRun" in cmd else None,
+                   mem_log=Path(case) / logname if "snappyHexMesh" in cmd else None).returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
+    finally:
+        if _LAST_PEAK[0]:
+            PEAK_MB[logname] = round(max(PEAK_MB.get(logname, 0.0), _LAST_PEAK[0]), 1)
+        for stg, mb in _STAGE_PEAK.items():
+            k = f"{logname}:{stg}"
+            PEAK_MB[k] = round(max(PEAK_MB.get(k, 0.0), mb), 1)
     if rc != 0 and raise_on_error:
         tail = _tail(case / logname)
         if was_killed(tail, rc):

@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.12.16
+Version: 2026.11.12.18
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -121,10 +121,37 @@ def validate(studies: dict) -> dict:
                 e = None
             if e:
                 rec["estimate"] = e
-                w = _mem_warning(ex[n], e)
-                if w:
-                    rec.setdefault("warnings", []).append(w)
+                for w in (_mem_warning(ex[n], e), _snappy_mem_warning(ex[n], e)):
+                    if w:
+                        rec.setdefault("warnings", []).append(w)
     return v
+
+
+def _snappy_mem_warning(study: dict, est: dict) -> str | None:
+    """snappyHexMesh in parallel: every rank holds the whole surface, so its memory grows with the ranks (S50 on
+    mochi, 2026.11.12: killed with 18 ranks in 58 GB at 4 M cells). The surface's size is not known before meshing:
+    1 M triangles assumed. The job fits the meshing ranks to its memory by itself; this says so before submitting."""
+    m = study.get("mesh") or {}
+    if m.get("mesher") != "snappy" or not est.get("mem_mb") or not est.get("cells"):
+        return None
+    from .snappy import MEM_FILL, memory_estimate
+    from . import executor
+    procs = int(m.get("procs") or est.get("procs") or 1)
+    nodes = executor.job_nodes(study, est["cells"])
+    e = memory_estimate(procs, est["cells"], None)
+    per_node = e["total_mb"] / nodes
+    est["snappy_mem_mb"] = int(per_node)
+    if per_node <= MEM_FILL * est["mem_mb"]:
+        return None
+    fit = max([p for p in range(1, procs + 1)
+               if memory_estimate(p, est["cells"], None)["total_mb"] / nodes <= MEM_FILL * est["mem_mb"]], default=1)
+    return (f"memory: snappyHexMesh on {procs} rank(s) may need ~{per_node / 1024:.3g} GB per node (every rank holds "
+            f"the whole surface, ~{e['per_rank_mb'] / 1024:.2g} GB each for an assumed 1 M triangles, plus "
+            f"~{e['cells_mb'] / 1024:.2g} GB for {est['cells'] / 1e6:.2g} M cells) against the job's "
+            f"{est['mem_mb'] / 1024:.3g} GB: " + (f"the job fits the meshing ranks to its memory by itself (from the "
+                                                 f"real surface), or set mesh.procs (e.g. {fit})" if not m.get("procs")
+                                                 else f"lower mesh.procs (e.g. {fit})") +
+            ", or give it more memory (run.mem)")
 
 
 def _mem_warning(study: dict, est: dict) -> str | None:

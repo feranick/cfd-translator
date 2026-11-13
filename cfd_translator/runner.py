@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.12.17
+Version: 2026.11.12.18
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -149,8 +149,12 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
     limits = {"timeout_s": float(timeout), "mem": f"{int(mem)}M" if mem and mem.isdigit() else None,
               "from_study": sorted(k for k in run_over if k in ("timeout_s", "mem", "procs", "queue"))}
 
+    from . import foam as _foam
+    _foam.PEAK_MB.clear()                     # this study's steps only (a worker runs several studies)
+
     def record(*a, **k):
-        return {**execution_record(*a, **k), "limits": limits}
+        return {**execution_record(*a, **k), "limits": limits,
+                **({"memory_peak_mb": dict(_foam.PEAK_MB)} if _foam.PEAK_MB else {})}
     out["execution"] = record(procs_req)
     if (folder / "cancel").exists():
         out.update(ok=False, state="cancelled", why="cancelled before it started")
@@ -376,6 +380,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                           "results": round(time.perf_counter() - t2, 3)}
     except Exception as exc:  # noqa: BLE001
         from .foam import Cancelled
+        if _foam.PEAK_MB and isinstance(out.get("execution"), dict):
+            out["execution"]["memory_peak_mb"] = dict(_foam.PEAK_MB)     # where it stood when it stopped
         if isinstance(exc, Cancelled):
             out.update(ok=False, state="cancelled", why="cancelled while running", warnings=warns)
             return _save(out, folder, name)

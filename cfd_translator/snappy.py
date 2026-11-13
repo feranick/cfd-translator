@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.12.13
+Version: 2026.11.12.18
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -856,6 +856,91 @@ def cut_off_regions(mesh, open_patches: set) -> dict | None:
             "at": [round(float(v), 1) for v in g["C"][lab == big].mean(axis=0)]}
 
 
+# snappyHexMesh's memory, an estimate to calibrate with mesh.snappy.memory.peak_mb: every rank holds the whole
+# surface (triangles, its search tree, the feature edges) and a share of the cells
+RANK_BASE_MB = 300.0
+TRI_KB = 2.5                     # per surface triangle, on every rank (the surface, its octree, the feature edges):
+                                 # provisional, from S50 on mochi (18 ranks killed in 58 GB at 4 M cells with a
+                                 # surface of an estimated 1.5-3 M triangles)
+CELL_KB = 2.0                    # per cell, over all ranks (snapping's peak)
+MEM_FILL = 0.85                  # at most this share of the job's memory
+
+
+def memory_estimate(procs: int, cells: float | None, triangles: int | None) -> dict:
+    """{per_rank_mb, cells_mb, total_mb} of snappyHexMesh on procs ranks (an estimate)."""
+    per = RANK_BASE_MB + TRI_KB * float(triangles or 1e6) / 1024
+    cm = CELL_KB * float(cells or 0) / 1024
+    return {"per_rank_mb": round(per), "cells_mb": round(cm), "total_mb": round(procs * per + cm),
+            "triangles": int(triangles) if triangles else None, "cells_estimate": int(cells) if cells else None}
+
+
+def meshing_procs(procs: int, cells: float | None, ntri: int, lim: float | None, given: bool) -> tuple[int, dict, str | None]:
+    """snappyHexMesh's ranks within the job's memory (lim, MB): fewer than procs when the estimate does not fit and
+    mesh.procs was not given. Returns (ranks, the estimate for them with limit_mb and procs, a note or None)."""
+    mem = memory_estimate(procs, cells, ntri)
+    note = None
+    if lim and not given and procs > 1 and mem["total_mb"] > MEM_FILL * lim:
+        fit = max([p for p in range(1, procs + 1) if memory_estimate(p, cells, ntri)["total_mb"] <= MEM_FILL * lim],
+                  default=1)
+        note = (f"snappyHexMesh on {fit} rank(s) instead of {procs}: every rank holds the whole surface ({ntri:,} "
+                f"triangles, ~{mem['per_rank_mb'] / 1024:.2g} GB a rank) and {procs} would need ~{mem['total_mb'] / 1024:.3g}"
+                f" GB of this job's {lim / 1024:.3g} GB (an estimate: mesh.procs sets the meshing ranks; the solver "
+                "keeps its own)")
+        procs = fit
+        mem = memory_estimate(procs, cells, ntri)
+    elif lim and mem["total_mb"] > MEM_FILL * lim:
+        note = (f"snappyHexMesh may run out of memory: ~{mem['total_mb'] / 1024:.3g} GB estimated for {procs} rank(s) "
+                f"({ntri:,} triangles on every rank, ~{(cells or 0) / 1e6:.2g} M cells) against {lim / 1024:.3g} GB: "
+                "fewer meshing ranks (mesh.procs) or more memory (run.mem)")
+    mem.update(limit_mb=int(lim) if lim else None, procs=procs)
+    return procs, mem, note
+
+
+ORIENT_MAX_FACES = 20
+
+
+def wrong_oriented_cells(sd: Path, d: Path, mesh, cm: dict) -> dict | None:
+    """The cells around the faces checkMesh wrote as incorrectly oriented (its face-pyramids check), when there are
+    few (ORIENT_MAX_FACES) and they touch a wall: {cells, faces, volume_mm3, at, patch (the wall their exposed faces
+    join)}. None otherwise (the mesh is kept as it is, and the warnings say checkMesh fails)."""
+    errs = " ".join(cm.get("errors") or [])
+    if "incorrectly oriented" not in errs and "pyramid" not in errs.lower():
+        return None
+    try:
+        log = (Path(sd) / "log.checkMesh").read_text(errors="replace")
+    except OSError:
+        return None
+    names = re.findall(r"faces with incorrect orientation to set (\S+)", log) or ["wrongOrientedFaces"]
+    faces = []
+    from .foamio import read_labels
+    for nm in dict.fromkeys(names):
+        f = Path(d) / "sets" / nm
+        if f.is_file():
+            try:
+                faces += read_labels(f).tolist()
+            except (OSError, ValueError):
+                return None
+    faces = np.unique(np.asarray(faces, np.int64))
+    if not len(faces) or len(faces) > ORIENT_MAX_FACES:
+        return None
+    ni = mesh.ninternal
+    cells = set(mesh.owner[faces].tolist()) | set(mesh.neighbour[faces[faces < ni]].tolist())
+    cells = np.array(sorted(cells), np.int64)
+    # the wall their exposed faces join: the wall patch among the boundary faces of these cells (most faces)
+    bmask = np.isin(mesh.owner[ni:], cells)
+    walls = {p["name"]: p for p in mesh.info.get("foam_patches") or [] if p.get("type") == "wall"}
+    count = {}
+    for p in walls.values():
+        k = int(bmask[p["start"] - ni:p["start"] - ni + p["n"]].sum())
+        if k:
+            count[p["name"]] = k
+    if not count:
+        return None                                      # not at a wall: leave it
+    g = mesh.geometry()
+    return {"cells": cells, "faces": int(len(faces)), "volume_mm3": float(np.abs(g["V"][cells]).sum()),
+            "at": [np.round(g["C"][c], 1).tolist() for c in cells[:5]], "patch": max(count, key=count.get)}
+
+
 NOLAYERS = "_nolayers"
 
 
@@ -1096,9 +1181,28 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     (sd / "system" / "blockMeshDict").write_text(block_mesh_dict(st, box_patches, not external))
     (sd / "system" / "surfaceFeaturesDict").write_text(_hdr("surfaceFeaturesDict") +
                                                        f"surfaces (\"{PART}.obj\");\n\nincludedAngle   150;\n")
-    procs, cap_note = foam.local_procs(procs_of(study))
+    foam.STAGE_OF = stage_of
+    m_procs = (study.get("mesh") or {}).get("procs")
+    procs, cap_note = foam.local_procs(int(m_procs) if m_procs else procs_of(study))
     if cap_note:
         notes.append("snappyHexMesh: " + cap_note)
+    # every rank loads the whole surface and its feature edges: the memory grows with the ranks (S50 on mochi,
+    # 2026.11.12: killed while snapping at 8.3 M and again at 3.7-4.2 M cells with 18 ranks in 58 GB)
+    ntri = int(sum(len(v) for v in tri_of.values()))
+    from .executor import cell_estimate
+    try:
+        cells_est = cell_estimate(study)
+    except Exception:  # noqa: BLE001
+        cells_est = None
+    try:
+        from llmt_runtime.memory import memory_limit_mb
+        lim = memory_limit_mb()
+    except Exception:  # noqa: BLE001
+        lim = None
+    procs, mem, note = meshing_procs(procs, cells_est, ntri, lim, bool(m_procs))
+    if note:
+        notes.append(note)
+    snappy_memory = mem
     if procs > 1:
         (sd / "system" / "decomposeParDict").write_text(
             decompose_dict(procs, np.asarray(st["hi"], float) - np.asarray(st["lo"], float)))
@@ -1147,9 +1251,14 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                 # killed from outside (carbonio, 8 GB, 2026.11.03: an MPI 'proc-aborted-strsignal' while adding
                 # layers), not a meshing failure
                 cells = list(log["cells"].values())
+                pk = {k.split(":", 1)[1]: v for k, v in foam.PEAK_MB.items() if k.startswith("log.snappyHexMesh:")}
                 raise foam.Killed(foam.memory_hint("snappyHexMesh", stage_of(_read(sd / "log.snappyHexMesh")),
-                                                   cells[-1] if cells else None) + "\n" +
-                                  foam._tail(sd / "log.snappyHexMesh", 15))
+                                                   cells[-1] if cells else None) +
+                                  (" Measured on this node: " + ", ".join(f"{k} {v / 1024:.3g} GB" for k, v in pk.items())
+                                   if pk else "") +
+                                  f". It ran on {procs} rank(s), each holding the whole surface ({ntri:,} triangles): "
+                                  "fewer meshing ranks (mesh.procs, e.g. "
+                                  f"{max(1, procs // 3)}) need less" + "\n" + foam._tail(sd / "log.snappyHexMesh", 15))
             if rc != 0 or "fatal" in log:
                 text = log.get("fatal") or foam._tail(sd / "log.snappyHexMesh")
                 if "checkFaceFlatness" in text and flatness > -1:
@@ -1204,20 +1313,48 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
         mesh = from_foam(d)
         open_names = {nm for nm, (k, _) in of_names.items() if patches[k]["kind"] in ("inlet", "outlet", "opening")}
         pockets = cut_off_regions(mesh, open_names)
-        if pockets:
+        # a few cells checkMesh finds inverted (its face pyramids) after the stricter retry: removed, their exposed
+        # faces joining the wall they touch (coarse S50 noholes / rot0 on mochi, 2026.11.12: one inverted boundary
+        # face at [5.4, -60.1, 33.8] in the impeller's tip gap, after both attempts)
+        bad = wrong_oriented_cells(sd, d, mesh, attempts[-1]["checkMesh"] if attempts else {})
+        if pockets or bad:
             # cells cut off from every inlet and outlet (closed pockets in narrow gaps): their pressure has no
             # reference, the solver's first pressure solve gives NaN (s180, 2026.10.31: 75 regions). Remove them
-            keep = pockets["keep"]
+            keepm = np.zeros(mesh.ncells, bool)
+            keepm[pockets["keep"] if pockets else np.arange(mesh.ncells)] = True
+            if bad:
+                keepm[bad["cells"]] = False
+            keep = np.nonzero(keepm)[0]
             sets = d / "sets"
             sets.mkdir(exist_ok=True)
             (sets / "cfdtKeep").write_text(_hdr("cfdtKeep", "cellSet", "constant/polyMesh/sets") +
                                            f"{len(keep)}\n(\n" + "\n".join(map(str, keep.tolist())) + "\n)\n")
-            foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields", "log.subsetMesh", sd, tmo)
-            notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
-                         f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
-                         "snappyHexMesh closed them off in narrow gaps; left in, they make the pressure solver fail (NaN)")
+            foam._step(fm, "subsetMesh -cellSet cfdtKeep -overwrite -noFields" +
+                       (f" -patch {bad['patch']}" if bad else ""), "log.subsetMesh", sd, tmo)
+            if pockets:
+                notes.append(f"removed {pockets['n_pockets']} pocket(s) of the mesh cut off from every inlet and outlet "
+                             f"({pockets['cells']} cells, {pockets['volume_mm3']:.4g} mm3, e.g. near {pockets['at']} mm): "
+                             "snappyHexMesh closed them off in narrow gaps; left in, they make the pressure solver fail (NaN)")
             mesh = from_foam(d)
-            mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
+            if pockets:
+                mesh.info["regions_removed"] = {k: pockets[k] for k in ("n_pockets", "cells", "volume_mm3", "at")}
+            if bad:
+                foam._step(fm, "checkMesh", "log.checkMesh", sd, min(tmo, 1800), raise_on_error=False)
+                from .foamio import parse_checkmesh
+                cm2 = parse_checkmesh((sd / "log.checkMesh").read_text(errors="replace"))
+                attempts[-1]["checkMesh_after_removal"] = {k: cm2[k] for k in ("ok", "failed_checks", "errors")
+                                                           if k in cm2}
+                attempts[-1]["checkMesh"] = {**attempts[-1]["checkMesh"], **{k: cm2[k] for k in (
+                    "ok", "failed_checks", "errors", "max_non_orthogonality", "max_skewness", "min_volume", "cells")
+                    if k in cm2}}
+                mesh.info["inverted_cells_removed"] = {k: bad[k] for k in ("faces", "volume_mm3", "at", "patch")}
+                mesh.info["inverted_cells_removed"]["cells"] = int(len(bad["cells"]))
+                notes.append(f"removed {len(bad['cells'])} cell(s) checkMesh found inverted after the stricter retry "
+                             f"({bad['faces']} face(s) incorrectly oriented, {bad['volume_mm3']:.3g} mm3, at "
+                             f"{'; '.join(map(str, bad['at'][:3]))} mm); their exposed faces join wall {bad['patch']!r}. "
+                             "checkMesh after: " + ("passes" if cm2.get("ok") else
+                                                    "; ".join(e.strip("* ") for e in cm2.get("errors", [])[:2])
+                                                    or "fails"))
         # prism layers can fold cells where a layered wall meets an inlet or outlet (S50, 2026.11.01: 92 degrees
         # 0.3 mm inside the outlet plane): such a mesh is made again without layers rather than rejected. So is one
         # that fails checkMesh (s50_Q40_vol_n35, 2026.11.03: 3 faces incorrectly oriented, worst 84 degrees); if the
@@ -1342,7 +1479,11 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                    "zones": {z["name"]: {"level": z["level"], "cells": int(len(snapped.get(z["name"], [])))} for z in zones},
                    "cells_by_stage": report.get("cells", {}), "seconds": report.get("seconds"),
                    "illegal_faces": report.get("illegal_faces", 0), "gap_cells": report.get("gap_cells", 0),
-                   "attempts": attempts, "narrow_gaps": gaps, "procs": procs},
+                   "attempts": attempts, "narrow_gaps": gaps, "procs": procs,
+                   "memory": {**snappy_memory, "peak_mb": {k.replace("log.", ""): v for k, v in foam.PEAK_MB.items()
+                                                           if k.startswith(("log.snappyHexMesh", "log.blockMesh",
+                                                                            "log.surfaceFeatures", "log.decomposePar",
+                                                                            "log.reconstructPar", "log.checkMesh"))}}},
         **({"mesh_geometry": surface_premesh.stl} if getattr(surface_premesh, "stl", None) else {}),
         "assigned": (out_patches, selection, warns + notes),
         "snapped_zones": snapped, "revolution_tags": rev_tags})

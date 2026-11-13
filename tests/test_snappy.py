@@ -751,3 +751,64 @@ def test_sliding_caps_on_background_grid_planes():
     assert (hi[0] - lo[0]) / n[0] == pytest.approx(4.0)
     st["rotating"][0]["axis"] = [0, 0.6, 0.8]
     assert snappy.settings(st, False, list(pbb[0]) + list(pbb[1]), pbb)["aligned"]["done"] is False
+
+
+def test_meshing_ranks_fit_the_memory():
+    """S50 on mochi (58 GB, 18 ranks): snappyHexMesh killed while snapping at 8.3 M and at 3.7-4.2 M cells: every rank
+    holds the whole surface. Without mesh.procs the meshing ranks are fitted to the job's memory."""
+    e = snappy.memory_estimate(18, 4e6, 2_000_000)
+    assert e["per_rank_mb"] == pytest.approx(300 + 2.5 * 2_000_000 / 1024, abs=1) and e["total_mb"] > 58 * 1024 * 0.85
+    p, mem, note = snappy.meshing_procs(18, 4e6, 2_000_000, 58 * 1024, False)
+    assert 1 <= p < 18 and mem["total_mb"] <= 0.85 * 58 * 1024 and "instead of 18" in note and mem["procs"] == p
+    assert snappy.memory_estimate(p + 1, 4e6, 2_000_000)["total_mb"] > 0.85 * 58 * 1024
+    p2, _, note2 = snappy.meshing_procs(18, 4e6, 2_000_000, 58 * 1024, True)          # mesh.procs given: kept
+    assert p2 == 18 and "may run out of memory" in note2
+    assert snappy.meshing_procs(4, 1e5, 10_000, 58 * 1024, False)[2] is None
+
+
+def test_mesh_procs_validation_and_presubmit_warning(monkeypatch):
+    from cfd_translator import api
+    from cfd_translator.format import validate_study
+    st = {"geometry": {"box": [100, 50, 20]}, "domain": {"kind": "external", "box": [-200, -100, -100, 400, 100, 100]},
+          "fluid": "air", "bcs": [{"kind": "inlet", "faces": {"box": "xmin"}, "velocity": 10},
+                                  {"kind": "outlet", "faces": {"box": "xmax"}}],
+          "mesh": {"mesher": "snappy", "size": 10, "procs": 4}}
+    assert validate_study(st)["ok"], validate_study(st)
+    assert any("mesh.procs" in e for e in validate_study(dict(st, mesh=dict(st["mesh"], procs=0)))["errors"])
+    assert any("mesh.procs" in e for e in validate_study(dict(st, mesh={"size": 10, "procs": 2}))["errors"])
+    w = api._snappy_mem_warning(dict(st, mesh=dict(st["mesh"], procs=18)), {"mem_mb": 8192, "cells": 4e6, "procs": 18})
+    assert w and "every rank holds the whole surface" in w and "lower mesh.procs" in w
+    assert api._snappy_mem_warning(st, {"mem_mb": 64000, "cells": 1e5, "procs": 4}) is None
+
+
+def test_inverted_cells_at_a_wall_are_found(tmp_path):
+    """Coarse S50 noholes / rot0 on mochi: checkMesh still failed after the stricter retry on one inverted boundary
+    face. The cells around a few such faces (checkMesh's faceSet) are removed, their faces joining the wall."""
+    from cfd_translator.polymesh import box_mesh
+    m = box_mesh(10, 10, 10, 2, 2, 2)
+    m.info["foam_patches"] = [{"name": "walls", "type": "wall", "start": m.ninternal, "n": m.nfaces - m.ninternal}]
+    d = tmp_path / "constant" / "polyMesh"
+    (d / "sets").mkdir(parents=True)
+    f = m.nfaces - 1
+    (d / "sets" / "wrongOrientedFaces").write_text(
+        "FoamFile\n{\n    format      ascii;\n    class       faceSet;\n    object      wrongOrientedFaces;\n}\n\n"
+        f"1\n(\n{f}\n)\n")
+    (tmp_path / "log.checkMesh").write_text(
+        "  <<Writing 1 faces with incorrect orientation to set wrongOrientedFaces\n")
+    cm = {"errors": ["***Error in face pyramids: 1 faces are incorrectly oriented."]}
+    bad = snappy.wrong_oriented_cells(tmp_path, d, m, cm)
+    assert bad and list(bad["cells"]) == [int(m.owner[f])] and bad["patch"] == "walls" and bad["faces"] == 1
+    assert snappy.wrong_oriented_cells(tmp_path, d, m, {"errors": ["***Max skewness = 4.6"]}) is None
+
+
+def test_step_peak_memory(tmp_path):
+    """mesh.snappy.memory.peak_mb / execution.memory_peak_mb: the largest resident memory of a step's processes."""
+    import os
+
+    from cfd_translator import foam
+    if not os.path.isdir("/proc"):
+        pytest.skip("Linux /proc")
+    assert foam.session_rss_mb(os.getsid(0)) > 1
+    foam.PEAK_MB.clear()
+    foam._step({}, "sleep 1.6", "log.sleep", tmp_path, 30)
+    assert foam.PEAK_MB.get("log.sleep", 0) > 0

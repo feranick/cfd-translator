@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.12.17
+Version: 2026.11.12.18
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -145,7 +145,7 @@ STUDY_KEYS = {
     "bcs": "list of boundary conditions",
     "mesh": "{size, refine, cells: [nx, ny, nz], grading, extrude, quads, layers: {first | y_plus, n, growth, on, "
             "feature_angle}, mesher: gmsh | snappy, surface, features, gap, quality: {max_non_ortho, max_skewness}, "
-            "max_cells, optimize}",
+            "max_cells, procs (snappy ranks), optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
              "transient: {end_time s, average_from, max_co (null: fixed dt), write_interval, init (steady its first), max_jobs, "
@@ -182,7 +182,7 @@ STUDY_KEYS = {
               "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]], on_part}]; results.porous",
 }
 MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers", "mesher", "surface", "features",
-             "gap", "quality", "max_cells", "optimize"}
+             "gap", "quality", "max_cells", "optimize", "procs"}
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
               "transient", "init_from", "init_fields"}
@@ -754,10 +754,13 @@ def validate_study(st: dict) -> dict:
             errs.append("mesh.quality: max_non_ortho 30-85 degrees, max_skewness 1-20")
         if "max_cells" in m and not (_num(m["max_cells"]) and m["max_cells"] >= 1e4):
             errs.append("mesh.max_cells: a cell budget (>= 10000)")
+        if "procs" in m and not (isinstance(m["procs"], int) and not isinstance(m["procs"], bool) and m["procs"] >= 1):
+            errs.append("mesh.procs: snappyHexMesh's MPI ranks (integer >= 1; default the solver's): every rank holds "
+                        "the whole surface, so fewer ranks need less memory")
         if geo_kind == "box" and not external:
             warns.append("mesh.mesher snappy on an internal box: mesh.cells gives an exact structured mesh")
     else:
-        for k in ("surface", "features", "gap", "quality", "max_cells"):
+        for k in ("surface", "features", "gap", "quality", "max_cells", "procs"):
             if k in m:
                 errs.append(f"mesh.{k}: only with mesher snappy")
     if "optimize" in m and not isinstance(m["optimize"], bool):
