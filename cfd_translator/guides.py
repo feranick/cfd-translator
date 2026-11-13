@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.13.2
+Version: 2026.11.13.5
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -64,6 +64,13 @@ GUIDES = {
             "onset={...}) screens finished runs again with new regions or thresholds, without solving. Frozen-rotor "
             "heads oscillate: compare variants by pump.head_m with head_m_stderr (variants.differences), and give "
             "them solve.average {window: 0.5} and enough iterations for ten oscillations in the window.",
+            "Pressure pulsations of a sliding run: solve.transient.free_flow true. The flow is held while the run "
+            "settles (after {revolutions: 4}), then the inlet holds the mean total pressure of the last {revolutions: "
+            "2} and the flow follows it (from a finished transient run it continues or init_froms: that run's averaged "
+            "inlet total pressure, from the start). With the flow held the whole pulsation lands on the suction side "
+            "(S50: head 11-21 m and eye pressure +-48 kPa held, +-19 kPa free, means unchanged). average_from at least 4 "
+            "revolutions after the switch (the flow settles); results.free_flow gives the flow, the inlet and outlet "
+            "pressures and the probes per revolution.",
             "Pressure statistics of a sliding (or any transient) run: solve.transient.p_below [Pa absolute, e.g. "
             "2339, 20000, 50000: vapour pressure and air-release levels] writes, per cell, the fraction of the "
             "averaging window spent below each (image field p_below_<Pa>), summarised for the domain and each "

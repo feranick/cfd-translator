@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.13.4
+Version: 2026.11.13.5
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -127,6 +127,36 @@ operation       average;
 weightField     phi;
 fields          (p total(p));"""))
             mon["pressure"][n] = fo
+    if cfg.get("transient"):
+        # the inlet's flow every time step (free_flow: how the flow follows the inlet's total pressure, per revolution)
+        for n, k in kinds.items():
+            if k == "inlet":
+                fo = f"cfdtQ_{n}"
+                funcs.append(_fo(fo, f"""
+type            surfaceFieldValue;
+libs            ("libfieldFunctionObjects.so");
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+writeFields     false;
+surfaceFormat   none;
+patch           {n};
+operation       sum;
+fields          (phi);"""))
+                mon.setdefault("flow", {})[n] = fo
+        pts = [pr for pr in study.get("probes") or [] if isinstance(pr, dict) and "at" in pr]
+        if pts:
+            # the probes' pressure every time step (per-revolution min, max and rms)
+            locs = " ".join(f"({pr['at'][0] * 1e-3:.10g} {pr['at'][1] * 1e-3:.10g} {pr['at'][2] * 1e-3:.10g})"
+                            for pr in pts)
+            funcs.append(_fo("cfdtProbes", f"""
+type            probes;
+libs            ("libsampling.so");
+writeControl    timeStep;
+writeInterval   1;
+fields          (p);
+probeLocations  ({locs});"""))
+            mon["probes"] = [pr.get("name") or f"probe{i}" for i, pr in enumerate(pts)]
     body = plan.get("body_walls") or []
     ref = study.get("reference") or {}
     if body and ref.get("velocity") and ref.get("area"):

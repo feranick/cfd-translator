@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.13.3
+Version: 2026.11.13.5
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -319,6 +319,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         warns += w
         if transient:                             # p rms and the time below pressure thresholds (p_below)
             from .transient import pressure_statistics
+            ff_block = _free_flow_report(case, study, plan, folder, tstate, warns)
+            if ff_block:
+                res["free_flow"] = ff_block
             ps = pressure_statistics(study, mesh, plan, fields)
             if ps:
                 res["pressure_statistics"] = ps
@@ -688,6 +691,30 @@ def zero_fields(fields: dict, plan: dict) -> list[str]:
     return out
 
 
+def _free_flow_report(case: Path, study: dict, plan: dict, folder: Path, tstate: dict, warns: list) -> dict | None:
+    """results.free_flow (solve.transient.free_flow); otherwise, for a transient pump run whose inlet holds the flow, a
+    note that its pressure pulsation lands on the suction side."""
+    from .freeflow import report, settings
+    from .transient import sliding_zone
+    cfg = settings(study, plan, folder)
+    if cfg is None:
+        holds = any(b.get("kind") == "inlet" and ({"flow_rate", "velocity", "mass_flow"} & set(b))
+                    for b in study.get("bcs") or [])
+        if holds and sliding_zone(study):
+            warns.append("the inlet holds the flow: the pressure pulsation lands on the suction side (S50: the head "
+                         "swung 11-21 m and the eye pressure +-48 kPa with the flow held, +-19 kPa with the inlet's "
+                         "total pressure held, the means unchanged). For pressure pulsations use "
+                         "solve.transient.free_flow")
+        return None
+    try:
+        block, w = report(case, plan, cfg, tstate, study)
+    except Exception as exc:  # noqa: BLE001 (a report must never fail a finished run)
+        warns.append(f"free_flow: no report ({type(exc).__name__}: {exc})")
+        return None
+    warns += w
+    return block
+
+
 def _onset_into(study: dict, mesh, plan: dict, fields: dict, res: dict) -> list:
     """study.onset: results.onset and the p_eff field (images, render_images); its warnings."""
     if not study.get("onset"):
@@ -884,6 +911,23 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         resume = True
     elif state.get("sliding_notes"):
         warns += [n for n in state["sliding_notes"] if n not in warns]
+    # free_flow: the flow held while the run settles, then the inlet's total pressure (freeflow.py)
+    from . import freeflow
+    ffc = freeflow.settings(study, plan, folder)
+    ffs = state.setdefault("free_flow", {}) if ffc else {}
+    if ffc and not ffs.get("switched_at") and not ffs.get("failed"):
+        t_start = float(state.get("continued_at") or 0.0)
+        if ffc.get("p0_Pa") is not None:
+            files = freeflow.switch_inlet(case, ffc["inlet"], ffc["p0_Pa"] / ffc["rho"])
+            ffs.update(switched_at=t_start, p0_Pa=ffc["p0_Pa"], p0_from=ffc["p0_from"], files=len(files))
+            save()
+            warns.append(f"free_flow: the inlet holds the total pressure {ffc['p0_Pa']:.6g} Pa from the start "
+                         f"({ffc['p0_from']}); the flow follows it")
+        else:
+            ffs.setdefault("t_switch", t_start + ffc["hold_s"])
+            if ffs["t_switch"] < float(tr["end_time"]) - 1e-12:
+                freeflow.set_end_time(case, ffs["t_switch"])          # stop there, switch, go on
+            save()
     left = timeout - (time.time() - t_job)
     try:
         info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
@@ -905,6 +949,27 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         save()
         left = timeout - (time.time() - t_job)
         info = foam.run(case, max(left, 120.0), procs, resume=True, deadline=t_job + timeout - margin)
+    if ffc and ffs.get("t_switch") is not None and not ffs.get("switched_at") and not ffs.get("failed") \
+            and info.get("time") is not None and float(info["time"]) >= ffs["t_switch"] - 0.5 * float(tr.get("dt") or 0):
+        # the held phase is over: p0 from its last window, the inlet switched, and on to end_time in this job
+        t_sw = float(info["time"])
+        p0, how = freeflow.p0_from_monitor(case, ffc["inlet"], t_sw - ffc["window_s"], t_sw, ffc["rho"])
+        freeflow.set_end_time(case, float(tr["end_time"]))
+        if p0 is None:
+            ffs["failed"] = how.get("why", "no inlet total pressure")
+            warns.append(f"free_flow: the inlet's total pressure could not be read ({ffs['failed']}): the flow stays held")
+        else:
+            files = freeflow.switch_inlet(case, ffc["inlet"], p0 / ffc["rho"])
+            ffs.update(switched_at=t_sw, p0_Pa=float(f"{p0:.6g}"), p0_from=ffc["p0_from"], p0_window=how, files=len(files))
+            warns.append(f"free_flow: after {ffc['hold']} with the flow held, the inlet holds the total pressure "
+                         f"{p0:.6g} Pa (the mean over the last {ffc['window']}); the flow follows it from t = {t_sw:g} s")
+        save()
+        state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
+        left = timeout - (time.time() - t_job)
+        if left > margin + 120.0 and t_sw < float(tr["end_time"]) - 1e-12:
+            info = foam.run(case, left, procs, resume=True, deadline=t_job + timeout - margin)
+        else:
+            info = dict(info, reached_end=t_sw >= float(tr["end_time"]) - 1e-12, log=dict(info["log"], iterations=0))
     state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
     state["time"] = info.get("time")
     from .transient import courant_stats

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.13.2
+Version: 2026.11.13.5
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -30,7 +30,7 @@ FLUIDS = {
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
-                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions"}
+                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions", "free_flow"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -152,7 +152,7 @@ STUDY_KEYS = {
              "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
-             "p_below_regions}",
+             "p_below_regions, free_flow (pumps: flow held, then the inlet's total pressure)}",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -1024,6 +1024,8 @@ def validate_study(st: dict) -> dict:
     errs += _cavitation_errors(st)
     from .onset import errors as _onset_errors
     errs += _onset_errors(st)
+    from .freeflow import errors as _ff_errors
+    errs += _ff_errors(st)
     # images
     if "images" in st:
         errs += image_errors(st["images"], two_d, _field_names(st), bool((st.get("reference") or {}).get("velocity")))
