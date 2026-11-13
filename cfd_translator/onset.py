@@ -1,6 +1,6 @@
 """onset.py — where a steady (MRF) single-phase run says vapour or air would appear, to screen impellers before
 two-phase sweeps.
-Version: 2026.11.13.2
+Version: 2026.11.13.4
 
     settings(study) -> dict | None                   c, thresholds (Pa abs, named), regions (as given)
     regions(study, mesh, plan, res) -> {name: mask, ...}, {name: how}   derived and given regions
@@ -399,7 +399,8 @@ def evaluate(study: dict, mesh, plan: dict, fields: dict, res: dict) -> tuple[di
         if len(ic):
             jc = ic[int(np.argmin(p_eff[ic]))]
             rec["robust"] = {"p_eff_min_Pa": float(f"{p_eff[jc]:.6g}"), "at_mm": np.round(C[jc], 2).tolist(),
-                             **{f"p_eff_q{q * 100:g}pct_Pa": float(f"{vquantile(p_eff[ic], Va[ic], q):.6g}")
+                             # keys without a dot (dotted paths read them): p_eff_q0p1pct_Pa, p_eff_q1pct_Pa
+                             **{f"p_eff_q{q * 100:g}pct_Pa".replace(".", "p"): float(f"{vquantile(p_eff[ic], Va[ic], q):.6g}")
                                 for q in QUANTILES},
                              "cells_left_out": int((m & flag).sum()),
                              "volume_left_out_mm3": float(f"{Va[m & flag].sum():.4g}")}

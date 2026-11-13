@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.13.2
+Version: 2026.11.13.4
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -684,6 +684,8 @@ def average_results(case: Path, plan: dict, res: dict) -> tuple[dict | None, lis
         block["history"] = {xk: [(_r(i) if tr else int(i)) for i in its[::k]], "cd": [_r(x) for x in cd[::k]],
                             "cl": [_r(x) for x in series["cl"][1][::k]]}
     _apply_means(res, stats, plan)
+    if res.get("pump") is not None:
+        res["pump"]["settled"] = block["settled"]
     co = res.get("coefficients")
     if tr and co is not None:
         for k in ("cd", "cl"):
@@ -731,6 +733,9 @@ def _apply_means(res: dict, stats: dict, plan: dict) -> None:
                 pump[f"{k}_std"] = stats[k]["std"]
                 if "stderr_abs" in stats[k]:
                     pump[f"{k}_stderr"] = stats[k]["stderr_abs"]
+                    for x in ("n_eff", "drift", "drift_sigma", "tau_iterations"):
+                        if x in stats[k]:
+                            pump[f"{k}_{x}"] = stats[k][x]
         if "head_m" in stats:
             pump["averaged_over"] = stats["head_m"]["window"]
             # efficiency of the means (rho g Q mean(H) / mean(P)) is steadier than the mean of the ratio

@@ -289,3 +289,18 @@ def test_variant_differences_with_their_error():
     h = d["studies"]["noholes"]["head_m"]
     assert d["against"] == "base" and h["diff"] == pytest.approx(0.3) and h["significant"]
     assert d["studies"]["noholes"]["power_W"]["significant"] is False
+
+
+def test_comparison_against_a_reference_study(tmp_path, monkeypatch):
+    """seven S50 variants submitted as separate studies of one request (no variants group): study_status(reference=)
+    gives the same differences."""
+    from cfd_translator import api
+    res = {"done": True, "studies": {
+        "base": {"results": {"pump": {"head_m": 16.18, "head_m_stderr": 0.15, "power_W": 2200.0, "power_W_stderr": 9.0}},
+                 "mesh": {"cells": 8}, "reliable": False},
+        "noholes": {"results": {"pump": {"head_m": 16.67, "head_m_stderr": 0.17, "power_W": 2210.0,
+                                         "power_W_stderr": 9.0}}, "mesh": {"cells": 8}, "reliable": False}}}
+    out = api._compare_to(dict(res), "base")
+    d = out["comparison"]["differences"]["studies"]["noholes"]["head_m"]
+    assert d["diff"] == pytest.approx(0.49) and d["significant"] is True        # 0.49 m against 2 x 0.227 m
+    assert "error" in api._compare_to(dict(res), "nope")["comparison"]

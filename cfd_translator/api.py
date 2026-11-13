@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.13.3
+Version: 2026.11.13.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -606,7 +606,24 @@ def summarize(r: dict) -> dict:
     return out
 
 
-def status(request: str, wait: float = 0.0, detail: str = "full", window: list | None = None) -> dict:
+def _compare_to(res: dict, reference: str | None) -> dict:
+    """study_status(reference=...): studies submitted separately in one request, against one of them (S50 impeller
+    variants on spark1, 2026.11.13: seven studies, no variants group): the same table and differences (head and power
+    with their standard errors, significant beyond 2 sigma) as a variants group's."""
+    if not reference:
+        return res
+    from .variants import compare
+    out = res.get("studies") or {}
+    names = list(out) + [n for n in res.get("pending") or [] if n not in out]
+    if reference not in names:
+        res["comparison"] = {"error": f"reference {reference!r} is not a study of this request ({sorted(names)})"}
+    else:
+        res["comparison"] = compare(out, {"names": [reference] + [n for n in names if n != reference]})
+    return res
+
+
+def status(request: str, wait: float = 0.0, detail: str = "full", window: list | None = None,
+           reference: str | None = None) -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
@@ -617,7 +634,7 @@ def status(request: str, wait: float = 0.0, detail: str = "full", window: list |
     # within an MCP call's deadline (48 s): the last look starts with 3 s left for the answer (outside a call: wait)
     t_end = until(wait)
     while True:
-        res = _collect(folder)
+        res = _compare_to(_collect(folder), reference)
         if res["done"] or time.time() >= t_end:
             return _detail(res, detail)
         # SLURM jobs do not need this process: give quick ones up to 15 s, then return them pending

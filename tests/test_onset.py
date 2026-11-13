@@ -125,7 +125,7 @@ def test_robust_statistics_leave_out_one_bad_cell_and_inlet_saturation():
     d = on["regions"]["domain"]
     assert d["p_eff_min_Pa"] == pytest.approx(-822000, rel=1e-6) and d["min_cell_flagged"]
     assert d["robust"]["p_eff_min_Pa"] == pytest.approx(40000, rel=1e-6)
-    assert d["robust"]["p_eff_q0.1pct_Pa"] == pytest.approx(40000, rel=1e-6) and d["robust"]["cells_left_out"] > 0
+    assert d["robust"]["p_eff_q0p1pct_Pa"] == pytest.approx(40000, rel=1e-6) and d["robust"]["cells_left_out"] > 0
     assert on["left_out"]["zone_boundary"] > 0 and any("flagged cell" in x for x in w)
     v = on["below"]["vapour"]["domain"]
     assert v["volume_mm3"] > 0 and v["robust"]["volume_mm3"] == 0 and v["robust"]["margin_q1pct_Pa"] > 0

@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.13.3
+Version: 2026.11.13.4
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -193,7 +193,8 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, detail:
 
 @server.tool()
 @GUARD.tool(ToolError)
-def study_status(request: str, wait_s: float = 45, detail: str = "summary", window: list | None = None) -> dict:
+def study_status(request: str, wait_s: float = 45, detail: str = "summary", window: list | None = None,
+                 reference: str | None = None) -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results,
     the others in 'pending'. Waits up to wait_s seconds (at most 50) for them to finish. detail: "summary"
     (default: coefficients, forces, checks, image paths; bc selections as counts, no per-face loads),
@@ -201,8 +202,9 @@ def study_status(request: str, wait_s: float = 45, detail: str = "summary", wind
     (everything, as in <request>/<name>/<name>.json). Variants and mesh_scales are compared in 'variants'.
     window [t0, t1] (s; t1 null = to the end): instead, for finished transient studies, the mean, std, standard error
     and drift of cd, cl, the part's force and each wall bc's force over that window, from the force histories (no
-    download of the full result)."""
-    return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail, window)
+    download of the full result). reference: a study of the request; 'comparison' then sets every other study
+    against it (head and power differences with their standard errors, significant beyond 2 sigma), as variants do."""
+    return api.status(request, min(max(float(wait_s), 0.0), 50.0), detail, window, reference)
 
 
 @server.tool()
