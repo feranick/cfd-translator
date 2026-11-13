@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.13.4
+Version: 2026.11.13.7
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -306,15 +306,17 @@ def render_images(study_folder: str, images: list | bool = True, wait_s: float =
 @server.tool()
 @GUARD.tool(ToolError)
 def reprocess(request: str, studies: list[str] | None = None, onset: dict | bool | None = None,
-              average: dict | bool | None = None, wait_s: float = 45) -> dict:
+              average: dict | bool | None = None, sections: list | bool | None = None, wait_s: float = 45) -> dict:
     """Results again for a request's finished studies (all, or those named) from their cases, with this version's
     post-processing, without solving: e.g. porous-zone reactions in the part's forces (2026.10.28.2) for runs
     made before. onset: a new onset block for those studies (corrected regions, thresholds, c; false removes it):
     the cavitation-onset screen again without solving. average: other averaging settings for steady runs
     (solve.average, e.g. {"window": 0.5}): window means, standard errors and the variants' differences again from the
-    saved monitor histories. Keeps the old result as a .bak and reports what changed; then study_status(request)."""
+    saved monitor histories. sections: flows through internal surfaces for those studies (the study key 'sections':
+    [{name, plane, within}]; false removes them): liquid and gas apart in air and cavitation runs, from the cases'
+    face fluxes. Keeps the old result as a .bak and reports what changed; then study_status(request)."""
     return api.in_worker("reprocessing", "reprocess", {"request": request, "studies": studies, "onset": onset,
-                                                       "average": average}, wait_s)
+                                                       "average": average, "sections": sections}, wait_s)
 
 
 @server.tool()

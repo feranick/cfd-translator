@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.13.4
+Version: 2026.11.13.7
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -665,10 +665,19 @@ def _window(folder: Path, window) -> dict:
     return {"request": str(folder), "translator": __version__, "window": list(window), "studies": out}
 
 
-def pack(request: str, state: bool = False, out: str | None = None) -> dict:
-    """On a cluster: a .tgz of a request's results to bring back (transfer.pack; other/supercomputers/clusters.md)."""
+def pack(request: str, state: bool = False, out: str | None = None, studies: list | None = None,
+         init: bool = False) -> dict:
+    """On a cluster: a .tgz of a request's results to bring back (transfer.pack; other/supercomputers/clusters.md).
+    init: also the case's mesh, dictionaries and latest fields, for init_from on another machine."""
     from .transfer import pack as _pack
-    return _pack(request, state, out)
+    return _pack(request, state, out, studies, init)
+
+
+def init_check(ref: str, fields: str = "last") -> dict:
+    """Whether a run of this machine ('<request>/<study>') can be started from (solve.init_from), and how much an
+    init pack of it holds (transfer.init_check)."""
+    from .transfer import init_check as _check
+    return _check(ref, fields)
 
 
 def import_results(path: str, name: str | None = None) -> dict:
@@ -681,12 +690,12 @@ def import_results(path: str, name: str | None = None) -> dict:
     return {**r, "status": {k: st[k] for k in ("done", "studies", "variants") if k in st}}
 
 
-def reprocess(request: str, studies: list[str] | None = None, onset=None, average=None) -> dict:
+def reprocess(request: str, studies: list[str] | None = None, onset=None, average=None, sections=None) -> dict:
     """Results again for the finished studies of a request (all, or those named), from their cases, with the
     current post-processing: no solving. Running or failed studies are skipped. onset: a new onset block for them
     (regions, thresholds, c; false removes it): the screen again without solving. average: other averaging settings
     for steady runs (solve.average, e.g. {window: 0.5}): means, standard errors and variant differences again from
-    the saved monitor histories."""
+    the saved monitor histories. sections: flows through internal surfaces (sections.py; false removes them)."""
     from .runner import _KEEP, reprocess_study
     folder = Path(request).expanduser().resolve()
     root = out_root().resolve()
@@ -702,7 +711,7 @@ def reprocess(request: str, studies: list[str] | None = None, onset=None, averag
     for n in names:
         try:
             out[n] = reprocess_study(folder / n, n, _KEEP if onset is None else onset,
-                                     _KEEP if average is None else average)
+                                     _KEEP if average is None else average, _KEEP if sections is None else sections)
         except Exception as exc:  # noqa: BLE001
             out[n] = {"name": n, "ok": False, "why": f"{type(exc).__name__}: {exc}"}
     return {"request": str(folder), "translator": __version__, "studies": out,

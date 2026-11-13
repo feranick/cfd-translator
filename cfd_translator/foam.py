@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.13.1
+Version: 2026.11.13.7
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -694,10 +694,12 @@ def launch(procs: int) -> str:
     return f"{mpirun_command(procs)} -np {int(procs)}"
 
 
-def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
+def read_fields(case: Path, mesh, plan: dict, mean: bool = False, internal_flux: bool = False) -> dict:
     """The last time directory's U, p, phi (and wallShearStress, nut, yPlus) in post.results' layout.
     Boundary values not written (zeroGradient, noSlip, slip, symmetry) are evaluated as OpenFOAM does.
-    mean (transient runs): UMean and pMean (fieldAverage) stand for U and p when they were written."""
+    mean (transient runs): UMean and pMean (fieldAverage) stand for U and p when they were written.
+    internal_flux (sections.py): also phi on the internal faces (phi_internal, m3/s owner to neighbour) and, in VoF
+    runs, the liquid's flux when the solver wrote it (alphaPhi_internal); a reconstructed case only."""
     case = Path(case)
     dec = decomposed(case)
     t = foamio.latest_time(case / "processor0" if dec else case)
@@ -836,6 +838,17 @@ def read_fields(case: Path, mesh, plan: dict, mean: bool = False) -> dict:
             out["p_stats_window_s"] = span
     if not extra:
         out.pop("scalars", None)
+    if internal_flux and not dec:
+        ni = len(mesh.neighbour)
+        a = np.asarray(phi["internalField"], float)
+        if a.ndim == 1 and len(a) == ni:
+            out["phi_internal"] = a
+            if vof:
+                for nm_ in ("alphaPhi0.water", "alphaPhi.water"):
+                    ap = load(nm_)
+                    if ap is not None and np.ndim(ap["internalField"]) == 1 and len(ap["internalField"]) == ni:
+                        out["alphaPhi_internal"] = np.asarray(ap["internalField"], float)
+                        break
     if vof:
         out["p_abs"] = p_abs
         if ac is not None:

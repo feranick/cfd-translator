@@ -1,9 +1,16 @@
 """transfer.py — a request run on a cluster cfdt's servers cannot reach (NERSC Perlmutter, MIT Engaging), brought
 back for study_status, window averages, render_images and comparisons (other/supercomputers/clusters.md).
-Version: 2026.11.11.2
+Version: 2026.11.13.8
 
-    pack(request, state=False, out=None)   on the cluster: a .tgz of the request's results, without the case's fields
+    pack(request, state=False, out=None, studies=None, init=False)
+                                           on the cluster: a .tgz of the request's results, without the case's fields
     import_request(path)                   on a cfdt machine: the .tgz (or the folder) as a request under CFDT_OUT
+    init_check(ref, fields='last')         can '<request>/<study>' of this machine be started from (init_from)?
+
+init=True (2026.11.13.6) packs what solve.init_from needs from finished studies of another machine (the router copies
+it when a study's init_from names a run there): case/system, case/constant (polyMesh and the dictionaries; no
+surfaces) and the latest reconstructed time directory, besides the results. Imported, the request answers
+init_from '<imported request>/<study>' on this machine (import gives the refs: 'init_from').
 
 The archive holds, per study: <name>.json (the result: reliable, unreliable_because, averages, revolution averages,
 drift...), images/, mesh.json, job.json, job.log, transient.json, state.json (the plan: window averages need it),
@@ -31,6 +38,52 @@ from . import __version__
 LOG_TAIL_MB = 2.0
 MANIFEST = "cfdt_pack.json"
 _KEEP_FILES = ("{name}.json", "mesh.json", "job.json", "job.log", "transient.json", "state.json")
+_INIT_SKIP = ("triSurface", "geometry", "extendedFeatureEdgeMesh")     # constant/: surfaces the run does not need
+
+
+def init_check(ref: str, fields: str = "last") -> dict:
+    """Whether '<request>/<study>' (this machine) can be started from: finished, a reconstructed time to take."""
+    from .transient import init_problems, source_folder, source_times
+    src = source_folder(ref)
+    probs = init_problems({"solve": {"init_from": ref, "init_fields": fields}})
+    out = {"ref": ref, "folder": str(src), "ok": not probs, "problems": probs}
+    res = src / f"{src.name}.json"
+    out["finished"] = res.is_file()
+    if res.is_file():
+        try:
+            r = json.loads(res.read_text())
+            out.update(result_ok=bool(r.get("ok")), reliable=r.get("reliable"))
+        except ValueError:
+            out["finished"] = False
+    t = source_times(src)
+    if t:
+        tdir = t[-1][1]
+        # when the fields last changed (a reprocess rewrites the result, not the fields): the router copies a run
+        # again only when its fields are newer than the copy (2026.11.13.8)
+        mt = [tdir.stat().st_mtime] + [f.stat().st_mtime for f in tdir.iterdir() if f.is_file()]
+        out.update(time=t[-1][0], init_bytes=_init_bytes(src, tdir), fields_mtime=max(mt))
+    if not out["finished"]:
+        out["ok"] = False
+        out["problems"] = probs + [f"{src.name} has no result yet: wait until it finishes"]
+    return out
+
+
+def _init_files(d: Path, tdir: Path):
+    """(path, arcname relative to the study folder) of what init_from takes from study folder d."""
+    c = d / "case"
+    for sub in ("system", "constant"):
+        for f in sorted((c / sub).rglob("*")) if (c / sub).is_dir() else []:
+            rel = f.relative_to(c)
+            if f.is_file() and not f.is_symlink() and not (sub == "constant" and len(rel.parts) > 1
+                                                            and rel.parts[1] in _INIT_SKIP):
+                yield f, f"case/{rel.as_posix()}"
+    for f in sorted(tdir.rglob("*")):
+        if f.is_file() and not f.is_symlink():
+            yield f, f"case/{tdir.relative_to(c).as_posix()}/{f.relative_to(tdir).as_posix()}"
+
+
+def _init_bytes(d: Path, tdir: Path) -> int:
+    return sum(f.stat().st_size for f, _ in _init_files(d, tdir))
 
 
 def _out_root() -> Path:
@@ -38,23 +91,54 @@ def _out_root() -> Path:
     return Path(out_root())
 
 
-def pack(request: str, state: bool = False, out: str | None = None) -> dict:
-    """A .tgz of a finished (or partly finished) request, to copy to a cfdt machine and import there."""
+def pack(request: str, state: bool = False, out: str | None = None, studies: list | None = None,
+         init: bool = False) -> dict:
+    """A .tgz of a finished (or partly finished) request, to copy to a cfdt machine and import there. studies: only
+    these (the archive's request.json lists only them). init: also what solve.init_from takes from each (finished
+    studies only)."""
+    from .transient import source_times
     folder = Path(request).expanduser().resolve()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
     meta = json.loads((folder / "request.json").read_text())
     names = list(meta.get("names", []))
+    if studies:
+        bad = [n for n in studies if n not in names]
+        if bad:
+            return {"error": f"not in {folder.name}: {bad}", "studies": names}
+        names = [n for n in names if n in studies]
+    tdirs = {}
+    if init:
+        probs = []
+        for n in names:
+            c = init_check(str(folder / n))
+            if not c["ok"]:
+                probs += [f"{n}: {p}" for p in c["problems"]]
+            else:
+                tdirs[n] = source_times(folder / n)[-1][1]
+        if probs:
+            return {"error": "cannot pack for init_from: " + "; ".join(probs)}
     dest = Path(out).expanduser() if out else folder.parent / f"{folder.name}.cfdt.tgz"
     done, missing, size_note = [], [], []
     manifest = {"request": str(folder), "name": folder.name, "host": socket.gethostname(), "packed": time.time(),
-                "translator": __version__, "state": bool(state), "studies": {}}
+                "translator": __version__, "state": bool(state), "init": bool(init), "studies": {}}
     tail = int(LOG_TAIL_MB * 1024 * 1024)
-    with tarfile.open(dest, "w:gz") as tar:
+    # fields of millions of cells: fast compression (binary fields hardly compress further)
+    with tarfile.open(dest, "w:gz", compresslevel=1 if init else 9) as tar:
         def add(p: Path, arc: str):
             if p.is_file():
                 tar.add(str(p), arcname=arc, recursive=False)
-        for f in ("request.json", "studies.json", "results.json"):
+
+        def add_bytes(data: bytes, arc: str):
+            ti = tarfile.TarInfo(arc)
+            ti.size, ti.mtime = len(data), int(time.time())
+            tar.addfile(ti, io.BytesIO(data))
+        if studies:
+            sub = dict(meta, names=names, studies={k: v for k, v in (meta.get("studies") or {}).items() if k in names})
+            add_bytes(json.dumps(sub, default=float).encode(), f"{folder.name}/request.json")
+        else:
+            add(folder / "request.json", f"{folder.name}/request.json")
+        for f in ("studies.json", "results.json"):
             add(folder / f, f"{folder.name}/{f}")
         for n in names:
             d = folder / n
@@ -83,6 +167,13 @@ def pack(request: str, state: bool = False, out: str | None = None) -> dict:
                 ti.size, ti.mtime = len(data), int(lg.stat().st_mtime)
                 tar.addfile(ti, io.BytesIO(data))
                 size_note.append(lg.name)
+            if n in tdirs:
+                nb = 0
+                for f, arc in _init_files(d, tdirs[n]):
+                    if not arc.startswith("case/postProcessing/"):
+                        add(f, f"{folder.name}/{n}/{arc}")
+                        nb += f.stat().st_size
+                manifest["studies"][n]["init"] = {"time": source_times(d)[-1][0], "bytes": nb}
         data = json.dumps(manifest, indent=1).encode()
         ti = tarfile.TarInfo(f"{folder.name}/{MANIFEST}")
         ti.size, ti.mtime = len(data), int(time.time())
@@ -94,6 +185,8 @@ def pack(request: str, state: bool = False, out: str | None = None) -> dict:
         out_["logs_cut"] = f"{len(set(size_note))} long log(s) kept to their last {LOG_TAIL_MB:g} MB"
     if missing:
         out_["note"] = "studies without a result yet are imported as 'not_finished': pack again when they finish"
+    if init:
+        out_["init"] = {n: manifest["studies"][n]["init"] for n in tdirs}
     return out_
 
 
@@ -165,7 +258,8 @@ def import_request(path: str, name: str | None = None) -> dict:
                     f.write_text(t.replace(old, str(dest)))
         meta = json.loads((dest / "request.json").read_text())
         meta["imported"] = {"from": str(src), "host": man.get("host"), "path": old, "packed": man.get("packed"),
-                            "at": time.time(), "translator": man.get("translator"), "state": man.get("state")}
+                            "at": time.time(), "translator": man.get("translator"), "state": man.get("state"),
+                            "init": bool(man.get("init"))}
         (dest / "request.json").write_text(json.dumps(meta, default=float))
         unfinished = []
         for n in names:
@@ -177,6 +271,8 @@ def import_request(path: str, name: str | None = None) -> dict:
                            "when it is done, and import that"}, indent=1))
         out = {"request": str(dest), "imported_from": man.get("host"), "studies": names, "not_finished": unfinished,
                "fields": bool(man.get("state")),
+               **({"init_from": {n: f"{dest.name}/{n}" for n, v in (man.get("studies") or {}).items()
+                                 if isinstance(v, dict) and v.get("init")}} if man.get("init") else {}),
                "next": f"study_status(request='{dest}') for the results; window=[t0, t1] for other averages"
                        + ("; render_images works on its studies" if man.get("state") else
                           "; render_images needs the fields (pack with --state)")}

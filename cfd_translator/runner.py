@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.13.5
+Version: 2026.11.13.7
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -231,7 +231,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                     out["init_from"] = _init_steady(case, study, plan, init_src, folder, t_job, timeout, warns)
                 info = foam.run(case, timeout, use)
             out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
-            fields = foam.read_fields(case, mesh, plan, mean=transient)
+            fields = foam.read_fields(case, mesh, plan, mean=transient, internal_flux=bool(study.get("sections")))
             lg = info["log"]
             out["solve"] = {"openfoam": info.get("openfoam"), **({"openfoam_build": info["openfoam_build"]}
                                                                 if info.get("openfoam_build") else {}),
@@ -330,6 +330,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             res["cavitation"], w = _cav(study, mesh, plan, fields, res)
             warns += w
         warns += _onset_into(study, mesh, plan, fields, res)
+        warns += _sections_into(study, mesh, plan, fields, res)
         if solver != "ref" and plan.get("monitors"):
             from .average import average_results
             try:
@@ -489,7 +490,7 @@ def _average_errors(av) -> list[str]:
     return errs
 
 
-def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict:
+def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP, sections=_KEEP) -> dict:
     """The results of a finished study again, from its case (the last time directory; transient: the mean fields)
     or its saved state, with the current post-processing and averaging, without solving. The old result is kept
     as <name>.json.<its version>.bak; the new one records reprocessed: {by, at, from, changes}."""
@@ -523,7 +524,18 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict
         cfg = _avg_settings(study, plan)
         if cfg is not None and plan.get("monitors"):
             plan["monitors"]["settings"] = cfg
-    replaced = onset is not _KEEP or average is not _KEEP
+    if sections is not _KEEP:
+        # flows through internal surfaces (sections.py) on finished runs: the S50 air sweep's wear-plate holes
+        study = dict(study)
+        if sections in (None, False, []):
+            study.pop("sections", None)
+        else:
+            study["sections"] = sections
+            from .sections import errors as _se
+            bad = _se(study)
+            if bad:
+                return {"name": name, "ok": False, "why": "invalid sections", "errors": bad}
+    replaced = onset is not _KEEP or average is not _KEEP or sections is not _KEEP
     if onset is not _KEEP:
         # a changed onset block (regions, thresholds, c): screened again without solving (S50 impeller variants,
         # 2026.11.13: a wrong hole_jets box, new robust statistics). The saved state keeps the new block
@@ -544,7 +556,7 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict
     if old.get("solver") != "ref" and case.is_dir():
         from .foam import read_fields
         try:
-            fields = read_fields(case, mesh, plan, mean=transient)
+            fields = read_fields(case, mesh, plan, mean=transient, internal_flux=bool(study.get("sections")))
             source = "the case" + (" (mean fields)" if fields.get("averaged") else "")
             from_case = True
         except Exception as exc:  # noqa: BLE001
@@ -564,6 +576,9 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict
             w = list(w) + w3
         elif (old.get("results") or {}).get("cavitation"):
             res["cavitation"] = old["results"]["cavitation"]
+    w = list(w) + _sections_into(study, mesh, plan, fields, res)
+    if not res.get("sections") and (old.get("results") or {}).get("sections") and sections is _KEEP:
+        res["sections"] = old["results"]["sections"]
     out = dict(old)
     solve = dict(old.get("solve") or {})
     if old.get("solver") != "ref" and plan.get("monitors") and case.is_dir():
@@ -625,6 +640,10 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict
             out["results"].pop("onset", None)
     if average is not _KEEP:
         out["reprocessed"]["average"] = (plan.get("monitors") or {}).get("settings") or average
+    if sections is not _KEEP:
+        out["reprocessed"]["sections"] = "replaced by the ones given" if study.get("sections") else "removed"
+        if not study.get("sections"):
+            out["results"].pop("sections", None)
     if from_case or replaced:
         from .render import save_state
         added = sorted(set(fields.get("scalars") or {}) - old_scalars)
@@ -713,6 +732,20 @@ def _free_flow_report(case: Path, study: dict, plan: dict, folder: Path, tstate:
         return None
     warns += w
     return block
+
+
+def _sections_into(study: dict, mesh, plan: dict, fields: dict, res: dict) -> list:
+    """results.sections: flows (liquid and gas apart) through the study's internal surfaces (sections.py)."""
+    if not study.get("sections"):
+        return []
+    from .sections import results as _sec
+    try:
+        r, w = _sec(study, mesh, plan, fields)
+    except Exception as exc:  # noqa: BLE001
+        return [f"sections: not computed ({type(exc).__name__}: {exc})"]
+    if r:
+        res["sections"] = r
+    return w
 
 
 def _onset_into(study: dict, mesh, plan: dict, fields: dict, res: dict) -> list:

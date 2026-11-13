@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.13.3
+Version: 2026.11.13.7
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -17,8 +17,12 @@ Version: 2026.11.13.3
     cfdt reprocess REQUEST [NAMES...] [--onset JSON|FILE] [--average JSON]   results again from finished cases
                                          (current post-processing, no solve); --onset: a new onset block for them;
                                          --average: other averaging settings (steady), e.g. '{"window": 0.5}'
+                                         --sections JSON|FILE: flows through internal surfaces (liquid, gas)
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
     cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (other/supercomputers/clusters.md)
+         [--studies A,B] [--init]        only these studies; --init: also their mesh, dictionaries and latest fields
+                                         (init_from on another machine: the router packs, copies and imports)
+    cfdt init-check REF [--fields last|mean]   can '<request>/<study>' of this machine be started from (init_from)?
     cfdt import PATH [--name N]          a packed request (.tgz or folder) as a request of this machine
 
 '-' reads the studies from stdin. Interrupted (Ctrl-C) while `run` or `bench` waits for SLURM jobs, the command says
@@ -69,6 +73,7 @@ def main(argv=None) -> None:
     p.add_argument("names", nargs="*")
     p.add_argument("--onset", default=None, help="a new onset block (JSON, or a file holding it) for these studies")
     p.add_argument("--average", default=None, help="other averaging settings for steady runs (JSON), e.g. '{\"window\": 0.5}'")
+    p.add_argument("--sections", default=None, help="flows through internal surfaces (JSON list, or a file holding it)")
     p = sub.add_parser("run-study")
     p.add_argument("request")
     p.add_argument("name")
@@ -76,6 +81,11 @@ def main(argv=None) -> None:
     p.add_argument("request")
     p.add_argument("--state", action="store_true", help="add the mesh and fields (state.npz) for render_images")
     p.add_argument("--out", default=None)
+    p.add_argument("--studies", default=None, help="comma-separated: only these studies")
+    p.add_argument("--init", action="store_true", help="add what init_from needs: mesh, dictionaries, latest fields")
+    p = sub.add_parser("init-check", help="can a run of this machine be started from (init_from)?")
+    p.add_argument("ref")
+    p.add_argument("--fields", default="last")
     p = sub.add_parser("import", help="a packed request (.tgz or folder) as a request of this machine")
     p.add_argument("path")
     p.add_argument("--name", default=None)
@@ -101,7 +111,7 @@ def exit_code(cmd: str, out) -> int:
     benchmark that did not pass) are data in the JSON and keep 0."""
     if not isinstance(out, dict):
         return 0
-    if cmd == "validate" and out.get("ok") is False:
+    if cmd in ("validate", "init-check") and out.get("ok") is False:
         return 1
     return 1 if out.get("error") else 0
 
@@ -132,9 +142,14 @@ def _command(a) -> dict:
         av = None
         if getattr(a, "average", None):
             av = json.loads(Path(a.average).read_text() if Path(a.average).is_file() else a.average)
-        out = api.reprocess(a.request, a.names or None, on, av)
+        sec = None
+        if getattr(a, "sections", None):
+            sec = json.loads(Path(a.sections).read_text() if Path(a.sections).is_file() else a.sections)
+        out = api.reprocess(a.request, a.names or None, on, av, sec)
     elif a.cmd == "pack":
-        out = api.pack(a.request, a.state, a.out)
+        out = api.pack(a.request, a.state, a.out, [x for x in (a.studies or "").split(",") if x] or None, a.init)
+    elif a.cmd == "init-check":
+        out = api.init_check(a.ref, a.fields)
     elif a.cmd == "import":
         out = api.import_results(a.path, a.name)
     elif a.cmd == "images":

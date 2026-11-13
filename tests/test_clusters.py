@@ -328,3 +328,55 @@ def test_caps_say_what_capped_the_memory(tmp_path, monkeypatch):
     c = executor.caps()
     assert c["mem"] == "460000M" and "MaxMemPerNode" in c["mem_from"], c
     S.forget()
+
+
+def test_init_pack_carries_a_run_to_another_machine(tmp_path, monkeypatch):
+    """init_from a run of another machine (2026.11.13.6): `cfdt pack REQUEST --studies p8 --init` there, `cfdt import`
+    here; the imported study answers init_from '<imported>/<study>' and the same mesh copies its fields."""
+    from test_geometry_router import _case, _field
+
+    from cfd_translator import transient
+    from cfd_translator.transfer import init_check
+    there, here = tmp_path / "spark2" / "cfdt_runs", tmp_path / "spark1" / "cfdt_runs"
+    monkeypatch.setenv("CFDT_OUT", str(there))
+    req = there / "run_sat"
+    fields = {f: _field(f, "nonuniform List<scalar> 2(1 2)", "inlet { type src; }")
+              for f in ("U", "p_rgh", "alpha.water", "k", "omega", "nut")}
+    for n, t in (("p8", "4000"), ("p6", None)):
+        _case(req / n / "case", fields if t else {}, t=t or "0")
+        (req / n / "case" / "constant" / "triSurface").mkdir()
+        (req / n / "case" / "constant" / "triSurface" / "pump.stl").write_bytes(b"x" * 1000)
+        (req / n / "case" / "constant" / "g").write_text("g")
+        (req / n / "case" / "processor0" / "4000").mkdir(parents=True)
+        (req / n / "case" / "processor0" / "4000" / "U").write_text("decomposed")
+        (req / n / "case" / "system" / "controlDict").write_text("cd")
+    (req / "p8" / "p8.json").write_text(json.dumps({"name": "p8", "ok": True, "reliable": True,
+                                                    "path": str(req / "p8")}))
+    (req / "request.json").write_text(json.dumps({"names": ["p8", "p6"], "studies": {"p8": {}, "p6": {}}}))
+    c = init_check("run_sat/p8")
+    assert c["ok"] and c["finished"] and c["time"] == 4000 and c["init_bytes"] > 0
+    c6 = init_check("run_sat/p6")
+    assert not c6["ok"] and any("no result yet" in p for p in c6["problems"])
+    assert "error" in pack(str(req), studies=["p6"], init=True)                 # not finished: nothing packed
+    p = pack(str(req), out=str(tmp_path / "p8.tgz"), studies=["p8"], init=True)
+    assert p["init"]["p8"]["time"] == 4000 and p["studies_with_results"] == ["p8"]
+    with tarfile.open(p["archive"]) as tar:
+        names = tar.getnames()
+        meta = json.loads(tar.extractfile("run_sat/request.json").read())
+    assert "run_sat/p8/case/4000/alpha.water" in names and "run_sat/p8/case/constant/polyMesh/faces" in names
+    assert "run_sat/p8/case/system/controlDict" in names and "run_sat/p8/case/constant/g" in names
+    assert not any("triSurface" in n or "processor0" in n or "/p6/" in n for n in names)
+    assert meta["names"] == ["p8"] and list(meta["studies"]) == ["p8"]
+    # here: imported under its own name (the router picks it), then a run starts from it
+    monkeypatch.setenv("CFDT_OUT", str(here))
+    got = import_request(p["archive"], "run_sat@spark2")
+    assert got["init_from"] == {"p8": "run_sat@spark2/p8"} and got["not_finished"] == []
+    assert transient.init_problems({"solve": {"init_from": got["init_from"]["p8"]}}) == []
+    assert "no case" in transient.init_problems({"solve": {"init_from": "run_sat/p8"}})[0]
+    dst = here / "run_low" / "p4" / "case"
+    _case(dst, {f: _field(f, "uniform 0") for f in ("U", "p_rgh", "alpha.water", "k", "omega", "nut")})
+    notes, info = transient.map_from(dst, "run_sat@spark2/p8", "last", lambda c, l: pytest.fail("same mesh"))
+    assert info["same_mesh"] and info["copied_from"] and "copied here" in notes[0]
+    assert "List<scalar> 2(1 2)" in (dst / "0" / "alpha.water").read_text()
+    from cfd_translator.cli import exit_code
+    assert exit_code("init-check", {"ok": False}) == 1 and exit_code("init-check", {"ok": True}) == 0

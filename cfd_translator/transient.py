@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.12.12
+Version: 2026.11.13.6
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -568,7 +568,9 @@ def init_problems(study: dict, names=None, name: str | None = None) -> list[str]
         return []
     src = source_folder(ref)
     if not (src / "case").is_dir():
-        return [f"{key}: no case in {src} on this machine"]
+        return [f"{key}: no case in {src} on this machine (a run of another machine: through the router it is copied "
+                "here when the study runs; by hand, `cfdt pack REQUEST --studies NAME --init` there and `cfdt import` "
+                "here, then init_from the imported request)"]
     t = source_times(src)
     if not t:
         return [f"{key}: {src}/case has no reconstructed time directory after 0 (a sliding-mesh run stays decomposed "
@@ -665,9 +667,23 @@ def map_from(case: Path, src: Path | str, which: str, run_step) -> tuple[list[st
             shutil.rmtree(tmp, ignore_errors=True)
         how = "mapped onto this mesh (mapFields)"
     note = f"started from {src} at its time {t:g}: {', '.join(took)} {how}"
+    host = imported_host(src)
+    if host:
+        note += f" (the run of {host}, copied here)"
     if src_vof != dst_vof:
         note += "; pressure not carried over (single-phase and cavitation runs keep it in different units)"
-    return [note], {"fields": [f for f, _ in pairs], "time": t, "same_mesh": same, "vof": src_vof}
+    return [note], {"fields": [f for f, _ in pairs], "time": t, "same_mesh": same, "vof": src_vof,
+                    **({"copied_from": host} if host else {})}
+
+
+def imported_host(src: Path) -> str | None:
+    """The machine a source run was copied from (an imported request: transfer.import_request), or None."""
+    import json
+    try:
+        imp = json.loads((Path(src).parent / "request.json").read_text()).get("imported") or {}
+    except (OSError, ValueError):
+        return None
+    return imp.get("host") if imp.get("init") else None
 
 
 def map_timeout() -> float:

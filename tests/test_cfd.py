@@ -140,8 +140,8 @@ def test_validation_messages():
     assert not validate_study({**CHANNEL, "bcs": [{"kind": "wall", "faces": {"all": True}}]})["ok"]   # no driver
     f = api.study_format()
     # the format itself; 'status' (installed tools and versions) differs by machine: 12,518 on a machine with
-    # every tool against 12,334 in a sandbox without them (2026.11.09)
-    assert len(json.dumps({k: v for k, v in f.items() if k != "status"})) < 12500 and api.validate(f["example"])["ok"]
+    # every tool against 12,334 in a sandbox without them (2026.11.09); 12,653 with sections (2026.11.13.7)
+    assert len(json.dumps({k: v for k, v in f.items() if k != "status"})) < 12750 and api.validate(f["example"])["ok"]
     assert len(json.dumps(f["status"])) < 1000
 
 

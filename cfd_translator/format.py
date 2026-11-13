@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.13.5
+Version: 2026.11.13.8
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -177,6 +177,8 @@ STUDY_KEYS = {
     "age": "true | {Sc, Sct}: mean age of fluid (s); results.age: mean_residence_time_s, V_over_Q_s, dead zones",
     "onset": "true | {c, npsh, below: [vapour|{air_release: Pa}|Pa], regions: [eye|tip_clearance|vane_leading_edges|"
              "{name, box|cylinder}]}: p_abs - c rho k screen",
+    "sections": "[{name, plane: {axis, at} | {point, normal}, within: [{name, center, radius} | {name, box}]}]: flow "
+                "through holes/gaps (liquid, gas); reprocess(sections=)",
     "porous": "[{name, region: {box: [x0,y0,z0,x1,y1,z1]} | {cylinder: {center, axis, radius, span}} | {sphere: "
               "{center, radius}} (mm), darcy 1/m2, forchheimer 1/m (number | [e1,e2,e3]) | ergun: {particle_diameter mm, "
               "porosity} | monolith: {channel mm, open_fraction, shape}, axes: [[e1],[e2]], on_part}]; results.porous",
@@ -1026,6 +1028,8 @@ def validate_study(st: dict) -> dict:
     errs += _onset_errors(st)
     from .freeflow import errors as _ff_errors
     errs += _ff_errors(st)
+    from .sections import errors as _sec_errors
+    errs += _sec_errors(st)
     # images
     if "images" in st:
         errs += image_errors(st["images"], two_d, _field_names(st), bool((st.get("reference") or {}).get("velocity")))
