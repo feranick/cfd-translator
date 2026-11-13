@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.13.2
+Version: 2026.11.13.3
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -469,7 +469,24 @@ def _cpu_note(summary: dict | None, out: dict) -> None:
 _KEEP = object()
 
 
-def reprocess_study(folder: Path, name: str, onset=_KEEP) -> dict:
+def _average_errors(av) -> list[str]:
+    from .format import AVERAGE_KEYS, _num
+    if isinstance(av, bool):
+        return []
+    if not isinstance(av, dict) or set(av) - AVERAGE_KEYS:
+        return [f"average: true, false or {{{', '.join(sorted(AVERAGE_KEYS))}}}"]
+    errs = []
+    if "window" in av and (not _num(av["window"]) or not 0 < av["window"] <= 0.9):
+        errs.append("average.window: fraction of the iterations at the end of the run (0 < w <= 0.9)")
+    if "min_iterations" in av and (not isinstance(av["min_iterations"], int) or av["min_iterations"] < 20):
+        errs.append("average.min_iterations: integer >= 20")
+    for k in ("drift", "scatter", "stderr"):
+        if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
+            errs.append(f"average.{k}: relative tolerance between 0 and 1")
+    return errs
+
+
+def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP) -> dict:
     """The results of a finished study again, from its case (the last time directory; transient: the mean fields)
     or its saved state, with the current post-processing and averaging, without solving. The old result is kept
     as <name>.json.<its version>.bak; the new one records reprocessed: {by, at, from, changes}."""
@@ -489,8 +506,22 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP) -> dict:
     mesh, plan, fields, study = load_state(folder)
     if not study:
         return {"name": name, "ok": False, "why": "the saved state does not hold the study"}
-    replaced = onset is not _KEEP
-    if replaced:
+    if average is not _KEEP:
+        # other averaging settings (a longer window) from the saved monitor histories, without solving: the seven
+        # S50 variants on spark1 (2026.11.13) ran 4000 iterations with the default 25 % window
+        if ((study.get("solve") or {}).get("transient")):
+            return {"name": name, "ok": False, "why": "average: steady runs only (a transient run's averages over any "
+                                                      "window: study_status(request, window=[t0, t1]))"}
+        bad = _average_errors(average)
+        if bad:
+            return {"name": name, "ok": False, "why": "invalid average", "errors": bad}
+        study = dict(study, solve=dict(study.get("solve") or {}, average=average))
+        from .average import settings as _avg_settings
+        cfg = _avg_settings(study, plan)
+        if cfg is not None and plan.get("monitors"):
+            plan["monitors"]["settings"] = cfg
+    replaced = onset is not _KEEP or average is not _KEEP
+    if onset is not _KEEP:
         # a changed onset block (regions, thresholds, c): screened again without solving (S50 impeller variants,
         # 2026.11.13: a wrong hole_jets box, new robust statistics). The saved state keeps the new block
         study = dict(study)
@@ -585,10 +616,12 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP) -> dict:
     # p_rms, p_below_* since 2026.11.12.4: run_20261108_s50_rc_open_s1's render_images field k gave KeyError 'k'
     # after reprocess, which read the case but kept the old state)
     added = []
-    if replaced:
+    if onset is not _KEEP:
         out["reprocessed"]["onset"] = "replaced by the one given" if study.get("onset") else "removed"
         if not study.get("onset"):
             out["results"].pop("onset", None)
+    if average is not _KEEP:
+        out["reprocessed"]["average"] = (plan.get("monitors") or {}).get("settings") or average
     if from_case or replaced:
         from .render import save_state
         added = sorted(set(fields.get("scalars") or {}) - old_scalars)

@@ -224,3 +224,29 @@ def test_reprocess_with_a_new_onset_block(tmp_path, monkeypatch):
     assert bad["ok"] is False and bad["why"] == "invalid onset"
     api.reprocess(str(req), onset=False)
     assert "onset" not in json.loads((sd / "v.json").read_text())["results"]
+
+
+def test_reprocess_with_other_averaging_settings(tmp_path, monkeypatch):
+    """The seven S50 variants on spark1 ran 4000 iterations with the default 25 % window: means, standard errors and
+    variant differences again over a 50 % window from the saved monitor histories, without solving."""
+    root = tmp_path / "out"
+    monkeypatch.setenv("CFDT_OUT", str(root))
+    req = root / "run_20261112_000000_avg"
+    sd = req / "v"
+    sd.mkdir(parents=True)
+    st, mesh, plan, fields = _setup(tmp_path / "prep")
+    st = dict(st, rotating=[{"name": "rot", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 1000, "radius": 5}])
+    plan["monitors"] = {"settings": {"window": 0.25, "min_iterations": 500, "drift": 0.01, "scatter": 0.02}}
+    save_state(sd, mesh, plan, fields, st)
+    (req / "request.json").write_text(json.dumps({"names": ["v"]}))
+    (sd / "v.json").write_text(json.dumps({"name": "v", "ok": True, "translator": "2026.11.13.2", "solver": "ref",
+                                           "solve": {"converged": True}, "results": {"forces": {}}}))
+    r = api.reprocess(str(req), average={"window": 0.5})["studies"]["v"]
+    assert r["ok"], r
+    new = json.loads((sd / "v.json").read_text())
+    assert new["reprocessed"]["average"]["window"] == 0.5
+    from cfd_translator.render import load_state
+    _, plan2, _, st2 = load_state(sd)
+    assert st2["solve"]["average"] == {"window": 0.5} and plan2["monitors"]["settings"]["window"] == 0.5
+    bad = api.reprocess(str(req), average={"window": 2})["studies"]["v"]
+    assert bad["ok"] is False and bad["why"] == "invalid average"

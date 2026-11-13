@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.13.2
+Version: 2026.11.13.3
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -14,8 +14,9 @@ Version: 2026.11.13.2
     cfdt images FOLDER [IMAGES.json]     pictures of a finished study (default views, or the given list)
     cfdt jobs [--limit N] [--active]     recent requests with SLURM jobs, their states; the queue
     cfdt cancel REQUEST [NAMES...]       stop a request's studies (scancel, or the local cancel flag)
-    cfdt reprocess REQUEST [NAMES...] [--onset JSON|FILE]   results again from finished cases (current
-                                         post-processing, no solve); --onset: a new onset block for them
+    cfdt reprocess REQUEST [NAMES...] [--onset JSON|FILE] [--average JSON]   results again from finished cases
+                                         (current post-processing, no solve); --onset: a new onset block for them;
+                                         --average: other averaging settings (steady), e.g. '{"window": 0.5}'
     cfdt run-study REQUEST NAME          run one study of a request (what a SLURM job runs; exit 0 = result written)
     cfdt pack REQUEST [--state] [--out F] on a cluster: the request's results as a .tgz to bring back (other/supercomputers/clusters.md)
     cfdt import PATH [--name N]          a packed request (.tgz or folder) as a request of this machine
@@ -67,6 +68,7 @@ def main(argv=None) -> None:
     p.add_argument("request")
     p.add_argument("names", nargs="*")
     p.add_argument("--onset", default=None, help="a new onset block (JSON, or a file holding it) for these studies")
+    p.add_argument("--average", default=None, help="other averaging settings for steady runs (JSON), e.g. '{\"window\": 0.5}'")
     p = sub.add_parser("run-study")
     p.add_argument("request")
     p.add_argument("name")
@@ -127,7 +129,10 @@ def _command(a) -> dict:
         if getattr(a, "onset", None):
             txt = Path(a.onset).read_text() if Path(a.onset).is_file() else a.onset
             on = json.loads(txt)
-        out = api.reprocess(a.request, a.names or None, on)
+        av = None
+        if getattr(a, "average", None):
+            av = json.loads(Path(a.average).read_text() if Path(a.average).is_file() else a.average)
+        out = api.reprocess(a.request, a.names or None, on, av)
     elif a.cmd == "pack":
         out = api.pack(a.request, a.state, a.out)
     elif a.cmd == "import":
