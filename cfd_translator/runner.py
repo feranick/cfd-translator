@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.13.7
+Version: 2026.11.14.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -268,6 +268,33 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         "correct_mesh_phi": tr.get("correct_mesh_phi", True),
                         **({"ncc_owner": sl["ncc_owner"], "ncc_owner_by": sl.get("ncc_owner_by")}
                            if sl.get("ncc_owner") else {})}
+                    from .sliding import BALANCE_WARN, interface_balance
+                    try:
+                        qin = sum(float(v.get("Q") or 0.0) for v in (plan.get("inlets") or {}).values()) or None
+                        ib = interface_balance(case, sl, qin)
+                    except Exception as exc:  # noqa: BLE001
+                        ib = {"note": f"not read ({type(exc).__name__}: {exc})"}
+                    if ib:
+                        out["solve"]["sliding"]["interface_balance"] = ib
+                        if ib.get("error", 0) > BALANCE_WARN:
+                            warns.append(f"sliding interface: the flux through it does not balance: rotor side "
+                                         f"{ib['rotor_side_m3s']:.4g}, stator side {ib['stator_side_m3s']:.4g}, error "
+                                         f"patches {ib['error_patches_m3s']:.3g} m3/s, {ib['error']:.2%} of the "
+                                         f"through-flow ({ib['through_flow_m3s']:.4g} m3/s) at t = {ib['time']:g} s")
+                    from . import locator as _loc
+                    lc = _loc.settings((study.get("solve") or {}).get("transient") or {})
+                    if lc:
+                        try:
+                            lr = _loc.read(case, sl["axis"], sl["center_mm"], steps=lc["steps"])
+                        except Exception as exc:  # noqa: BLE001
+                            lr = {"note": f"not read ({type(exc).__name__}: {exc})"}
+                        if lr:
+                            out["solve"]["sliding"]["locator"] = lr
+                    thin = (sl.get("interface_cells") or {}).get("thin_wall_cells") or {}
+                    if thin.get("unreliable"):
+                        warns.append(f"sliding interface: snapped cells at walls within {thin['layers']} cells of the "
+                                     f"interface down to {thin['worst_fraction']:g} of its cells' thickness (see "
+                                     "solve.sliding.interface_cells.thin_wall_cells)")
                     from .transient import stitcher_stats
                     sst = stitcher_stats(case / "log.foamRun")
                     if sst:
@@ -780,6 +807,15 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
             why.append(f"mass balance off by {ch['mass_balance']['error']:.2%}")
         if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.02:
             why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
+        sls = sv.get("sliding") or {}
+        from .sliding import BALANCE_UNRELIABLE
+        if (sls.get("interface_balance") or {}).get("error", 0) > BALANCE_UNRELIABLE:
+            why.append(f"the flux through the sliding interface does not balance "
+                       f"({sls['interface_balance']['error']:.2%} of the through-flow)")
+        thin = (sls.get("interface_cells") or {}).get("thin_wall_cells") or {}
+        if thin.get("unreliable"):
+            why.append(f"snapped cells at walls next to the sliding interface, down to {thin['worst_fraction']:g} of "
+                       "its cells' thickness: a wall feature lies within two cells of it (thin_wall_cells)")
         if why:
             why.append("do not report these numbers as results: raise solve.transient.end_time (a longer average), "
                        "or check the flow with images")

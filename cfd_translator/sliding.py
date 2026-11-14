@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.12.13
+Version: 2026.11.14.1
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -253,6 +253,65 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
     return out
 
 
+THIN_LAYERS = 2          # cells from the interface searched for snapped slivers at walls
+THIN_WARN = 0.35         # a wall cell thinner than this fraction of the interface's cells: noted
+THIN_UNRELIABLE = 0.2    # ... thinner than this: the run is unreliable (S50 v14 port: 0.02 mm against 0.12, diverged)
+
+
+def thin_wall_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 8) -> dict:
+    """Snapped slivers at walls near the interface, per side: cells within THIN_LAYERS cells of the interface that
+    touch a wall, with their thickness h (volume over largest face area) against the median h of the cells on the
+    interface (h_ref). The S50 v14 port's sliding runs diverged from such cells, where small wall features (a
+    bore-entry taper, a sloped floor at the bore's exit, rounded vane tips) lay within two cells of the interface."""
+    ni = mesh.ninternal
+    V = np.abs(g["V"])
+    Af = np.linalg.norm(g["Sf"], axis=1)
+    amax = np.zeros(mesh.ncells)
+    np.maximum.at(amax, mesh.owner, Af)
+    np.maximum.at(amax, mesh.neighbour, Af[:ni])
+    h = V / np.maximum(amax, 1e-300)
+    wall = np.zeros(mesh.ncells, bool)
+    if len(wall_faces):
+        wall[mesh.owner[np.asarray(wall_faces, np.int64)]] = True
+    own, nei = mesh.owner[:ni], mesh.neighbour
+    out = {"layers": THIN_LAYERS, "warn_fraction": THIN_WARN, "unreliable_fraction": THIN_UNRELIABLE}
+    worst = 1.0
+    for side_, mine in (("rotor_side", inz), ("stator_side", ~inz)):
+        first = np.where(mine[mesh.owner[f]], mesh.owner[f], mesh.neighbour[f])
+        layer = np.zeros(mesh.ncells, bool)
+        layer[first] = True
+        for _ in range(THIN_LAYERS - 1):
+            nxt = layer.copy()
+            m = (layer[own] | layer[nei]) & mine[own] & mine[nei]
+            nxt[own[m]] = True
+            nxt[nei[m]] = True
+            layer = nxt
+        h_ref = float(np.median(h[first])) if len(first) else 0.0
+        cand = np.nonzero(layer & wall)[0]
+        rec = {"cells_at_walls": int(len(cand)), "h_ref_mm": float(f"{h_ref:.4g}"), "thin": 0, "places": []}
+        if len(cand) and h_ref > 0:
+            hc = h[cand]
+            rec["h_min_mm"] = float(f"{hc.min():.4g}")
+            rec["h_min_fraction"] = float(f"{hc.min() / h_ref:.3g}")
+            worst = min(worst, hc.min() / h_ref)
+            bad = cand[hc < THIN_WARN * h_ref]
+            rec["thin"] = int(len(bad))
+            e1 = np.cross(a, [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0])
+            e1 /= np.linalg.norm(e1)
+            e2 = np.cross(a, e1)
+            for c in bad[np.argsort(h[bad])][:top]:
+                d = g["C"][c] - o
+                sx = float(d @ a)
+                rad = d - sx * a
+                rec["places"].append({"h_mm": float(f"{h[c]:.3g}"), "at_mm": np.round(g["C"][c], 2).tolist(),
+                                      "r_mm": round(float(np.linalg.norm(rad)), 2), "s_mm": round(sx, 2),
+                                      "theta_deg": round(float(np.degrees(np.arctan2(rad @ e2, rad @ e1))) % 360, 1)})
+        out[side_] = rec
+    out["worst_fraction"] = float(f"{worst:.3g}")
+    out["unreliable"] = bool(worst < THIN_UNRELIABLE)
+    return out
+
+
 def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = None) -> None:
     """Can this zone slide? Raises SlidingError with what to change; small deviations become plan notes.
     Records plan['sliding'] (names, interface size, moving walls)."""
@@ -331,6 +390,20 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         step_deg = float((plan.get("transient") or {}).get("degrees_per_step") or 1.0)
         pvf = projected_fraction(g["Cf"][f], g["Sf"][f], cin, cout, g["V"], a, o, step_deg)
         q_if["projected_volume_fraction"] = pvf
+        wall_faces = np.concatenate([mesh.patch_faces(p_["name"]) for p_ in patches if p_.get("kind") == "wall"]
+                                    or [np.zeros(0, np.int64)])
+        thin = thin_wall_cells(mesh, g, f, inz, wall_faces, a, o)
+        q_if["thin_wall_cells"] = thin
+        for side_, rec in ((k_, thin[k_]) for k_ in ("rotor_side", "stator_side")):
+            if rec["thin"]:
+                notes.append(
+                    f"sliding interface, {side_.replace('_', ' ')}: {rec['thin']} cells next to walls within "
+                    f"{THIN_LAYERS} cells of the interface are thinner than {THIN_WARN:g} of the interface's cells "
+                    f"(thinnest {rec['h_min_mm']} mm against {rec['h_ref_mm']} mm, at " +
+                    "; ".join(f"r {q['r_mm']} s {q['s_mm']} theta {q['theta_deg']}" for q in rec["places"][:3]) +
+                    "): a wall feature there (a taper, a sloped floor, a rounded edge) is snapped onto, not meshed "
+                    "by whole cells. Such cells seeded the S50's NCC divergence (v14 port, 2026.11.14); keep the "
+                    "interface 3 or more cells away from such features, or make them cylinders and planes")
         plan["sliding_quality"] = q_if
         notes.append(f"sliding interface cells: worst non-orthogonality {q_if['max_non_ortho']} deg, skewness "
                      f"{q_if['max_skewness']} (at {q_if['skewness_at']} mm), cell sizes across the interface differ up to "
@@ -655,7 +728,7 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
         after = {}
         for k in range(procs):
             for p in _boundary(case / f"processor{k}" / "constant" / "polyMesh"):
-                after.setdefault(p["name"], {"name": p["name"], "n": 0})["n"] += p["n"]
+                after.setdefault(p["name"], {"name": p["name"], "n": 0, "type": p.get("type")})["n"] += p["n"]
     else:
         after = {p["name"]: p for p in _boundary(poly)}
     for nm, p in before.items():
@@ -666,6 +739,7 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
         if after.get(nm, {}).get("n", 0) != len(f):
             raise SlidingError(f"createBaffles made {after.get(nm, {}).get('n', 0)} faces on {nm!r}, expected {len(f)}")
     sl["patches_added"] = sorted(n for n in set(after) - set(before) if not n.startswith(("procBoundary", "nonConformalProcessorCyclic")))
+    sl["ncc_patches"] = {n: after[n].get("type") for n in sl["patches_added"]}
     if par:
         (case / DECOMPOSED).write_text(json.dumps({"procs": procs, "why": "sliding mesh: the couple is built on the "
                                                   "decomposed case; results are read from processor*"}))
@@ -673,3 +747,71 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, mpirun: s
     return [f"sliding mesh: zone {sl['zone']!r} turns at {sl['omega_rad_s'] * 60 / (2 * np.pi):g} rpm; {len(f)} faces "
             f"on its cylinder coupled non-conformally ({sl['rotor']} | {sl['stator']})" +
             (f", built on the case decomposed for {procs} ranks (it stays decomposed)" if par else "")]
+
+
+# ---- after the run: the flux through the interface ----------------------------------------------------------------
+BALANCE_WARN = 1e-3        # of the through-flow: noted
+BALANCE_UNRELIABLE = 1e-2  # the run is unreliable (the v2506 S50 MRF run lost 11.4 m3/h at its AMI interface)
+
+
+def interface_balance(case: Path, sl: dict, q_through: float | None) -> dict | None:
+    """What crosses the sliding interface in the last written fields (phi on the couple's patches, every processor):
+    the rotor side's and the stator side's sums (equal and opposite when the coupling conserves the flow), their
+    imbalance, the flux into the couple's error patches, and the flow crossing one way. Patches are told apart by
+    name: OpenFOAM's 'nonConformalCyclic_on_<rotor>' and the processor and error patches derived from it."""
+    from .foamio import read_foam
+    case = Path(case)
+    if not case.is_dir():
+        return None
+    dirs = sorted(case.glob("processor*")) or [case]
+
+    def times(d):
+        out = []
+        for x in d.iterdir():
+            try:
+                t = float(x.name)
+            except ValueError:
+                continue
+            if t > 0 and (x / "phi").is_file():
+                out.append((t, x.name))
+        return sorted(out)
+    tl = times(dirs[0])
+    if not tl:
+        return None
+    t, tname = tl[-1]
+    on_r, on_s = f"on_{sl['rotor']}", f"on_{sl['stator']}"
+    rot = sto = err = cross = 0.0
+    found = 0
+    for d in dirs:
+        f = d / tname / "phi"
+        if not f.is_file():
+            continue
+        bf = (read_foam(f.read_text(errors="replace")).get("boundaryField") or {})
+        for name, e in bf.items():
+            typ = str((e or {}).get("type", ""))
+            if "nonConformal" not in typ and "nonConformal" not in name:
+                continue
+            v = (e or {}).get("value")
+            if v is None or isinstance(v, str):
+                continue
+            a = np.atleast_1d(np.asarray(v, float))
+            found += a.size
+            if "rror" in typ or "rror" in name:
+                err += float(a.sum())
+            elif name.endswith(on_r) or on_r + "_" in name or name.endswith(on_r + "]"):
+                rot += float(a.sum())
+                cross += float(a[a > 0].sum())
+            elif name.endswith(on_s) or on_s + "_" in name:
+                sto += float(a.sum())
+    if not found:
+        return None
+    q = abs(q_through) if q_through else None
+    imb = rot + sto
+    out = {"time": t, "rotor_side_m3s": float(f"{rot:.6g}"), "stator_side_m3s": float(f"{sto:.6g}"),
+           "imbalance_m3s": float(f"{imb:.4g}"), "error_patches_m3s": float(f"{err:.4g}"),
+           "crossing_one_way_m3s": float(f"{cross:.6g}"), "faces": found}
+    if q:
+        out["through_flow_m3s"] = float(f"{q:.6g}")
+        out["error"] = float(f"{max(abs(imb), abs(err)) / q:.4g}")
+    return out
+

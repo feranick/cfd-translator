@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.13.7
+Version: 2026.11.14.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -278,7 +278,8 @@ def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log, mem_lo
             dv = divergence(watch_log)
             if dv is not None:
                 _kill_group(p)
-                raise Diverged(divergence_message(dv))
+                from .locator import diverged_note
+                raise Diverged(divergence_message(dv) + diverged_note(Path(watch_log).parent))
         if deadline is not None and on_deadline is not None and not fired and time.time() >= deadline:
             fired = True
             on_deadline()
@@ -514,7 +515,8 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
     dv = divergence(case / "log.foamRun")
     if dv is not None:                         # it ended on its own (short run), but diverged
-        raise Diverged(divergence_message(dv))
+        from .locator import diverged_note
+        raise Diverged(divergence_message(dv) + diverged_note(case))
     out["log"] = foamio.parse_log(log)
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])
