@@ -117,7 +117,11 @@ def test_end_faces_count_the_faces_exactly_on_each_end():
     a, o = np.array([0.0, 0.0, 1.0]), np.zeros(3)
     h = np.ones(len(f))
     e = sliding.end_faces(g["Cf"][f], g["Sf"][f], a, o, [-1e12, 5.0], h)
-    assert e == [{"s_mm": 5.0, "faces_near": 100, "faces_exact": 100, "share_exact": 1.0}]
+    assert e == [{"s_mm": 5.0, "faces_near": 100, "faces_exact": 100, "share_exact": 1.0, "plane_mm": 5.0,
+                  "plane_offset_mm": 0.0, "share_on_plane": 1.0}]
+    # asked at 5.06: no face exactly on it, all of them flat on the cells' plane 0.06 below (conformal, shifted)
+    e1 = sliding.end_faces(g["Cf"][f], g["Sf"][f], a, o, [-1e12, 5.06], h)[0]
+    assert e1["faces_exact"] == 0 and e1["plane_mm"] == 5.0 and e1["plane_offset_mm"] == -0.06 and e1["share_on_plane"] == 1
     P = m.points
     P[(np.abs(P[:, 2] - 5) < 1e-9) & (P[:, 0] > 0.5), 2] += 0.03          # half of it snapped a little off
     m.points = P
@@ -126,3 +130,4 @@ def test_end_faces_count_the_faces_exactly_on_each_end():
     g2 = m2.geometry()
     e2 = sliding.end_faces(g2["Cf"][f], g2["Sf"][f], a, o, [-1e12, 5.0], h)
     assert e2[0]["faces_near"] == 100 and e2[0]["share_exact"] < sliding.END_SHARE_WARN
+    assert e2[0]["share_on_plane"] < sliding.END_SHARE_WARN                 # scattered: snapped, not shifted

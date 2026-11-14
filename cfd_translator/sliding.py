@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.2
+Version: 2026.11.14.3
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -273,8 +273,16 @@ def end_faces(Cf, Sf, a, o, span, h, tol_mm: float = 1e-6) -> list:
         near = axial & (np.abs(sx - s_) < 0.5 * h)
         exact = near & (np.abs(sx - s_) < tol_mm)
         k = int(near.sum())
-        out.append({"s_mm": s_, "faces_near": k, "faces_exact": int(exact.sum()),
-                    "share_exact": float(f"{exact.sum() / k:.4g}") if k else None})
+        rec = {"s_mm": s_, "faces_near": k, "faces_exact": int(exact.sum()),
+               "share_exact": float(f"{exact.sum() / k:.4g}") if k else None}
+        if k:
+            # the plane most of them share: a face lying flat on a grid plane next to the asked one is conformal
+            # too (S50 v14 port, job 61295862: 2 faces exactly on -79.0 while the rest sat on one plane near it)
+            zz, cnt = np.unique(np.round(sx[near], 4), return_counts=True)
+            j = int(np.argmax(cnt))
+            rec.update(plane_mm=float(zz[j]), plane_offset_mm=round(float(zz[j] - s_), 4),
+                       share_on_plane=float(f"{cnt[j] / k:.4g}"))
+        out.append(rec)
     return out
 
 
@@ -417,7 +425,11 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         q_if["projected_volume_fraction"] = pvf
         q_if["end_faces"] = end_faces(g["Cf"][f], g["Sf"][f], a, o, zone.get("span"), np.minimum(Lin, Lout))
         for ef in q_if["end_faces"]:
-            if ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN:
+            if ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN <= ef.get("share_on_plane", 0):
+                notes.append(f"sliding zone {zn!r}: its end face s {ef['s_mm']:g} mm lies on the cells' plane at "
+                             f"{ef['plane_mm']:g} mm ({ef['plane_offset_mm']:+g} mm; {ef['share_on_plane']:.1%} of its "
+                             "faces): flat and conformal, only shifted")
+            elif ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN:
                 notes.append(f"sliding zone {zn!r}: only {ef['faces_exact']} of the {ef['faces_near']} interface faces at "
                              f"its end face s {ef['s_mm']:g} mm lie exactly on it ({ef['share_exact']:.1%}): that face is "
                              "snapped from cells that do not have a face there (S50 v14 port, job 61293745: 96 faces on "
