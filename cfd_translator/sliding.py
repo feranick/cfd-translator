@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.1
+Version: 2026.11.14.2
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -253,6 +253,31 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
     return out
 
 
+END_SHARE_WARN = 0.9     # the share of an end face's interface faces that should lie exactly on it
+
+
+def end_faces(Cf, Sf, a, o, span, h, tol_mm: float = 1e-6) -> list:
+    """For each end face of the zone (span [s0, s1] along the axis): the interface faces near it (normal along the
+    axis, centre within half a cell of it) and how many lie exactly on it (within tol_mm): grid faces there, not
+    snapped ones."""
+    if not span:
+        return []
+    n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
+    sx = (Cf - o) @ a
+    axial = np.abs(n @ a) > 0.9
+    out = []
+    for s_ in span:
+        s_ = float(s_)
+        if abs(s_) > 1e11:
+            continue
+        near = axial & (np.abs(sx - s_) < 0.5 * h)
+        exact = near & (np.abs(sx - s_) < tol_mm)
+        k = int(near.sum())
+        out.append({"s_mm": s_, "faces_near": k, "faces_exact": int(exact.sum()),
+                    "share_exact": float(f"{exact.sum() / k:.4g}") if k else None})
+    return out
+
+
 THIN_LAYERS = 2          # cells from the interface searched for snapped slivers at walls
 THIN_WARN = 0.35         # a wall cell thinner than this fraction of the interface's cells: noted
 THIN_UNRELIABLE = 0.2    # ... thinner than this: the run is unreliable (S50 v14 port: 0.02 mm against 0.12, diverged)
@@ -390,6 +415,15 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         step_deg = float((plan.get("transient") or {}).get("degrees_per_step") or 1.0)
         pvf = projected_fraction(g["Cf"][f], g["Sf"][f], cin, cout, g["V"], a, o, step_deg)
         q_if["projected_volume_fraction"] = pvf
+        q_if["end_faces"] = end_faces(g["Cf"][f], g["Sf"][f], a, o, zone.get("span"), np.minimum(Lin, Lout))
+        for ef in q_if["end_faces"]:
+            if ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN:
+                notes.append(f"sliding zone {zn!r}: only {ef['faces_exact']} of the {ef['faces_near']} interface faces at "
+                             f"its end face s {ef['s_mm']:g} mm lie exactly on it ({ef['share_exact']:.1%}): that face is "
+                             "snapped from cells that do not have a face there (S50 v14 port, job 61293745: 96 faces on "
+                             "its raised end face against 289,478 on the other; estimated projected volume fraction "
+                             "0.75-0.88 at its corners). Put the end face on a plane of the cells around it, or refine "
+                             "there so that it is one")
         wall_faces = np.concatenate([mesh.patch_faces(p_["name"]) for p_ in patches if p_.get("kind") == "wall"]
                                     or [np.zeros(0, np.int64)])
         thin = thin_wall_cells(mesh, g, f, inz, wall_faces, a, o)

@@ -106,3 +106,23 @@ def test_locator_validation():
     mrf = json.loads(json.dumps(st))
     mrf["rotating"][0]["motion"] = "mrf"
     assert any("only with a sliding zone" in x for x in validate_study(mrf)["errors"])
+
+
+def test_end_faces_count_the_faces_exactly_on_each_end():
+    """The zone's end face on a plane of the cells: every face on it; snapped (moved off it): few."""
+    m = box_mesh(10, 10, 10, 10, 10, 10, origin=(-5, -5, 0))
+    g = m.geometry()
+    inz = g["C"][:, 2] < 5
+    f, _ = sliding.interface(m, np.nonzero(inz)[0])
+    a, o = np.array([0.0, 0.0, 1.0]), np.zeros(3)
+    h = np.ones(len(f))
+    e = sliding.end_faces(g["Cf"][f], g["Sf"][f], a, o, [-1e12, 5.0], h)
+    assert e == [{"s_mm": 5.0, "faces_near": 100, "faces_exact": 100, "share_exact": 1.0}]
+    P = m.points
+    P[(np.abs(P[:, 2] - 5) < 1e-9) & (P[:, 0] > 0.5), 2] += 0.03          # half of it snapped a little off
+    m.points = P
+    m2 = box_mesh(10, 10, 10, 10, 10, 10, origin=(-5, -5, 0))
+    m2.points = P
+    g2 = m2.geometry()
+    e2 = sliding.end_faces(g2["Cf"][f], g2["Sf"][f], a, o, [-1e12, 5.0], h)
+    assert e2[0]["faces_near"] == 100 and e2[0]["share_exact"] < sliding.END_SHARE_WARN
