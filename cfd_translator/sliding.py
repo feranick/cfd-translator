@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.3
+Version: 2026.11.14.4
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -256,10 +256,11 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
 END_SHARE_WARN = 0.9     # the share of an end face's interface faces that should lie exactly on it
 
 
-def end_faces(Cf, Sf, a, o, span, h, tol_mm: float = 1e-6) -> list:
+def end_faces(Cf, Sf, a, o, span, h, tol_mm: float = 1e-3) -> list:
     """For each end face of the zone (span [s0, s1] along the axis): the interface faces near it (normal along the
-    axis, centre within half a cell of it) and how many lie exactly on it (within tol_mm): grid faces there, not
-    snapped ones."""
+    axis, centre within half a cell of it) and how many lie exactly on it (within tol_mm, a micrometre: points snapped
+    onto an STL end face carry its single-precision coordinates, -79.0 as -79.0000036; the S50 port's precheck of
+    job 61295862 counted 2 of 222,720 faces at 1e-6 mm, all of them at 1e-4): grid faces there, not snapped ones."""
     if not span:
         return []
     n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
