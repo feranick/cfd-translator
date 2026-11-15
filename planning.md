@@ -86,10 +86,9 @@ the tool wrapper with the 48 s deadline, server log in `$CFDT_OUT/.server`) and 
   `cd ~/Software/cfd-translator && rm -f .git/index.lock && git add -A && git commit -m "..." && git push`
 - Tests in the sandbox: copy llm-translators/llmt-runtime to /tmp/rt (the sandbox disk is too full for pip), then
   `PYTHONPATH=/tmp/rt CFDT_OUT=/tmp/h/out TMPDIR=/tmp/h python3 -m pytest -q -p no:cacheprovider` (no OpenFOAM or
-  Gmsh here: stand-ins and synthetic fields; say what is unverified on OpenFOAM). 247 passed, 5 skipped (2026.11.09.6).
+  Gmsh here: stand-ins and synthetic fields; say what is unverified on OpenFOAM). 322 passed, 5 skipped (2026.11.14.8).
   On servers the user runs `$R/llmt test cfdt` (or `runtime` too when the runtime changed) in tmux.
-- `study_format` without its machine-dependent `status` must stay under 12,300 characters (test; local models): it
-  is at 12,054 (2026.11.09.1). New keywords get one short line there; the how-to goes into `guides.py`
+- `study_format` without its machine-dependent `status` must stay under 12,750 characters (test; local models). New keywords get one short line there; the how-to goes into `guides.py`
   (`guide('vehicle_aero')`, `guide('pumps')`).
 - Before writing any OpenFOAM keyword, read it in the v14 source or tutorials (github.com/OpenFOAM/OpenFOAM-14,
   cpp.openfoam.org/v14): bad keys are fatal at startup.
@@ -152,7 +151,70 @@ run_benchmarks, bench_status, jobs, cancel, get_image, render_images, reprocess,
    `get_file` reach run folders on any machine through the router.
 3. Fix from real output, one cause at a time; README row + versions + the commit command each time.
 
-## Open work (2026.11.06, in order)
+## Plan (2026.11.15): sliding meshes, v14 first, then a limited ESI v2506 backend
+
+### Priority 1: v14 feature-complete and as cheap as possible (current work)
+
+The S50 is validated on v14 NCC against v2506 AMI: start-up jet −59 against −55 m/s, stator cell −2.06 against
+−1.99. Running studies on v14 is fine even at a higher cost; the aim is to make it as cheap as it can be. All
+development and tests run on the sparks.
+
+1. Long interface cells (`OGRID_ANISO=1`): the spark2 test is queued (mesh 619, then 60 steps at a fixed 1°, run
+   620). Then torque and pressures against the level-5 mesh at matching rotor angles.
+2. Measured step limit: `MAXCO=10` and `15` at 20° each, to set cfdt's cells-per-step cap from data, not the safe
+   value of 2.
+3. Per-step cost: locator off (`WHERE_STEPS=0`); the stitching and `MeshPhi` share from the step profile; check
+   whether `MeshPhi` can use a looser tolerance.
+4. Fewer cells and shorter runs: `COARSE=1` away from the gap; variants started from a developed flow (`init_from` /
+   `mapFields`).
+5. The O-grid in cfdt's own meshing, including the level rule (cells per degree depends only on the refinement level
+   on an O-grid) and the long-cell layout, once the spark test proves it. That lets cfdt mesh narrow gaps like the
+   S50 itself (rung 2 g = 0.45 was refused by the Cartesian construction).
+6. Rung 2 accuracy: g = 5 sliding against MRF, both converged (running on carbonio).
+7. Docs: keep `other/sliding_meshes.md` current with each result.
+
+Done when cfdt can mesh and run an S50-class pump on v14 from a study, at a known and documented cost per
+revolution, validated against MRF and the v2506 reference.
+
+### Priority 2 (after priority 1): limited ESI v2506 support for specific cases
+
+Not full parity. One narrow backend, used only where v2506 is clearly better.
+
+- Scope: incompressible sliding-mesh runs with k-ω SST through cyclicAMI (`pimpleFoam`,
+  `dynamicMotionSolverFvMesh`). Possibly later: ESI-only meshing features (snappyHexMesh's directional refinement)
+  or other turbomachinery tools, each justified case by case.
+- Selection: explicit (for example a study key `"solver_backend": "esi"`), or offered by cfdt when the v14 cost
+  estimate for a sliding run is prohibitive. Never silent.
+- Design: shared geometry, meshing checks and results format; separate case writer and log/function-object parser
+  for the ESI dialect (`pimpleFoam`, `turbulenceProperties`, `transportProperties`, `fvOptions`, ESI function
+  objects, `postProcess -fields`). The hand-built S50 v2506 case (`s50_sliding_v2506`, now with the variants and
+  `09_variant` and DES scripts) is the template.
+- Installation: x86_64 binaries (Keysight/openfoam.com apt) on mochi and carbonio; Perlmutter has a user build.
+  arm64 (sparks) has source only, so build from source there only if a spark is needed for v2506.
+- First steps once priority 1 is done, on mochi or carbonio:
+  1. install ESI v2506;
+  2. run the existing S50 v2506 case on a coarse mesh to measure local cost per revolution;
+  3. run the same case through cfdt's v14 path at the same probes, as a cross-check;
+  4. decide from the measured cost ratio whether the ESI backend earns its keep.
+- Decision gate: if v14 with long interface cells lands within about 2–4× of v2506, the ESI backend stays a
+  validation tool (cross-checks only). If v14 remains much more expensive for gap-dominated pumps, the ESI backend
+  becomes the recommended route for those runs, with v14 for everything else.
+- Tests: a small ESI test set (a rotor-in-cylinder case like rung 2 at g = 5, plus the S50 coarse case) and the same
+  results-format tests as v14, so both paths report identically.
+
+### Where things are (2026.11.15)
+
+- Hand-built cases (user's folder `~/b3d_parts/s50/nersc`): `s50_sliding_v14` (the v14 port: `tools/ogrid.py`
+  layouts hub / aniso, `scripts/01_mesh.sbatch` switches BACKGROUND=ogrid, ROTOR_ZMIN, DEFEATURE, COARSE,
+  OGRID_ANISO; `02_ncc60.sbatch` MAXCO, RUN_DEG, WHERE_STEPS, STATIC, REVERSE; `env.sh` for NERSC and the sparks /
+  carbonio), `ncc_ladder/` (rung 1 propeller, rung 2 rotor; README.md is the outcome record), `v2506_ring_sample/`
+  (ring sample, AMI impulsive start). Each folder is shipped as a tarball of the same name.
+- Costs measured so far: v14 at the 2-cell cap on the level-5 interface ~55–65 node-h a revolution (Perlmutter)
+  against ~2 for v2506 at 1°: 6× the steps, 1.5× the cells, 2.7× the cost per cell and step.
+- `other/sliding_meshes.md` holds the coupling, step limits, costs, meshing rules (rule 5: the level rule),
+  start-up, validation, pitfalls and the decision guide.
+
+## Open work (2026.11.06, in order; sliding items superseded by the plan above)
 
 1. **Cavitation, first run** (2026.11.03.4): S50 at 20 m3/h, NPSH 15 m on carbonio stopped at once on SIGFPE
    (outlet flow ramp from 0; fixed in .4). Rerun that point: expect almost no vapour and the MRF head within a few %.
@@ -385,6 +447,22 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 - blockMesh: every block face in a patch (unlisted -> empty -> snappy fails "not fully 3D"), or defaultPatch {type patch;}.
 
 ## State (history, newest first)
+
+**2026.11.15.1**: `other/sliding_meshes.md` (AMI vs NCC: coupling, step limits, costs, meshing rules, start-up,
+validation, pitfalls, decision guide); guide('pumps') points to it.
+
+**2026.11.14.1-.8**: sliding (NCC) checks from the S50 v14 port and the NCC ladder: thin wall cells next to the
+interface, interface flux balance, the locator (solve.transient.locator), end faces on grid planes (1 µm), the step
+capped at 2 interface cells (solve.transient.cells_per_step) and the estimate planned with it; .8 lifted the
+'under investigation' hold-back (the start-up band was physical) and notes the start from rest.
+
+**2026.11.13.1-.8**: crash vs memory kill, onset screen, reprocess averaging, study_status reference, free_flow,
+init_from across machines (`cfdt pack --init`, `cfdt init-check` with fields_mtime), `sections` (planes with discs
+and boxes).
+
+**2026.11.12.5-.18**: clusters (Perlmutter: node lists, bench time limits, memory per node), divergence watch,
+sliding7's logs (stitcher coverage, caps on grid planes), inlet_gas_fraction fix, onset screen, snappy memory in
+parallel.
 
 **2026.11.12.4**: image fields k, nut, p_rms, p_below_<Pa>; solve.transient.p_below (coded function object, time below per cell) and per-region summaries. Verify: the coded FO compiles on mochi/sparks and in parallel with NCC.
 
