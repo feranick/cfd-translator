@@ -1,0 +1,193 @@
+# Rotating machines with a sliding mesh: ESI cyclicAMI against OpenFOAM 14 NCC
+
+For people choosing how to run a pump, fan or mixer with a turning mesh, and for an AI that has to set one up: what
+each method does, what it costs, the meshing rules, what happens at the start, how to validate, the pitfalls we hit,
+and a decision guide. Written 15 Nov 2026 from the S50 investigation, 12-15 Nov 2026. The evidence base is the NCC
+ladder record in `b3d_parts/s50/nersc/ncc_ladder/README.md`, with the scripts beside it: the v14 port
+`s50_sliding_v14/` and the v2506 case `s50_sliding_v2506/`.
+
+In cfd-translator, a sliding zone is `rotating[].motion: "sliding"`. It uses OpenFOAM 14 (openfoam.org) and its
+non-conformal coupling (NCC). cyclicAMI is ESI's (openfoam.com), used here by hand for comparison and for production
+runs on Perlmutter.
+
+## 1. How the two couple the meshes
+
+The rotor's cells turn as a solid body. At the zone's boundary they slide along the stationary cells, and the two
+meshes must exchange mass and momentum across faces that no longer match.
+
+| | ESI cyclicAMI (v2506) | OpenFOAM 14 NCC (`nonConformalCyclic`) |
+|---|---|---|
+| **How** | Interpolation weights: each face's value is a weighted sum over the faces it overlaps; the weights come from the overlap areas, recomputed as the rotor turns | Stitching: every step the overlapping parts of the two sides' faces are cut into new, exact coupled faces, and the mesh is rebuilt around them (fvMeshStitcher) |
+| **Conservation** | Approximate: the weights of a face sum to about 1. Where they fall below `lowWeightCorrection` (0.2 here) the flux is corrected, but some is lost | Exact by construction. Volume the coupling cannot place goes to error patches; mesh fluxes are corrected to the swept volumes (`correctPhi`, `correctMeshPhi`, the `MeshPhi` solve) |
+| **Sensitivity** | Tolerant of large slides per step: the S50 ran at 1 degree a step, 8.5 interface cells, with Courant numbers of about 25 in a few cells | Sensitive to the sliding rate: the rotor must pass no more than about 2 interface cells per step (section 2) |
+| **What it reports** | `AMI: Patch ... sum(weights)` (the average should be about 1, the maximum well below 2) | coverage (min/average/max per face), the projected volume fraction (fvMeshStitcher warns above 0.3), mesh-flux errors |
+| **Setup** | `createBaffles` with a cyclicAMI pair, `mergeOrSplitBaffles -split` | `createBaffles` (plain patches) -> `splitBaffles` -> `createNonConformalCouples -fields A B`, on the decomposed case. The second patch named is the neighbour; the volume error goes to the first (the owner), so the side with smaller or thinner cells should be the neighbour |
+
+Both reproduce the same flow. At the same probe in the S50, from the same impulsive start, the vane-tip start-up jet
+was -59.33 m/s on NCC against -55.10 on cyclicAMI. The stator cell next to it was -2.06 against -1.99 (Perlmutter
+jobs 61305325 and 61358002).
+
+## 2. Step limits and costs (measured)
+
+**Cells per step:** the number of interface cells the rotor passes in one time step, along the rotation. It is the
+arc at the interface's radius over the cells' size along it. On an O-grid it does not depend on the radius: 96 x 2^L
+/ 360 per degree for 96 cells round at refinement level L (2.1 at level 3, 4.3 at 4, 8.5 at 5).
+
+| case | cells per step | Courant max | result |
+|---|---|---|---|
+| propeller tutorial (v14, rung 1) shipped | adjustable, Co 2 | 2 | runs |
+| propeller, fixed 1 degree | 0.8 | 7.6 | runs (also with the S50's PIMPLE settings) |
+| propeller, maxCo 20 | 2.3 (2.8 degrees) | 20 | runs, 141 steps |
+| propeller, S50's rate | 8.5 (10.3 degrees) | 190 | diverged at step 3 |
+| S50 v14, fixed 1 degree | 8.5 | 22 plateau, then runaway | diverged within a few steps of full speed (every mesh and ramp) |
+| S50 v14, maxCo 5 | about 1.5 (0.17 degrees) | 5 | runs, 149 steps from full speed |
+| S50 v2506 cyclicAMI, fixed 1 degree | 8.5 | about 25 in a few cells | runs, 8 revolutions |
+
+- **The limit:** lowering the step lowers both the sliding rate and the flow's Courant number, so these runs bracket
+  the limit without saying which of the two sets it. The safe value is 2 cells per step. The real limit lies between
+  2.3 and 8.5; `MAXCO=10` and `15` on the S50 would narrow it.
+- **cfd-translator:** `solve.transient.cells_per_step` (default 2; null for no cap) caps the step once the mesh is
+  known. The run-time estimate plans with the capped step.
+
+**Cost per revolution on the S50 (Perlmutter, 4 nodes):** v14 NCC about 55-65 node-hours, v2506 cyclicAMI about 2.
+The factor of about 25 is made of:
+- **steps, about 6 x:** 0.17 degrees per step against 1;
+- **cells, about 1.5 x:** 20.6 M on the O-grid mesh against 13.7 M;
+- **cost per cell per step, about 2.7 x:** re-stitching every step, the `MeshPhi` solve, the locator.
+
+Levers, largest first:
+- **Interface cells long in the direction of rotation:** about 0.5 mm round, still 0.125 mm across the gap. This
+  gives about 2 cells per degree, so about 1 degree a step at the cap, and about 16 x fewer interface faces.
+  snappyHexMesh refines isotropically (openfoam.org has no directional refinement; ESI's `levelIncrement` does it),
+  so the anisotropy has to come from the background mesh (`s50_sliding_v14/tools/ogrid.py aniso`, `OGRID_ANISO=1`).
+- **The real step limit:** measure it rather than keep the safe 2.
+- **Per-step overhead:** locator off; measure the stitching and `MeshPhi` share; try a looser `MeshPhi` tolerance.
+- **Fewer cells away from the gap:** `COARSE=1`.
+- **Shorter runs:** start variants from a developed flow (`init_from`, `mapFields`) rather than from rest.
+
+## 3. Meshing rules, and the checks that enforce them
+
+These are the rules the S50 taught. None of these defects caused its blow-up, which was the sliding rate, but each
+was real and each has a check.
+
+1. **The interface on grid rings and planes.** Snapping Cartesian cells onto a cylinder leaves slivers and a
+   faceted interface whose two sides stop matching as the rotor turns.
+   - Use a polar (O-grid) background whose cell faces lie on the interface, the rim and the bore. Make the ring radii
+     slightly secant, because refinement puts new points on chords, not arcs.
+   - End faces (caps and steps) go on z planes of the refined levels.
+   - **Checks:** `interface_cells.off_surface` (faces off the cylinder, in cells and degrees);
+     `interface_cells.end_faces` (the share of each end's faces on its plane, and the plane's offset; under 90 % is
+     noted); the port's `precheck.json` `caps_planes`.
+   - On a Cartesian background cfd-translator puts the end faces on grid planes; the radius needs the O-grid.
+2. **No slivers within 2 cells of the interface.** Small wall features next to the interface are snapped onto, not
+   meshed by whole cells: a bore-entry taper, a sloped floor at a bore's exit, rounded vane tips, a tongue. They
+   left cells of 0.017-0.02 mm against 0.12 mm.
+   - **Check:** `interface_cells.thin_wall_cells`. Cells at walls within 2 cells of the interface, thinner than 0.35
+     of the interface's cells, are noted; below 0.2 the run is unreliable.
+   - **Fixes:** move the interface or the zone's end clear of the feature, or defeature it for the sliding run (and
+     check the effect with MRF).
+3. **The zone's ends clear of the rotor's corners and of the casing.** The S50's original zone floor lay inside the
+   bore's entry taper, 0.06 mm from the casing.
+   - Raised to just under the back disc, with a step of smaller radius keeping the hub inside the zone, the stator
+     side got 0.25 mm all round. In the generic rotor, the zone's floor sits 3 gap cells under the disc.
+   - A step's own faces need the grid too (the O-grid's rings from r 24 for a step at r 25).
+4. **Whole cells across narrow gaps:** about 2 or more each side of the interface.
+   - Prism layers do not fit: snappy thinned them to 6 micrometres in a 0.25 mm half-gap, because of its
+     thickness-to-medial-axis rule.
+   - **Checks:** `interface_cells.projected_volume_fraction` (an estimate of the stitcher's measure for each owner
+     choice; OpenFOAM warns above 0.3, cfd-translator stops above 1); the size ratio across the interface.
+5. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
+   as `rotatingWallVelocity` walls. Blades must lie inside it (`movingWallVelocity`). A hexagonal socket is not a
+   surface of revolution.
+
+## 4. Start-up behaviour
+
+A sliding run usually starts from rest at full speed. In the first steps the vanes displace the fluid at once.
+- **Beside the tips:** the fluid flows back over the tips at two to three times the tip speed: -55 to -59 m/s
+  against +18 on the S50, in both NCC and cyclicAMI.
+- **Narrow gaps:** an inflow switched on at once gives tens of m/s too (-31 m/s through the S50's 0.45 mm tongue
+  gap, on a still mesh).
+- **Decay:** it decays over about the first revolution. cyclicAMI's developed flow beside the tips is about +10 m/s.
+
+What follows:
+- **Averages:** only after the start-up revolutions. cfd-translator notes the start on every sliding run, and warns
+  when `average_from` lies within the first revolution.
+- **Not a coupling error:** this flow vanishes when the vanes do not displace fluid (a still mesh with spinning
+  walls), and flips with the rotation.
+- **Ramps:** a ramp in the rotation softens it but does not remove it.
+
+## 5. Validation
+
+1. **Sliding against MRF on the same mesh:** a near-axisymmetric case (a radial outlet) should give head and torque
+   within a few % of the frozen rotor, both converged. A volute or tangential outlet adds rotor-stator interaction
+   that MRF cannot capture; compare with cyclicAMI instead.
+2. **v14 NCC against v2506 cyclicAMI at the same probes:** the same start (from rest, the same step rule), the same
+   points. Compare the developed flow over whole revolutions.
+3. **Flux balance through the coupling:** `solve.sliding.interface_balance`, the rotor and stator sides' sums and
+   the error patches against the through-flow. Above 0.1 % it is noted; above 1 % the run is unreliable.
+4. **When it fails, use the locator:** `solve.transient.locator: true`. A coded function object writes, for the
+   first steps, the cells with the largest projected volume fraction and Courant number, each with:
+   - its velocity and the mesh's;
+   - every face's flux and the value on the face's other side (a wall's boundary value, the coupling's).
+
+   The divergence message adds where the last steps' worst cells were.
+5. **Rule out the coupling step by step:**
+   - the wall's value: `U_other` on the rotor's wall faces should be omega r;
+   - `correctMeshPhi no`;
+   - a still mesh with spinning walls;
+   - the rotation reversed;
+   - the same start on cyclicAMI.
+
+## 6. Pitfalls we hit
+
+- **Snapped STL coordinates are single precision:** -0.079 m is -0.0790000036, so a face snapped onto -79 mm lies
+  3.6 micrometres off it. Count faces on a plane within 1 micrometre (or by plane, rounded), not 1e-6 mm.
+- **Refinement puts points on chords:** hexRef8 splits edges at their midpoints and adds face and cell centroids, so
+  refined points of a polar background lie inside its arcs (0.03 mm at 96 cells round, r 60). Scale the ring radii
+  so the refined lines straddle the cylinders (`ogrid.py check` simulates this at the refined level).
+- **`foamDictionary` expands `#include`:** editing a dictionary with `-set` writes it back with its includes
+  expanded. Use `-disableFunctionEntries`, or edit a copy, or keep pristine `.orig` copies and copy them in at every
+  start.
+- **Per-run edits must be undone at every start:** a test option that changes `processor*/0/U` (the STATIC run's
+  `rotatingWallVelocity` impeller) persisted into the next two runs and made them useless. Reset every edited entry
+  (and check it) at the start of every run.
+- **`set -o pipefail` with `grep ... | head`:** head closes the pipe, grep fails, and a finished job is marked
+  FAILED. Add `|| true`.
+- **A stale marker skips the coupling:** a `.ncc_done` kept after remeshing made the solve run the new mesh without
+  the coupling. Delete it when remeshing, and check for the coupling's patches. Refuse a different owner order on an
+  existing couple.
+- **v2506 `postProcess` needs `-fields`:** to load fields that a function object samples (e.g.
+  `postProcess -fields '(U)' -time ...`). It also needs the fields reconstructed (`reconstructPar -fields '(U)'`).
+- **OpenFOAM 14 API (coded function objects):**
+  - `DimensionedField::field()` is private: use `static_cast<const scalarField&>(mesh.V())`;
+  - `fvMesh` has no `findCell`: use the nearest cell centre, and keep only the rank with the nearest of all;
+  - `fvMesh::phi()` aborts before the mesh has moved (at the t = 0 call): guard with `mesh.moving()`;
+  - write a `std::string` with `.c_str()` (an OpenFOAM `string` is written quoted).
+- **Perlmutter's system `python3` is 3.6:** `module load python`, or avoid `capture_output`/`text`.
+- **Open MPI 5 on hyperthreaded nodes** (carbonio, mochi) refuses `mpirun -np N` in `sbatch -n N`: use
+  `sbatch -n N -c 2` and `mpirun --bind-to none`. The sparks are not hyperthreaded: `-n N` alone.
+- **Coverage below 1 once the rotor turns** (0.92-0.96) is the worst single face, not the share of the interface
+  uncovered. The uncovered parts get the original patch's condition (`movingWallSlipVelocity`), which cannot drag
+  the fluid.
+
+## 7. Decision guide
+
+- **First numbers, design trends, many variants:** MRF (frozen rotor). Check two or three rotor angles.
+- **Performance, pulsations, rotor-stator interaction, production:**
+  - **cyclicAMI (ESI v2506) at 1 degree a step** when it is available. It is about 25 x cheaper per revolution on
+    the S50 today, and tolerant of the sliding rate.
+  - **OpenFOAM 14 NCC (cfd-translator's sliding zone)** for exact conservation, for runs on cfd-translator's
+    machines, and for validation. Keep it to 2 interface cells per step, and mesh the gap by the rules above.
+  - Aim to bring NCC within 2-4 x of cyclicAMI with long interface cells before moving design studies to it.
+- **What to run first, on new hardware, a new OpenFOAM build or a new kind of machine:**
+  1. **The propeller tutorial** (`ncc_ladder/rung1_propeller`): shipped, fixed 1 degree, the target's cells per
+     step, and maxCo 20. It tells environment problems from coupling limits in an hour.
+  2. **The generic rotor** (`ncc_ladder/rung2_rotor`): a rim in a close bore at the target's gap, with the target's
+     features one at a time, sliding against MRF.
+  3. **The production geometry:** meshed by the rules above, checked (`precheck.json` or cfd-translator's
+     `interface_cells`) before a long run. Run with the locator for the first steps, then without.
+- **Before trusting a sliding result:**
+  - the averages start after the start-up revolutions and have settled;
+  - mass and the coupling's flux balance;
+  - no thin cells at walls next to the interface, and the end faces on their planes;
+  - head and torque agree with MRF (or cyclicAMI) where they should.

@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.13.5
+Version: 2026.11.15.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -18,6 +18,14 @@ GUIDES = {
             "on the zone's cylinder); transient. Head, torque, power and efficiency are averages over whole "
             "revolutions, with their scatter. For performance numbers, pressure pulsations, and when MRF results "
             "change with the rotor's angle.",
+            "Before a sliding study, read other/sliding_meshes.md in the cfd-translator repository: OpenFOAM 14's "
+            "coupling against ESI cyclicAMI, measured step limits and costs, the meshing rules and their checks, the "
+            "start-up jet, validation and pitfalls. In short: at most 2 interface cells passed per step "
+            "(solve.transient.cells_per_step caps it; the S50 diverged at 8.5), no thin cells at walls within 2 cells "
+            "of the interface (interface_cells.thin_wall_cells), end faces on grid planes (interface_cells.end_faces), "
+            "averages after the first revolution (the start from rest drives tens of m/s beside blade tips and in "
+            "narrow gaps), and validate against MRF on the same mesh. Per revolution it costs about 25 x ESI "
+            "cyclicAMI at 1 degree on the S50 today.",
         ],
         "zone": [
             "A cylinder (center, axis, radius, span) around the rotor in open fluid: between the impeller's outer "
