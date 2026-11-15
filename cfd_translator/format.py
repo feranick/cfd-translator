@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.14.1
+Version: 2026.11.14.6
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -30,7 +30,8 @@ FLUIDS = {
 R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
-                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions", "free_flow", "locator"}
+                  "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions", "free_flow", "locator",
+                  "cells_per_step"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -1029,6 +1030,13 @@ def validate_study(st: dict) -> dict:
     from .freeflow import errors as _ff_errors
     errs += _ff_errors(st)
     trs = (st.get("solve") or {}).get("transient")
+    if isinstance(trs, dict) and "cells_per_step" in trs:
+        v = trs["cells_per_step"]
+        if v is not None and not (_num(v) and 0.25 <= v <= 50):
+            errs.append("solve.transient.cells_per_step: the interface cells the rotor may pass per step, 0.25-50 "
+                        "(default 2), or null for no cap")
+        elif not any(isinstance(z, dict) and z.get("motion") == "sliding" for z in st.get("rotating") or []):
+            errs.append("solve.transient.cells_per_step: only with a sliding zone (rotating[].motion 'sliding')")
     if isinstance(trs, dict) and "locator" in trs:
         from .locator import errors as _loc_errors
         errs += _loc_errors(trs)

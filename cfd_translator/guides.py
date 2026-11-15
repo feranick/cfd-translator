@@ -50,9 +50,13 @@ GUIDES = {
             "solve.transient.end_time in seconds: revolutions x 60 / rpm; about 10 revolutions (5 to settle after "
             "the steady start, 5 averaged). average_from about 4-5 revolutions in: the window is cut to whole "
             "revolutions ending at end_time (solve.sliding.averaged_revolutions).",
-            "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number. "
-            "Cost: 360 steps per revolution or more, with two outer correctors each; long runs continue over SLURM "
-            "jobs by themselves (max_jobs), or later with solve.transient.continue.",
+            "degrees_per_step (default 1) caps the rotation per time step; max_co (default 2) the Courant number; "
+            "cells_per_step (default 2) caps the step so that the rotor passes at most that many interface cells, "
+            "once the mesh is known (OpenFOAM 14's coupling ran the S50 at 1.5 cells a step, 0.17 deg, and diverged "
+            "at 8.5, 1 deg: NCC ladder 2026.11.14; solve.sliding.interface_cells.cells_per_step says what it chose). "
+            "Cost: 360 steps per revolution or more (the S50 at 0.17 deg: about 2,100), with two outer correctors "
+            "each; long runs continue over SLURM jobs by themselves (max_jobs), or later with "
+            "solve.transient.continue.",
             "Screening impeller variants before two-phase sweeps: a steady MRF run with onset {c: 0.3, below: "
             "['vapour', {air_release: <saturation Pa>}], regions: ['eye', 'vane_leading_edges', 'tip_clearance']} "
             "gives per region the volume with p_eff = p_abs - c rho k below each threshold, the deepest point and the "
@@ -82,7 +86,8 @@ GUIDES = {
             "Narrow gaps (an impeller's 0.5 mm clearances): snappyHexMesh leaves a few micrometre cells there, and a "
             "Courant limit then shrinks the step to a sliver (S50 at max_co 2: 0.02 deg a step, ~150,000 steps for 8 "
             "revolutions). Use max_co null: a fixed step of exactly degrees_per_step (1 deg ran stable on the S50 with "
-            "Courant ~25 in a handful of cells, mean 0.12, ESI v2506 on Perlmutter). solve.time_step.courant (and "
+            "Courant ~25 in a handful of cells, mean 0.12, ESI v2506's cyclicAMI on Perlmutter; OpenFOAM 14's "
+            "coupling needs the cells_per_step cap). solve.time_step.courant (and "
             "courant_by_segment) report the maximum, its median over the steps and the mean.",
         ],
         "cavitation": [

@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.14.1
+Version: 2026.11.14.6
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -103,7 +103,11 @@ def settings(study: dict, mesh=None) -> dict | None:
         if n >= 1:
             out["average_from"] = float(f"{T - n * Trev:.10g}")
         out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),
-                   degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)))
+                   degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)),
+                   # at most this many interface cells passed per step (sliding.check caps the step once the mesh
+                   # is known; None: no cap). NCC ladder 2026.11.14: the S50 ran at 1.5 and diverged at 8.5
+                   cells_per_step=(None if ("cells_per_step" in tr and tr["cells_per_step"] is None)
+                                   else float(tr.get("cells_per_step", 2.0))))
     return out
 
 

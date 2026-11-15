@@ -149,12 +149,42 @@ def test_cells_per_step_is_reported_and_noted():
     m.zones = {"rotor": zone_of(m, 11.5)}
     g = m.geometry()
     zone = {"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "radius": 11.5, "rpm": 1500, "motion": "sliding"}
-    for deg, noted in ((1.0, False), (40.0, True)):
-        plan = {"zones": {"rotor": {"omega_rad_s": 157.0}}, "transient": {"degrees_per_step": deg}}
+    period = 60 / 1500
+    for deg, fixed in ((1.0, True), (40.0, True), (40.0, False)):
+        plan = {"zones": {"rotor": {"omega_rad_s": 157.0}},
+                "transient": {"degrees_per_step": deg, "period": period, "fixed_step": fixed, "cells_per_step": 2.0,
+                              "dt": deg / 360 * period, "max_dt": deg / 360 * period}}
         try:
             sliding.check(m, g, zone, plan, pats)
         except sliding.SlidingError:
             pytest.skip("this test mesh does not slide (see test_sliding)")
         cps = plan["sliding"]["interface_cells"]["cells_per_step"]
-        assert cps["degrees_per_step"] == deg and cps["value"] > 0
-        assert any("interface cells per time step" in n for n in plan["notes"]) == noted
+        tr = plan["transient"]
+        if deg == 1.0:                                       # about 0.1 cells a step: left alone
+            assert cps["value"] < 2 and "capped_from_degrees" not in cps and tr["degrees_per_step"] == 1.0
+            continue
+        # 40 degrees is several cells: capped to 2, the step with it
+        assert cps["capped_from_degrees"] == 40.0 and cps["value"] == pytest.approx(2.0, rel=0.01)
+        assert tr["degrees_per_step"] < 40 and tr["max_dt"] == pytest.approx(tr["degrees_per_step"] / 360 * period, rel=1e-3)
+        assert tr["dt"] <= tr["max_dt"] * (1 + 1e-9)
+        assert any("is capped to" in n for n in plan["notes"])
+    # null: reported, not capped
+    plan = {"zones": {"rotor": {"omega_rad_s": 157.0}},
+            "transient": {"degrees_per_step": 40.0, "period": period, "fixed_step": True, "cells_per_step": None,
+                          "dt": 1.0, "max_dt": 1.0}}
+    sliding.check(m, g, zone, plan, pats)
+    assert plan["transient"]["degrees_per_step"] == 40.0 and any("not capped" in n for n in plan["notes"])
+
+
+def test_cells_per_step_settings_and_validation():
+    from cfd_translator import transient
+    st = {"geometry": {"box": [100, 40, 40]}, "fluid": "water", "model": "kOmegaSST",
+          "bcs": [{"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}],
+          "rotating": [{"name": "imp", "axis": [1, 0, 0], "center": [0, 0, 0], "rpm": 2900, "radius": 15,
+                        "motion": "sliding"}],
+          "mesh": {"mesher": "snappy", "size": 5}, "solve": {"transient": {"end_time": 0.01}}}
+    assert transient.settings(st)["cells_per_step"] == 2.0 and validate_study(st)["ok"]
+    st["solve"]["transient"]["cells_per_step"] = None
+    assert transient.settings(st)["cells_per_step"] is None and validate_study(st)["ok"]
+    st["solve"]["transient"]["cells_per_step"] = 0.1
+    assert any("cells_per_step" in e for e in validate_study(st)["errors"])
