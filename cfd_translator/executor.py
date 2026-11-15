@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.12.9
+Version: 2026.11.14.7
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -686,6 +686,46 @@ def _finest_mm(study: dict) -> float | None:
     return min(sizes) if sizes else None
 
 
+def interface_cell_mm(study: dict, zone: dict) -> float | None:
+    """The cell size the mesh will have at a sliding zone's cylinder, before meshing: the zone's own snappy level
+    (snappy.py: between the surface levels, about a sixth of its smaller dimension) and any mesh.refine region that
+    covers the cylinder (a cylinder on the axis whose radii hold it, a box or sphere around it, a distance band)."""
+    from .snappy import level_for
+    m = study.get("mesh") or {}
+    h0 = m.get("size")
+    if not isinstance(h0, (int, float)) or isinstance(h0, bool) or h0 <= 0:
+        return None
+    h0 = float(h0)
+    sf = m.get("surface")
+    sf = [float(x) for x in (sf if isinstance(sf, list) else [sf, sf])] if sf is not None else [h0 / 8, h0]
+    lo_l, hi_l = level_for(h0, max(sf)), level_for(h0, min(sf))
+    R = float(zone["radius"])
+    s0, s1 = zone.get("span", [None, None]) if zone.get("span") else (None, None)
+    dims = [2 * R] + ([float(s1) - float(s0)] if s0 is not None else [])
+    L = min(max(lo_l, level_for(h0, min(dims) / 6)), hi_l + 1)
+    h = h0 / 2 ** L
+    for r in m.get("refine") or []:
+        if "size" not in r:
+            continue
+        c = r.get("cylinder")
+        if c and float(c.get("inner_radius", 0) or 0) <= R <= float(c["radius"]):
+            h = min(h, float(r["size"]))
+        elif "distance" in r or "box" in r or "at" in r:
+            pass                                 # not placed against the cylinder here: left to the zone's level
+    return h
+
+
+def sliding_degrees(study: dict, sl: dict, tr: dict) -> float:
+    """degrees_per_step as the run will use it: capped so that the rotor passes at most cells_per_step (2)
+    interface cells a step (sliding.check does the same on the mesh; the router plans with this)."""
+    deg = float(tr.get("degrees_per_step", 1.0))
+    lim = tr.get("cells_per_step", 2.0) if "cells_per_step" in tr else 2.0
+    h = interface_cell_mm(study, sl)
+    if lim and h:
+        deg = min(deg, math.degrees(float(lim) * h / float(sl["radius"])))
+    return deg
+
+
 def transient_steps(study: dict) -> float | None:
     """Time steps of a transient study: the Courant limit on its finest cells at 1.5 x the reference speed
     (dt = 0.3 maxCo h / U: thin layer cells and fast spots make the steps about that small: the Ahmed body ran
@@ -708,15 +748,16 @@ def transient_steps(study: dict) -> float | None:
     dt = min(W / 10, T / 500)
     from .transient import sliding_zone
     sl = sliding_zone(study)
+    deg = sliding_degrees(study, sl, tr) if sl else None
     if "max_co" in tr and tr["max_co"] is None:       # a fixed time step: dt, or degrees_per_step of a revolution
-        fdt = (float(tr.get("degrees_per_step", 1.0)) / 360.0 * 60.0 / abs(float(sl["rpm"]))) if sl else \
-            float(tr.get("dt") or dt)
+        fdt = (deg / 360.0 * 60.0 / abs(float(sl["rpm"]))) if sl else float(tr.get("dt") or dt)
         return max(T - T0, 0.0) / fdt * (1.6 if sl else 1.0)
     co = float(tr.get("max_co", 2.0 if sl else 1.0))
     if sl:
-        # the rotor's tip speed sets the Courant number, and at most degrees_per_step per step
+        # the rotor's tip speed sets the Courant number, and at most degrees_per_step per step (capped by the
+        # interface cells passed per step)
         U = max(U, abs(float(sl["rpm"])) * 2 * math.pi / 60 * float(sl["radius"]) * 1e-3)
-        dt = min(dt, float(tr.get("degrees_per_step", 1.0)) / 360.0 * 60.0 / abs(float(sl["rpm"])))
+        dt = min(dt, deg / 360.0 * 60.0 / abs(float(sl["rpm"])))
     if h and U:
         dt = min(dt, 0.3 * co * h * 1e-3 / (1.5 * U))
     return max(T - T0, 0.0) / dt * (1.6 if sl else 1.0)      # sliding: two outer correctors, mesh motion

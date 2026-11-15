@@ -188,3 +188,35 @@ def test_cells_per_step_settings_and_validation():
     assert transient.settings(st)["cells_per_step"] is None and validate_study(st)["ok"]
     st["solve"]["transient"]["cells_per_step"] = 0.1
     assert any("cells_per_step" in e for e in validate_study(st)["errors"])
+
+
+def test_estimate_plans_with_the_capped_step():
+    """The router's estimate takes the step the run will use: rung 2 g 0.45 (0.15 mm cells at the interface, r
+    50.225): 1 degree passes about 5.9 cells; capped to 2: about 0.34 degrees, so about 2.9x the steps."""
+    from cfd_translator import executor
+    st = {"geometry": {"box": [130, 130, 90]}, "fluid": "water", "model": "kOmegaSST",
+          "bcs": [{"kind": "inlet", "faces": {"nz": 1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}}],
+          "rotating": [{"name": "imp", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 2900, "radius": 50.225,
+                        "span": [-0.5, 15], "motion": "sliding"}],
+          "mesh": {"mesher": "snappy", "size": 2.0, "surface": [1.0, 2.0],
+                   "refine": [{"size": 0.15, "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 50.95,
+                                                         "inner_radius": 49.5, "span": [-3, 5]}}]},
+          "solve": {"transient": {"end_time": 0.062069, "max_co": None, "degrees_per_step": 1.0}}}
+    sl = st["rotating"][0]
+    assert executor.interface_cell_mm(st, sl) == pytest.approx(0.15)
+    deg = executor.sliding_degrees(st, sl, st["solve"]["transient"])
+    assert deg == pytest.approx(np.degrees(2 * 0.15 / 50.225), rel=1e-6)
+    n_capped = executor.transient_steps(st)
+    st["solve"]["transient"]["cells_per_step"] = None
+    assert executor.sliding_degrees(st, sl, st["solve"]["transient"]) == 1.0
+    assert n_capped / executor.transient_steps(st) == pytest.approx(1.0 / deg, rel=1e-3)
+
+
+def test_sliding_results_are_not_reliable_while_ncc_is_under_investigation():
+    from cfd_translator.runner import _verdict
+    out = {"solve": {"transient": True, "settled": True, "reached_time": 1.0, "end_time": 1.0,
+                     "sliding": {"zone": "imp"}}}
+    ok, why = _verdict(out, {"averaged": {}, "checks": {}})
+    assert not ok and any("under investigation" in w for w in why) == bool(sliding.NCC_UNDER_INVESTIGATION)
+    out["solve"].pop("sliding")
+    assert _verdict(out, {"averaged": {}, "checks": {}})[0]

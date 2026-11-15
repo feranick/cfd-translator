@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.6
+Version: 2026.11.14.7
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -253,6 +253,15 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
     return out
 
 
+# Every sliding result carries this, and is not reliable on the strength of a stable run, until the cause is found
+# (set to '' then). The S50 v14 port (Perlmutter, 2026.11.14): next to the coupling, beside the impeller's moving
+# rim, the fluid turned against the rotor from the first moving step (-55 m/s against +18 after two steps of 1.4
+# microseconds, job 61305325), at any step size; small steps only kept it from running away.
+NCC_UNDER_INVESTIGATION = (
+    "sliding mesh (OpenFOAM 14 non-conformal coupling): the flow next to the coupling is under investigation. On the "
+    "S50 the fluid beside the moving rim turned against the rotor from the first step, at any step size (2026.11.14). "
+    "A stable run does not make these numbers trustworthy: compare with an MRF run, or a cyclicAMI run (ESI), "
+    "before using them")
 CELLS_PER_STEP_NOTE = 2.0   # interface cells the rotor may pass per step (solve.transient.cells_per_step)
 END_SHARE_WARN = 0.9     # the share of an end face's interface faces that should lie exactly on it
 

@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.14.1
+Version: 2026.11.14.7
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -290,6 +290,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                             lr = {"note": f"not read ({type(exc).__name__}: {exc})"}
                         if lr:
                             out["solve"]["sliding"]["locator"] = lr
+                    from .sliding import NCC_UNDER_INVESTIGATION
+                    if NCC_UNDER_INVESTIGATION:
+                        warns.append(NCC_UNDER_INVESTIGATION)
                     thin = (sl.get("interface_cells") or {}).get("thin_wall_cells") or {}
                     if thin.get("unreliable"):
                         warns.append(f"sliding interface: snapped cells at walls within {thin['layers']} cells of the "
@@ -808,7 +811,9 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
         if ch.get("wall_flux", {}).get("fraction_of_inflow", 0) > 0.02:
             why.append(f"{ch['wall_flux']['fraction_of_inflow']:.1%} of the inflow passes through walls (see warnings)")
         sls = sv.get("sliding") or {}
-        from .sliding import BALANCE_UNRELIABLE
+        from .sliding import BALANCE_UNRELIABLE, NCC_UNDER_INVESTIGATION
+        if sls and NCC_UNDER_INVESTIGATION:
+            why.append(NCC_UNDER_INVESTIGATION)
         if (sls.get("interface_balance") or {}).get("error", 0) > BALANCE_UNRELIABLE:
             why.append(f"the flux through the sliding interface does not balance "
                        f"({sls['interface_balance']['error']:.2%} of the through-flow)")
