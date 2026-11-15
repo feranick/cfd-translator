@@ -80,11 +80,17 @@ def test_locator_function_reader_and_divergence_note(tmp_path):
         "0.001 pvf 0.11 0.0597 0 -0.0823 1e-12\n0.001 Co 22 0.0 0.05958 -0.067 1e-12\n"
         "0.001 cell p0c7 22 0.0 0.05958 -0.067 1e-12 -4 0 0 9 0 0 0.12\n"
         "0.001 face p0c7 internal -1.86e-7 1.03e-7 1e-8 0 0.05964 -0.067 0 1 0\n"
+        "0.001 face p0c7 impeller 0 0 1e-8 0 0.0595 -0.067 0 -1 0 -18.07 0 0\n"
         "0.002 Co 698 0.0 0.0598 -0.076 1e-12\n")
     loc = locator.read(tmp_path, [0, 0, 1], [0, 0, 0])
     s1, s2 = loc["steps"]
     assert s1["Co"][0]["r_mm"] == pytest.approx(59.58) and s1["pvf"][0]["r_mm"] == pytest.approx(59.7)
-    assert s1["Co_detail"][0]["faces"][0]["v_n_m_s"] == pytest.approx(-18.6) and s1["Co_detail"][0]["pvf"] == 0.12
+    cd = s1["Co_detail"][0]
+    assert cd["faces"][0]["v_n_m_s"] == pytest.approx(-18.6) and cd["pvf"] == 0.12
+    # at (0, 59.58) about +z the rotation's direction is -x: U (-4, 0, 0) runs with it, the mesh's (9, 0, 0) against
+    assert cd["U_r_theta_s"] == [0.0, 4.0, 0.0] and cd["Umesh_r_theta_s"] == [0.0, -9.0, 0.0]
+    wall = [f_ for f_ in cd["faces"] if f_["patch"] == "impeller"][0]
+    assert wall["U_other_r_theta_s"] == [0.0, 18.07, 0.0]
     assert s2["Co"][0]["value"] == 698 and s2["Co"][0]["s_mm"] == pytest.approx(-76.0)
     assert locator.diverged_note(tmp_path) == ""
     locator.write_frame(tmp_path, [0, 0, 1], [0, 0, 0])
@@ -131,3 +137,24 @@ def test_end_faces_count_the_faces_exactly_on_each_end():
     e2 = sliding.end_faces(g2["Cf"][f], g2["Sf"][f], a, o, [-1e12, 5.0], h)
     assert e2[0]["faces_near"] == 100 and e2[0]["share_exact"] < sliding.END_SHARE_WARN
     assert e2[0]["share_on_plane"] < sliding.END_SHARE_WARN                 # scattered: snapped, not shifted
+
+
+def test_cells_per_step_is_reported_and_noted():
+    """check() reports the interface cells the rotor passes per time step and notes more than 2 (pump_mesh: r 11.5,
+    36 cells round about 2 mm each; 5 degrees is 1 mm of arc)."""
+    from test_sliding import patches_for, pump_mesh, zone_of
+    from cfd_translator.case import write_case  # noqa: F401  (the same imports test_sliding uses)
+    m = pump_mesh(vane=None)
+    pats = patches_for(m)
+    m.zones = {"rotor": zone_of(m, 11.5)}
+    g = m.geometry()
+    zone = {"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "radius": 11.5, "rpm": 1500, "motion": "sliding"}
+    for deg, noted in ((1.0, False), (40.0, True)):
+        plan = {"zones": {"rotor": {"omega_rad_s": 157.0}}, "transient": {"degrees_per_step": deg}}
+        try:
+            sliding.check(m, g, zone, plan, pats)
+        except sliding.SlidingError:
+            pytest.skip("this test mesh does not slide (see test_sliding)")
+        cps = plan["sliding"]["interface_cells"]["cells_per_step"]
+        assert cps["degrees_per_step"] == deg and cps["value"] > 0
+        assert any("interface cells per time step" in n for n in plan["notes"]) == noted

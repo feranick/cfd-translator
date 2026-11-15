@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.4
+Version: 2026.11.14.5
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -253,6 +253,7 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
     return out
 
 
+CELLS_PER_STEP_NOTE = 2.0   # interface cells the rotor passes per step above which a sliding run is noted
 END_SHARE_WARN = 0.9     # the share of an end face's interface faces that should lie exactly on it
 
 
@@ -424,6 +425,21 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         step_deg = float((plan.get("transient") or {}).get("degrees_per_step") or 1.0)
         pvf = projected_fraction(g["Cf"][f], g["Sf"][f], cin, cout, g["V"], a, o, step_deg)
         q_if["projected_volume_fraction"] = pvf
+        # how many interface cells the rotor passes in one time step (NCC ladder, rung 1 on carbonio, 2026.11.14:
+        # the propeller ran at 0.8 and 2.3 cells a step and diverged at step 3 at 8.5, the S50's rate at 1 degree)
+        side_f = sn < np.sin(np.radians(20.0))
+        if side_f.any():
+            rr = np.linalg.norm((Cf - o) - np.outer((Cf - o) @ a, a), axis=1)[side_f]
+            h_t = float(np.median(np.sqrt(A[side_f])))
+            arc = float(np.median(rr)) * np.radians(step_deg)
+            q_if["cells_per_step"] = {"value": round(arc / h_t, 2), "degrees_per_step": step_deg,
+                                      "radius_mm": round(float(np.median(rr)), 2), "cell_mm": round(h_t, 4)}
+            if arc / h_t > CELLS_PER_STEP_NOTE:
+                notes.append(f"sliding interface: the rotor passes {arc / h_t:.1f} interface cells per time step "
+                             f"({step_deg:g} degrees at r {float(np.median(rr)):.1f} mm, cells about {h_t:.3g} mm): "
+                             "OpenFOAM 14's coupling has run at up to about 2 and diverged at 8.5 (NCC ladder, "
+                             "2026.11.14); lower solve.transient.degrees_per_step to about "
+                             f"{step_deg * CELLS_PER_STEP_NOTE / (arc / h_t):.2g}")
         q_if["end_faces"] = end_faces(g["Cf"][f], g["Sf"][f], a, o, zone.get("span"), np.minimum(Lin, Lout))
         for ef in q_if["end_faces"]:
             if ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN <= ef.get("share_on_plane", 0):

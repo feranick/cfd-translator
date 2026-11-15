@@ -2,7 +2,7 @@
 steps, each rank's cells with the largest projected volume fraction (fvMeshStitcher's measure) and Courant number,
 with the velocity, the mesh velocity and every face's flux of the worst (and of watched cells), to
 processor*/cfdtWhere.dat; and the reader that turns those files into results.solve.sliding.locator.
-Version: 2026.11.14.1
+Version: 2026.11.14.5
 
 From the S50 v14 port (nersc/s50_sliding_v14, jobs 61249082-61290075), where it found the cells the divergence
 started in. Opt-in (solve.transient.locator): the function object is compiled when foamRun starts (OpenFOAM's
@@ -141,9 +141,12 @@ TEMPLATE = """    cfdtWhere
                         if (f >= m.nInternalFaces()) {{ continue; }}
                         const scalar sg = (m.owner()[f] == c) ? 1.0 : -1.0;
                         const vector n(sg*m.Sf()[f]/mag(m.Sf()[f]));
+                        // the velocity on the other side: the neighbouring cell's
+                        const vector Uo(U[m.owner()[f] == c ? m.neighbour()[f] : m.owner()[f]]);
                         os_() << t << " face" << pre << c << " internal " << sg*phi[f] << " " << sg*mphi[f] << " "
                             << mag(m.Sf()[f]) << " " << m.Cf()[f].x() << " " << m.Cf()[f].y() << " " << m.Cf()[f].z()
-                            << " " << n.x() << " " << n.y() << " " << n.z() << nl;
+                            << " " << n.x() << " " << n.y() << " " << n.z()
+                            << " " << Uo.x() << " " << Uo.y() << " " << Uo.z() << nl;
                     }}
                     forAll(m.boundary(), pi)
                     {{
@@ -154,10 +157,13 @@ TEMPLATE = """    cfdtWhere
                             if (fc[i] != c) {{ continue; }}
                             const scalar a = mag(pp.Sf()[i]);
                             const vector n(a > vSmall ? pp.Sf()[i]/a : vector::zero);
+                            // the velocity the boundary condition holds there: a wall's (movingWallVelocity: the
+                            // face's own motion), the coupling's (the other side's, interpolated)
+                            const vector Ub(U.boundaryField()[pi][i]);
                             os_() << t << " face" << pre << c << " " << pp.name() << " " << phi.boundaryField()[pi][i]
                                 << " " << mphi.boundaryField()[pi][i] << " " << a << " " << pp.Cf()[i].x() << " "
                                 << pp.Cf()[i].y() << " " << pp.Cf()[i].z() << " " << n.x() << " " << n.y() << " "
-                                << n.z() << nl;
+                                << n.z() << " " << Ub.x() << " " << Ub.y() << " " << Ub.z() << nl;
                         }}
                     }}
                 }}
@@ -233,10 +239,20 @@ def read(case: Path, axis, center, top: int = 3, steps: int | None = None) -> di
                     rows[float(p[0])][p[1]].append(tuple(map(float, p[2:])))
                 elif len(p) in (14, 15) and p[1] in ("cell", "watch"):
                     cells[float(p[0])].setdefault(p[2], {"faces": []}).update(kind=p[1], v=list(map(float, p[3:])))
-                elif len(p) == 13 and p[1] == "face":
+                elif len(p) in (13, 16) and p[1] == "face":
                     cells[float(p[0])].setdefault(p[2], {"faces": []})["faces"].append([p[3]] + list(map(float, p[4:])))
             except ValueError:
                 continue
+    def cyl(v, x, y, z):
+        """(radial, along the rotation (+axis, right-handed), axial) components of v at (x, y, z) metres."""
+        d = np.array([x, y, z]) * 1e3 - o
+        rad = d - (d @ a) * a
+        r = np.linalg.norm(rad)
+        if r <= 0:
+            return [0.0, 0.0, round(float(v @ a), 3)]
+        er = rad / r
+        et = np.cross(a, er)
+        return [round(float(v @ er), 3), round(float(v @ et), 3), round(float(v @ a), 3)]
     out = []
     for i, t in enumerate(sorted(rows)[:steps]):
         rec = {"step": i + 1, "time": t}
@@ -248,24 +264,29 @@ def read(case: Path, axis, center, top: int = 3, steps: int | None = None) -> di
             if kind == "cell":
                 got = sorted(got, key=lambda g_: -g_[1]["v"][0])[:1]
             if got:
-                rec[key] = [_detail(k_, d, place) for k_, d in got]
+                rec[key] = [_detail(k_, d, place, cyl) for k_, d in got]
         out.append(rec)
     return {"steps": out, "files": len(files)}
 
 
-def _detail(cid, d, place) -> dict:
+def _detail(cid, d, place, cyl) -> dict:
     v = d["v"]
     co, x, y, z, vol = v[:5]
     U, Um = np.array(v[5:8]), np.array(v[8:11])
     faces = []
-    for patch, ph, mph, area, *_ in d["faces"]:
+    for fr in d["faces"]:
+        patch, ph, mph, area = fr[:4]
         if area > 0:
-            faces.append({"patch": patch, "v_n_m_s": float(f"{ph / area:.4g}"),
-                          "mesh_v_n_m_s": float(f"{mph / area:.4g}"), "area_mm2": float(f"{area * 1e6:.3g}")})
+            rec = {"patch": patch, "v_n_m_s": float(f"{ph / area:.4g}"),
+                   "mesh_v_n_m_s": float(f"{mph / area:.4g}"), "area_mm2": float(f"{area * 1e6:.3g}")}
+            if len(fr) >= 13:            # the other side: the neighbouring cell, or the boundary condition's value
+                rec["U_other_r_theta_s"] = cyl(np.array(fr[10:13]), *fr[4:7])
+            faces.append(rec)
     faces.sort(key=lambda f_: -abs(f_["v_n_m_s"]))
     return {"id": cid, "Co": float(f"{co:.4g}"), **place(x, y, z), "volume_mm3": float(f"{vol * 1e9:.3g}"),
             **({"pvf": float(f"{v[11]:.4g}")} if len(v) > 11 else {}),
             "speed_m_s": round(float(np.linalg.norm(U)), 3), "relative_speed_m_s": round(float(np.linalg.norm(U - Um)), 3),
+            "U_r_theta_s": cyl(U, x, y, z), "Umesh_r_theta_s": cyl(Um, x, y, z),
             "net_flux_m3s": float(f"{sum(f_[1] for f_ in d['faces']):.3g}"), "faces": faces[:4]}
 
 
