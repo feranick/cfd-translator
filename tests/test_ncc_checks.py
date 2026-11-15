@@ -168,12 +168,15 @@ def test_cells_per_step_is_reported_and_noted():
         assert tr["degrees_per_step"] < 40 and tr["max_dt"] == pytest.approx(tr["degrees_per_step"] / 360 * period, rel=1e-3)
         assert tr["dt"] <= tr["max_dt"] * (1 + 1e-9)
         assert any("is capped to" in n for n in plan["notes"])
-    # null: reported, not capped
+    assert any("started from rest at full speed" in n for n in plan["notes"])
+    assert any("include the start from rest" in n for n in plan["notes"])          # average_from 0: within rev 1
+    # null: reported, not capped; averages from the second revolution: no note about them
     plan = {"zones": {"rotor": {"omega_rad_s": 157.0}},
             "transient": {"degrees_per_step": 40.0, "period": period, "fixed_step": True, "cells_per_step": None,
-                          "dt": 1.0, "max_dt": 1.0}}
+                          "dt": 1.0, "max_dt": 1.0, "average_from": period}}
     sliding.check(m, g, zone, plan, pats)
     assert plan["transient"]["degrees_per_step"] == 40.0 and any("not capped" in n for n in plan["notes"])
+    assert not any("include the start from rest" in n for n in plan["notes"])
 
 
 def test_cells_per_step_settings_and_validation():
@@ -212,11 +215,14 @@ def test_estimate_plans_with_the_capped_step():
     assert n_capped / executor.transient_steps(st) == pytest.approx(1.0 / deg, rel=1e-3)
 
 
-def test_sliding_results_are_not_reliable_while_ncc_is_under_investigation():
+def test_sliding_results_follow_the_normal_reliability_tests():
+    """2026.11.14.8: the hold-back lifted (the S50's backward band was physical start-up flow): a settled, balanced
+    sliding run is reliable; a sliding run's notes say how it started and whether the averages include the start."""
     from cfd_translator.runner import _verdict
+    assert sliding.NCC_UNDER_INVESTIGATION == ""
     out = {"solve": {"transient": True, "settled": True, "reached_time": 1.0, "end_time": 1.0,
                      "sliding": {"zone": "imp"}}}
     ok, why = _verdict(out, {"averaged": {}, "checks": {}})
-    assert not ok and any("under investigation" in w for w in why) == bool(sliding.NCC_UNDER_INVESTIGATION)
-    out["solve"].pop("sliding")
-    assert _verdict(out, {"averaged": {}, "checks": {}})[0]
+    assert ok and not why
+    out["solve"]["sliding"]["interface_balance"] = {"error": 0.05}
+    assert not _verdict(out, {"averaged": {}, "checks": {}})[0]

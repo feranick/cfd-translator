@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.7
+Version: 2026.11.14.8
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -253,15 +253,17 @@ def not_round_regions(refine: list, Cf, a, o) -> list:
     return out
 
 
-# Every sliding result carries this, and is not reliable on the strength of a stable run, until the cause is found
-# (set to '' then). The S50 v14 port (Perlmutter, 2026.11.14): next to the coupling, beside the impeller's moving
-# rim, the fluid turned against the rotor from the first moving step (-55 m/s against +18 after two steps of 1.4
-# microseconds, job 61305325), at any step size; small steps only kept it from running away.
-NCC_UNDER_INVESTIGATION = (
-    "sliding mesh (OpenFOAM 14 non-conformal coupling): the flow next to the coupling is under investigation. On the "
-    "S50 the fluid beside the moving rim turned against the rotor from the first step, at any step size (2026.11.14). "
-    "A stable run does not make these numbers trustworthy: compare with an MRF run, or a cyclicAMI run (ESI), "
-    "before using them")
+# The hold-back of 2026.11.14.7, lifted: the backward flow beside the S50's vane tips at the start (-59 m/s against a
+# mesh speed of +18) is physical start-up flow, fluid displaced over the tips by vanes starting at full speed. ESI
+# v2506's cyclicAMI gives -55 m/s at the same point in its first step (Perlmutter 61358002), and the v14 band
+# disappears without vane displacement (STATIC) and flips with the rotation (REVERSE). The S50's v14 blow-up was the
+# sliding rate (8.5 interface cells a step), which cells_per_step caps.
+NCC_UNDER_INVESTIGATION = ""
+# every sliding result: the start from rest at full speed
+STARTUP_NOTE = ("sliding mesh started from rest at full speed: for the first steps the flow beside the blade tips and "
+                "in narrow gaps runs at tens of m/s (the blades displace the fluid at once; the S50: -55 m/s beside the "
+                "vane tips in the first step, in both OpenFOAM 14 and ESI cyclicAMI), decaying over the first "
+                "revolution. The averages must start after it (average_from at 1 revolution or more)")
 CELLS_PER_STEP_NOTE = 2.0   # interface cells the rotor may pass per step (solve.transient.cells_per_step)
 END_SHARE_WARN = 0.9     # the share of an end face's interface faces that should lie exactly on it
 
@@ -471,6 +473,13 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                              f"({step_deg:g} degrees at r {float(np.median(rr)):.1f} mm, cells about {h_t:.3g} mm; "
                              "solve.transient.cells_per_step null: not capped): OpenFOAM 14's coupling ran the S50 at "
                              "1.5 and diverged at 8.5 (NCC ladder, 2026.11.14)")
+        tr0 = plan.get("transient") or {}
+        if tr0.get("period"):
+            notes.append(STARTUP_NOTE)
+            if float(tr0.get("average_from", 0.0)) < float(tr0["period"]) * (1 - 1e-9):
+                notes.append(f"sliding mesh: the averages start at {tr0.get('average_from', 0.0):.4g} s, within the first "
+                             f"revolution ({tr0['period']:.4g} s), so they include the start from rest: raise "
+                             "solve.transient.average_from (and end_time) so that at least one revolution passes first")
         q_if["end_faces"] = end_faces(g["Cf"][f], g["Sf"][f], a, o, zone.get("span"), np.minimum(Lin, Lout))
         for ef in q_if["end_faces"]:
             if ef["faces_near"] and ef["share_exact"] < END_SHARE_WARN <= ef.get("share_on_plane", 0):
