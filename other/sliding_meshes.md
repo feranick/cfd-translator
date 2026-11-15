@@ -96,7 +96,15 @@ was real and each has a check.
      thickness-to-medial-axis rule.
    - **Checks:** `interface_cells.projected_volume_fraction` (an estimate of the stitcher's measure for each owner
      choice; OpenFOAM warns above 0.3, cfd-translator stops above 1); the size ratio across the interface.
-5. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
+5. **No refinement above the interface's level where it touches the interface.**
+   - On an O-grid the cells passed per degree depend only on the refinement level: 96 x 2^L / 360 for 96 cells
+     round, so 2.1 at level 3, 4.3 at level 4 and 8.5 at level 5, at any radius.
+   - A refinement region (a gap band, a vane band, a sphere at a tongue) that brings any interface face to a higher
+     level quietly halves the step once per extra level, because the cap follows the finest faces.
+   - Keep every region that meets the interface at the interface's level. Get fine planes along the axis from the
+     background (finer z layers at the zone's ends), not from an extra level.
+   - **Check:** `interface_cells.cells_per_step`, and on the port `ogrid.py check`.
+6. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
    as `rotatingWallVelocity` walls. Blades must lie inside it (`movingWallVelocity`). A hexagonal socket is not a
    surface of revolution.
 
@@ -146,7 +154,9 @@ What follows:
   refined points of a polar background lie inside its arcs (0.03 mm at 96 cells round, r 60). Scale the ring radii
   so the refined lines straddle the cylinders (`ogrid.py check` simulates this at the refined level).
 - **`foamDictionary` expands `#include`:** editing a dictionary with `-set` writes it back with its includes
-  expanded. Use `-disableFunctionEntries`, or edit a copy, or keep pristine `.orig` copies and copy them in at every
+  expanded. On v2506 `foamDictionary -set` on `controlDict` replaced `#include "controlDict.extra"` with its
+  contents as read then, so the function objects added to `controlDict.extra` later (the movie's) silently never
+  loaded. Use `foamDictionary -disableFunctionEntries`, or keep pristine `.orig` copies and copy them in at every
   start.
 - **Per-run edits must be undone at every start:** a test option that changes `processor*/0/U` (the STATIC run's
   `rotatingWallVelocity` impeller) persisted into the next two runs and made them useless. Reset every edited entry
@@ -156,8 +166,9 @@ What follows:
 - **A stale marker skips the coupling:** a `.ncc_done` kept after remeshing made the solve run the new mesh without
   the coupling. Delete it when remeshing, and check for the coupling's patches. Refuse a different owner order on an
   existing couple.
-- **v2506 `postProcess` needs `-fields`:** to load fields that a function object samples (e.g.
-  `postProcess -fields '(U)' -time ...`). It also needs the fields reconstructed (`reconstructPar -fields '(U)'`).
+- **v2506 `postProcess` needs `-fields`:** a `sets` function object run by `postProcess` wrote nothing ("Cannot
+  find registered field matching 1(U)") until the fields were named: `postProcess -fields '(U)' -time ...`. On a
+  decomposed case reconstruct those fields first (`reconstructPar -fields '(U)' -time ...`).
 - **OpenFOAM 14 API (coded function objects):**
   - `DimensionedField::field()` is private: use `static_cast<const scalarField&>(mesh.V())`;
   - `fvMesh` has no `findCell`: use the nearest cell centre, and keep only the rank with the nearest of all;
