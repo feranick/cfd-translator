@@ -169,6 +169,35 @@ def test_end_gap_cells_count_whole_cells_to_the_wall_along_the_axis():
     assert e["stator_side"]["min_cells"] == sliding.END_GAP_SEARCH + 1      # the top is not a wall here
 
 
+def test_stray_end_faces_and_end_gap_on_the_intended_planes():
+    """The zone z < 5 in a 10 mm box of 1 mm cells: its end face on the plane z 5 has no stray faces; asked at 5.06,
+    the faces on the grid plane 5.0 next to it count as its own (conformal, shifted). Points of the end face at x > 2
+    pulled 0.4 mm down (an edge dragged by snapping): those faces are stray and leave the end-gap count."""
+    a, o = np.array([0.0, 0.0, 1.0]), np.zeros(3)
+    m = box_mesh(10, 10, 10, 10, 10, 10, origin=(-5, -5, 0))
+    wall = m.ninternal + np.nonzero(np.isin(m.btag, [4, 5]))[0]
+    g = m.geometry()
+    inz = g["C"][:, 2] < 5
+    f, _ = sliding.interface(m, np.nonzero(inz)[0])
+    s = sliding.stray_end_faces(m, g, f, inz, a, o, [5.0])
+    assert s["faces"] == 0 and s["planes_used"] == [5.0]
+    s = sliding.stray_end_faces(m, g, f, inz, a, o, [5.06])
+    assert s["faces"] == 0 and s["planes_used"] == [5.06, 5.0]
+    e = sliding.end_gap_cells(m, g, f, inz, wall, a, o, planes=[5.06])
+    assert len(e) == 1 and e[0]["s_mm"] == 5.06 and e[0]["faces"] == 100
+    P = m.points
+    P[(np.abs(P[:, 2] - 5) < 1e-9) & (P[:, 0] > 2.5), 2] -= 0.4
+    m2 = box_mesh(10, 10, 10, 10, 10, 10, origin=(-5, -5, 0))
+    m2.points = P
+    g2 = m2.geometry()
+    s2 = sliding.stray_end_faces(m2, g2, f, inz, a, o, [5.0])
+    assert s2["faces"] >= 20 and s2["max_offset_mm"] == pytest.approx(0.4, abs=1e-6)
+    assert all(q["s_mm"] < 5 and q["r_mm"] > 2 for q in s2["places"])
+    e2 = sliding.end_gap_cells(m2, g2, f, inz, wall, a, o, planes=[5.0])
+    assert len(e2) == 1 and e2[0]["faces"] == 100 - s2["faces"]
+    assert len(sliding.end_gap_cells(m2, g2, f, inz, wall, a, o)) > 1      # unplanned: every cluster is a 'plane'
+
+
 def test_cells_per_step_is_reported_and_noted():
     """check() reports the interface cells the rotor passes per time step and notes more than 2 (pump_mesh: r 11.5,
     36 cells round about 2 mm each; 5 degrees is 1 mm of arc)."""

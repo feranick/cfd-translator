@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.16.1
+Version: 2026.11.16.2
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -333,27 +333,128 @@ def _toward(mesh, g, cells_mask, a):
     return out
 
 
-def end_gap_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 6) -> list:
-    """Whole cells between each end face of the zone (its interface faces whose normal lies along the axis, grouped
-    by plane) and the nearest wall along the axis, on each side: from the cell on the end face, cell by cell through
-    the face facing along the axis, until a wall face (1: the end face's own cell touches the wall). The S50 v14
-    port's long-cell mesh (OGRID_ANISO, spark2, 2026-11-16) had one 0.25 mm cell between the zone's top face (z
-    -46.25) and the wear plate (-46.0): that cell was snapped onto the plate and dragged the interface's corner
-    (faces turned 54-64 degrees at r 59.63; coverage 0 to 1.95 at rest, projected volume fraction 0.344; diverged
-    within 17 steps). The level-5 mesh had two 0.125 mm cells there and coupled at 1/1/1."""
-    ni = mesh.ninternal
+STRAY_FRACTION = 0.1     # an axial interface face this far (in its cells' height along the axis) off every end plane
+
+
+def _axial(mesh, g, f, inz, a, o) -> dict | None:
+    """The zone's interface faces whose normal lies along the axis: face labels, position along the axis, which way
+    the stator side lies, the cells on each side, the cells' height along the axis (volume over the face's area, the
+    smaller side), and the faces' centres."""
     Sf, Cf = g["Sf"][f], g["Cf"][f]
-    n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
+    A = np.linalg.norm(Sf, axis=1)
+    n = Sf / np.maximum(A, 1e-300)[:, None]
     zown = inz[mesh.owner[f]]
     n_out = np.where(zown[:, None], n, -n)                       # from the zone into the rest
-    axial = np.abs(n_out @ a) > 0.9
-    if not axial.any():
+    ax = np.abs(n_out @ a) > 0.9
+    if not ax.any():
+        return None
+    fa = f[ax]
+    cin = np.where(zown[ax], mesh.owner[fa], mesh.neighbour[fa])
+    cout = np.where(zown[ax], mesh.neighbour[fa], mesh.owner[fa])
+    V = np.abs(g["V"])
+    h = np.minimum(V[cin], V[cout]) / np.maximum(A[ax], 1e-300)
+    return {"f": fa, "s": (Cf[ax] - o) @ a, "up": np.sign(n_out[ax] @ a), "cin": cin, "cout": cout, "h": h,
+            "Cf": Cf[ax]}
+
+
+def _planes_used(s, h, planes) -> list:
+    """The planes the end faces really lie on: each intended plane, and the plane most of the axial faces within a
+    cell of it share when that is a different one (a conformal end face on the grid plane next to the asked one)."""
+    out = []
+    for p_ in planes:
+        out.append(float(p_))
+        near = np.abs(s - p_) < np.maximum(h, 1e-3)
+        if near.any():
+            zz, cnt = np.unique(np.round(s[near], 4), return_counts=True)
+            k = int(np.argmax(cnt))
+            if cnt[k] >= 0.5 * near.sum() and abs(zz[k] - p_) > 1e-3:
+                out.append(float(zz[k]))
+    return out
+
+
+def _match(s, h, used) -> np.ndarray:
+    """Index into used of the plane each face lies on (within STRAY_FRACTION of its cells' height, at least a
+    micrometre), -1 for none."""
+    tol = np.maximum(STRAY_FRACTION * h, 1e-3)
+    d = np.abs(s[:, None] - np.asarray(used)[None, :])
+    k = np.argmin(d, axis=1)
+    return np.where(d[np.arange(len(s)), k] <= tol, k, -1)
+
+
+def _place(c, a, o, e1, e2) -> dict:
+    d = c - o
+    rad = d - (d @ a) * a
+    return {"r_mm": round(float(np.linalg.norm(rad)), 3), "s_mm": round(float(d @ a), 3),
+            "theta_deg": round(float(np.degrees(np.arctan2(rad @ e2, rad @ e1))) % 360, 1)}
+
+
+def _basis(a):
+    """Two unit vectors across the axis: x (or y) with its axial part removed, then a x e1; for the z axis x and y,
+    so theta is atan2(y, x)."""
+    t = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = t - (t @ a) * a
+    e1 /= np.linalg.norm(e1)
+    return e1, np.cross(a, e1)
+
+
+def stray_end_faces(mesh, g, f, inz, a, o, planes, top: int = 8) -> dict:
+    """Interface faces facing along the axis that lie on none of the zone's end planes (more than STRAY_FRACTION of
+    their cells' height off each): an end face's edge dragged by snapping. S50 v14 port, mesh 621 (spark2,
+    2026-11-16): 15 such 'planes' between z -46.11 and -46.27 with a few faces each, at the top rim corner (r
+    59.60-59.62), where 286 of the mesh's 343 faces over 65 degrees of non-orthogonality also were; the coupling's
+    coverage was 0 to 1.95 at rest and the run diverged within 17 steps. planes: the intended end planes (the zone's
+    span ends, a stepped zone's step)."""
+    ax = _axial(mesh, g, f, inz, a, o)
+    rec = {"planes": [float(p_) for p_ in planes], "faces": 0, "places": []}
+    if ax is None:
+        return rec
+    used = _planes_used(ax["s"], ax["h"], planes)
+    k = _match(ax["s"], ax["h"], used)
+    bad = np.nonzero(k < 0)[0]
+    rec["planes_used"] = used
+    rec["faces"] = int(len(bad))
+    if len(bad):
+        d = np.min(np.abs(ax["s"][bad][:, None] - np.asarray(used)[None, :]), axis=1)
+        rec["max_offset_mm"] = round(float(d.max()), 4)
+        rec["max_offset_cells"] = round(float((d / np.maximum(ax["h"][bad], 1e-300)).max()), 2)
+        e1, e2 = _basis(a)
+        for i in bad[np.argsort(-d)][:top]:
+            q = _place(ax["Cf"][i], a, o, e1, e2)
+            q["offset_mm"] = round(float(np.min(np.abs(ax["s"][i] - np.asarray(used)))), 4)
+            rec["places"].append(q)
+    return rec
+
+
+def end_gap_cells(mesh, g, f, inz, wall_faces, a, o, planes=None, top: int = 6) -> list:
+    """Whole cells between each end face of the zone and the nearest wall along the axis, on each side: from the cell
+    on the end face, cell by cell through the face facing along the axis, until a wall face (1: the end face's own
+    cell touches the wall). planes: the intended end planes (the zone's span ends, a stepped zone's step); the
+    interface faces facing along the axis on them (or on the grid plane next to one) are counted, the others are
+    stray_end_faces' business. Without planes every cluster of such faces counts as a plane (as before 2026.11.16.2).
+    The S50 v14 port's long-cell mesh with 2 mm z bands (OGRID_ANISO, spark2, 2026-11-16) had its top rim corner
+    dragged by snapping (coverage 0 to 1.95 at rest, projected volume fraction 0.344; diverged within 17 steps); the
+    level-5 mesh had 0.125 mm cells there and coupled at 1/1/1."""
+    ni = mesh.ninternal
+    ax = _axial(mesh, g, f, inz, a, o)
+    if ax is None:
         return []
-    fa = f[axial]
-    sx = (Cf[axial] - o) @ a
-    up = np.sign(n_out[axial] @ a)                              # the stator side lies along +a (1) or -a (-1)
-    cin = np.where(zown[axial], mesh.owner[fa], mesh.neighbour[fa])
-    cout = np.where(zown[axial], mesh.neighbour[fa], mesh.owner[fa])
+    if planes is not None:
+        used = _planes_used(ax["s"], ax["h"], planes)
+        k = _match(ax["s"], ax["h"], used)
+        # a grid plane next to an intended one reports under the intended one
+        lut = [min(range(len(planes)), key=lambda j: abs(float(planes[j]) - u)) for u in used]
+        label = np.where(k >= 0, np.asarray(lut + [-1])[k], -1)
+        keep = label >= 0
+        group = label[keep]
+        names = [float(p_) for p_ in planes]
+    else:
+        keep = np.ones(len(ax["s"]), bool)
+        rounded = np.round(ax["s"], 2)
+        names = [float(v) for v in np.unique(rounded)]
+        group = np.searchsorted(np.asarray(names), rounded)
+    if not keep.any():
+        return []
+    cin, cout, up, Cfa = ax["cin"][keep], ax["cout"][keep], ax["up"][keep], ax["Cf"][keep]
     # the cells the walk can reach: END_GAP_SEARCH layers around the end faces' cells
     near = np.zeros(mesh.ncells, bool)
     near[cin] = near[cout] = True
@@ -366,19 +467,17 @@ def end_gap_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 6) -> list:
     wall = np.zeros(len(mesh.owner), bool)
     if len(wall_faces):
         wall[np.asarray(wall_faces, np.int64)] = True
-    e1 = np.cross(a, [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0])
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(a, e1)
+    e1, e2 = _basis(a)
 
     def walk(start, along_plus):
         cnt = np.full(len(start), END_GAP_SEARCH + 1, np.int64)
         c = start.copy()
         live = np.ones(len(start), bool)
-        for k in range(1, END_GAP_SEARCH + 1):
+        for k_ in range(1, END_GAP_SEARCH + 1):
             bf = np.where(along_plus, pf[c], mf[c])
             bc = np.where(along_plus, pc[c], mc[c])
             hit = live & (bf >= 0) & wall[np.maximum(bf, 0)]
-            cnt[hit] = k
+            cnt[hit] = k_
             live &= ~hit & (bc >= 0) & near[np.maximum(bc, 0)]
             c = np.where(live, bc, c)
             if not live.any():
@@ -386,20 +485,19 @@ def end_gap_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 6) -> list:
         return cnt
 
     sides = {"stator_side": walk(cout, up > 0), "rotor_side": walk(cin, up < 0)}
-    planes = np.round(sx, 2)
     out = []
-    for pz in np.unique(planes):
-        on = planes == pz
-        rec = {"s_mm": float(pz), "faces": int(on.sum())}
+    for gi, pz in enumerate(names):
+        on = group == gi
+        if not on.any():
+            continue
+        rec = {"s_mm": pz, "faces": int(on.sum())}
         for side_, cnt in sides.items():
             cs = cnt[on]
             bad = np.nonzero(on)[0][cs < END_GAP_MIN]
             r_ = {"min_cells": int(cs.min()), "faces_under_min": int(len(bad)), "places": []}
             for i in bad[:top]:
-                d = Cf[axial][i] - o
-                rad = d - (d @ a) * a
-                r_["places"].append({"r_mm": round(float(np.linalg.norm(rad)), 2), "s_mm": round(float(d @ a), 2),
-                                     "theta_deg": round(float(np.degrees(np.arctan2(rad @ e2, rad @ e1))) % 360, 1)})
+                q = _place(Cfa[i], a, o, e1, e2)
+                r_["places"].append({k_: round(v, 2) if k_ != "theta_deg" else v for k_, v in q.items()})
             rec[side_] = r_
         out.append(rec)
     return out
@@ -448,9 +546,7 @@ def thin_wall_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 8) -> dict:
             worst = min(worst, hc.min() / h_ref)
             bad = cand[hc < THIN_WARN * h_ref]
             rec["thin"] = int(len(bad))
-            e1 = np.cross(a, [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0])
-            e1 /= np.linalg.norm(e1)
-            e2 = np.cross(a, e1)
+            e1, e2 = _basis(a)
             for c in bad[np.argsort(h[bad])][:top]:
                 d = g["C"][c] - o
                 sx = float(d @ a)
@@ -601,8 +697,20 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                              "there so that it is one")
         wall_faces = np.concatenate([mesh.patch_faces(p_["name"]) for p_ in patches if p_.get("kind") == "wall"]
                                     or [np.zeros(0, np.int64)])
-        gaps = end_gap_cells(mesh, g, f, inz, wall_faces, a, o)
+        ends = [float(v) for v in (zone.get("span") or []) if abs(float(v)) < 1e11]
+        gaps = end_gap_cells(mesh, g, f, inz, wall_faces, a, o, planes=ends)
         q_if["end_gap_cells"] = gaps
+        stray = stray_end_faces(mesh, g, f, inz, a, o, ends)
+        q_if["stray_end_faces"] = stray
+        if stray["faces"]:
+            notes.append(
+                f"sliding zone {zn!r}: {stray['faces']} interface faces facing along the axis lie on none of its end "
+                f"planes ({', '.join(f'{v:g}' for v in ends)} mm; up to {stray['max_offset_mm']} mm, "
+                f"{stray['max_offset_cells']} cells off, at " +
+                "; ".join(f"r {q['r_mm']} s {q['s_mm']} theta {q['theta_deg']}" for q in stray["places"][:3]) +
+                "): an end face's edge dragged by snapping, usually where it meets the cylinder next to a wall (S50 "
+                "v14 port, mesh 621: the top rim corner, coverage 0 to 1.95 at rest, diverged within 17 steps). "
+                "Finer cells along the axis there, or move the end face away from the wall")
         for eg in gaps:
             for side_ in ("stator_side", "rotor_side"):
                 rec = eg[side_]
@@ -612,8 +720,8 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                         f"{eg['s_mm']:g} mm have fewer than {END_GAP_MIN} whole cells between them and a wall on the "
                         f"{side_.replace('_', ' ')} (min {rec['min_cells']}, at " +
                         "; ".join(f"r {q['r_mm']} s {q['s_mm']} theta {q['theta_deg']}" for q in rec["places"][:3]) +
-                        "): snapping that cell onto the wall drags the interface's edge (S50 v14 port, long-cell mesh: "
-                        "one cell between the top face and the wear plate, coverage 0 to 1.95 at rest, diverged). "
+                        "): snapping a cell there onto the wall can drag the interface's edge (S50 v14 port, long-cell "
+                        "mesh: the top rim corner next to the wear plate, coverage 0 to 1.95 at rest, diverged). "
                         "Refine there (finer cells along the axis) or move the end face away from the wall")
         thin = thin_wall_cells(mesh, g, f, inz, wall_faces, a, o)
         q_if["thin_wall_cells"] = thin
