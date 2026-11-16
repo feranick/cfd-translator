@@ -91,6 +91,11 @@ was real and each has a check.
    - Raised to just under the back disc, with a step of smaller radius keeping the hub inside the zone, the stator
      side got 0.25 mm all round. In the generic rotor, the zone's floor sits 3 gap cells under the disc.
    - A step's own faces need the grid too (the O-grid's rings from r 24 for a step at r 25).
+   - **At least 2 whole cells between each end face and the nearest wall along the axis**, on both sides. The S50's
+     long-cell mesh had one 0.25 mm cell between the zone's top face and the wear plate: snapped onto the plate, it
+     dragged the interface's corner (coupling coverage 0 to 1.95 at rest, diverged within 17 steps). The level-5
+     mesh had two 0.125 mm cells there and coupled cleanly. Finer background planes along the axis at the ends fix
+     it without raising the level. **Check:** `interface_cells.end_gap_cells`.
 4. **Whole cells across narrow gaps:** about 2 or more each side of the interface.
    - Prism layers do not fit: snappy thinned them to 6 micrometres in a 0.25 mm half-gap, because of its
      thickness-to-medial-axis rule.

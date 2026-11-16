@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.14.8
+Version: 2026.11.16.1
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -299,6 +299,112 @@ def end_faces(Cf, Sf, a, o, span, h, tol_mm: float = 1e-3) -> list:
     return out
 
 
+END_GAP_MIN = 2          # whole cells between an end face of the zone and the nearest wall along the axis, each side
+END_GAP_SEARCH = 4       # cells walked from the end face (more: reported as END_GAP_SEARCH + 1, 'no wall near')
+
+
+def _toward(mesh, g, cells_mask, a):
+    """For each cell in cells_mask: its face whose outward normal points most along +a and most along -a, as
+    (face, the cell beyond it or -1) arrays indexed by cell (-1 where not computed)."""
+    ni, nf = mesh.ninternal, len(mesh.owner)
+    own, nei = mesh.owner, mesh.neighbour
+    sel_b = cells_mask[own[ni:]]
+    sel_i = cells_mask[own[:ni]] | cells_mask[nei]
+    fi = np.nonzero(sel_i)[0]
+    fb = ni + np.nonzero(sel_b)[0]
+    n = g["Sf"] / np.maximum(np.linalg.norm(g["Sf"], axis=1), 1e-300)[:, None]
+    na = n @ a
+    cells = np.concatenate([own[fi], nei[fi], own[fb]])
+    faces = np.concatenate([fi, fi, fb])
+    score = np.concatenate([na[fi], -na[fi], na[fb]])           # the outward normal's component along a
+    other = np.concatenate([nei[fi], own[fi], np.full(len(fb), -1, np.int64)])
+    keep = cells_mask[cells]
+    cells, faces, score, other = cells[keep], faces[keep], score[keep], other[keep]
+    out = []
+    for sgn in (1.0, -1.0):
+        o = np.lexsort((-sgn * score, cells))
+        first = np.unique(cells[o], return_index=True)[1]
+        pick = o[first]
+        bf = np.full(mesh.ncells, -1, np.int64)
+        bc = np.full(mesh.ncells, -1, np.int64)
+        bf[cells[pick]] = faces[pick]
+        bc[cells[pick]] = other[pick]
+        out.append((bf, bc))
+    return out
+
+
+def end_gap_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 6) -> list:
+    """Whole cells between each end face of the zone (its interface faces whose normal lies along the axis, grouped
+    by plane) and the nearest wall along the axis, on each side: from the cell on the end face, cell by cell through
+    the face facing along the axis, until a wall face (1: the end face's own cell touches the wall). The S50 v14
+    port's long-cell mesh (OGRID_ANISO, spark2, 2026-11-16) had one 0.25 mm cell between the zone's top face (z
+    -46.25) and the wear plate (-46.0): that cell was snapped onto the plate and dragged the interface's corner
+    (faces turned 54-64 degrees at r 59.63; coverage 0 to 1.95 at rest, projected volume fraction 0.344; diverged
+    within 17 steps). The level-5 mesh had two 0.125 mm cells there and coupled at 1/1/1."""
+    ni = mesh.ninternal
+    Sf, Cf = g["Sf"][f], g["Cf"][f]
+    n = Sf / np.maximum(np.linalg.norm(Sf, axis=1), 1e-300)[:, None]
+    zown = inz[mesh.owner[f]]
+    n_out = np.where(zown[:, None], n, -n)                       # from the zone into the rest
+    axial = np.abs(n_out @ a) > 0.9
+    if not axial.any():
+        return []
+    fa = f[axial]
+    sx = (Cf[axial] - o) @ a
+    up = np.sign(n_out[axial] @ a)                              # the stator side lies along +a (1) or -a (-1)
+    cin = np.where(zown[axial], mesh.owner[fa], mesh.neighbour[fa])
+    cout = np.where(zown[axial], mesh.neighbour[fa], mesh.owner[fa])
+    # the cells the walk can reach: END_GAP_SEARCH layers around the end faces' cells
+    near = np.zeros(mesh.ncells, bool)
+    near[cin] = near[cout] = True
+    own, nei = mesh.owner[:ni], mesh.neighbour
+    for _ in range(END_GAP_SEARCH):
+        m = near[own] | near[nei]
+        near[own[m]] = True
+        near[nei[m]] = True
+    (pf, pc), (mf, mc) = _toward(mesh, g, near, a)
+    wall = np.zeros(len(mesh.owner), bool)
+    if len(wall_faces):
+        wall[np.asarray(wall_faces, np.int64)] = True
+    e1 = np.cross(a, [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+
+    def walk(start, along_plus):
+        cnt = np.full(len(start), END_GAP_SEARCH + 1, np.int64)
+        c = start.copy()
+        live = np.ones(len(start), bool)
+        for k in range(1, END_GAP_SEARCH + 1):
+            bf = np.where(along_plus, pf[c], mf[c])
+            bc = np.where(along_plus, pc[c], mc[c])
+            hit = live & (bf >= 0) & wall[np.maximum(bf, 0)]
+            cnt[hit] = k
+            live &= ~hit & (bc >= 0) & near[np.maximum(bc, 0)]
+            c = np.where(live, bc, c)
+            if not live.any():
+                break
+        return cnt
+
+    sides = {"stator_side": walk(cout, up > 0), "rotor_side": walk(cin, up < 0)}
+    planes = np.round(sx, 2)
+    out = []
+    for pz in np.unique(planes):
+        on = planes == pz
+        rec = {"s_mm": float(pz), "faces": int(on.sum())}
+        for side_, cnt in sides.items():
+            cs = cnt[on]
+            bad = np.nonzero(on)[0][cs < END_GAP_MIN]
+            r_ = {"min_cells": int(cs.min()), "faces_under_min": int(len(bad)), "places": []}
+            for i in bad[:top]:
+                d = Cf[axial][i] - o
+                rad = d - (d @ a) * a
+                r_["places"].append({"r_mm": round(float(np.linalg.norm(rad)), 2), "s_mm": round(float(d @ a), 2),
+                                     "theta_deg": round(float(np.degrees(np.arctan2(rad @ e2, rad @ e1))) % 360, 1)})
+            rec[side_] = r_
+        out.append(rec)
+    return out
+
+
 THIN_LAYERS = 2          # cells from the interface searched for snapped slivers at walls
 THIN_WARN = 0.35         # a wall cell thinner than this fraction of the interface's cells: noted
 THIN_UNRELIABLE = 0.2    # ... thinner than this: the run is unreliable (S50 v14 port: 0.02 mm against 0.12, diverged)
@@ -495,6 +601,20 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                              "there so that it is one")
         wall_faces = np.concatenate([mesh.patch_faces(p_["name"]) for p_ in patches if p_.get("kind") == "wall"]
                                     or [np.zeros(0, np.int64)])
+        gaps = end_gap_cells(mesh, g, f, inz, wall_faces, a, o)
+        q_if["end_gap_cells"] = gaps
+        for eg in gaps:
+            for side_ in ("stator_side", "rotor_side"):
+                rec = eg[side_]
+                if rec["faces_under_min"]:
+                    notes.append(
+                        f"sliding zone {zn!r}: {rec['faces_under_min']} of the {eg['faces']} faces of its end face at s "
+                        f"{eg['s_mm']:g} mm have fewer than {END_GAP_MIN} whole cells between them and a wall on the "
+                        f"{side_.replace('_', ' ')} (min {rec['min_cells']}, at " +
+                        "; ".join(f"r {q['r_mm']} s {q['s_mm']} theta {q['theta_deg']}" for q in rec["places"][:3]) +
+                        "): snapping that cell onto the wall drags the interface's edge (S50 v14 port, long-cell mesh: "
+                        "one cell between the top face and the wear plate, coverage 0 to 1.95 at rest, diverged). "
+                        "Refine there (finer cells along the axis) or move the end face away from the wall")
         thin = thin_wall_cells(mesh, g, f, inz, wall_faces, a, o)
         q_if["thin_wall_cells"] = thin
         for side_, rec in ((k_, thin[k_]) for k_ in ("rotor_side", "stator_side")):

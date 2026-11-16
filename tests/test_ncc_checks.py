@@ -139,6 +139,36 @@ def test_end_faces_count_the_faces_exactly_on_each_end():
     assert e2[0]["share_on_plane"] < sliding.END_SHARE_WARN                 # scattered: snapped, not shifted
 
 
+def test_end_gap_cells_count_whole_cells_to_the_wall_along_the_axis():
+    """A 10 mm box of 1 mm cells, walls at z 0 and z 10, the zone z < 9: one cell between its top face and the wall
+    above (the S50 long-cell mesh's top face and wear plate), more than the search below; z < 8: two cells, fine."""
+    m = box_mesh(10, 10, 10, 10, 10, 10, origin=(-5, -5, 0))
+    g = m.geometry()
+    a, o = np.array([0.0, 0.0, 1.0]), np.zeros(3)
+    wall = m.ninternal + np.nonzero(np.isin(m.btag, [4, 5]))[0]
+    for top, above, flagged in ((9.0, 1, 100), (8.0, 2, 0), (6.0, 4, 0), (5.0, sliding.END_GAP_SEARCH + 1, 0)):
+        inz = g["C"][:, 2] < top
+        f, _ = sliding.interface(m, np.nonzero(inz)[0])
+        e = sliding.end_gap_cells(m, g, f, inz, wall, a, o)
+        assert len(e) == 1 and e[0]["s_mm"] == top and e[0]["faces"] == 100
+        assert e[0]["stator_side"]["min_cells"] == above and e[0]["stator_side"]["faces_under_min"] == flagged
+        assert e[0]["rotor_side"]["min_cells"] == sliding.END_GAP_SEARCH + 1
+        if flagged:
+            assert e[0]["stator_side"]["places"][0]["s_mm"] == top
+    # the zone at the bottom (z > 1): one cell between its lower face and the wall below, on the stator side;
+    # the zone's own side (z 1..10) reaches the top wall beyond the search
+    inz = g["C"][:, 2] > 1
+    f, _ = sliding.interface(m, np.nonzero(inz)[0])
+    e = sliding.end_gap_cells(m, g, f, inz, wall, a, o)[0]
+    assert e["stator_side"]["min_cells"] == 1 and e["rotor_side"]["min_cells"] == sliding.END_GAP_SEARCH + 1
+    # the zone in the middle with walls only at x: no wall along the axis on either side
+    side_walls = m.ninternal + np.nonzero(np.isin(m.btag, [0, 1]))[0]
+    inz = g["C"][:, 2] < 9
+    f, _ = sliding.interface(m, np.nonzero(inz)[0])
+    e = sliding.end_gap_cells(m, g, f, inz, side_walls, a, o)[0]
+    assert e["stator_side"]["min_cells"] == sliding.END_GAP_SEARCH + 1      # the top is not a wall here
+
+
 def test_cells_per_step_is_reported_and_noted():
     """check() reports the interface cells the rotor passes per time step and notes more than 2 (pump_mesh: r 11.5,
     36 cells round about 2 mm each; 5 degrees is 1 mm of arc)."""

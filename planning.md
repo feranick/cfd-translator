@@ -161,6 +161,9 @@ development and tests run on the sparks.
 
 1. Long interface cells (`OGRID_ANISO=1`): the spark2 test is queued (mesh 619, then 60 steps at a fixed 1°, run
    620). Then torque and pressures against the level-5 mesh at matching rotor angles.
+   Mesh 619 (9.25 M cells) coupled badly at rest (coverage 0-1.95, pvf 0.344) and run 622 diverged in 17 steps: one
+   0.25 mm cell between the top face and the wear plate was snapped onto it. Fixed with 1 mm z bands at the ends
+   (0.125 mm at level 3) and the end-gap check (2026.11.16.1); remesh and rerun.
 2. Measured step limit: `MAXCO=10` and `15` at 20° each, to set cfdt's cells-per-step cap from data, not the safe
    value of 2. On the long-cell mesh, after 620. On one mesh the step raises the flow's Courant number and the
    interface rate together; they separate only through 620's Courant numbers (Co at 1°, and where its peak sits) and
