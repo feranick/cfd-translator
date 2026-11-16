@@ -162,9 +162,13 @@ development and tests run on the sparks.
 1. Long interface cells (`OGRID_ANISO=1`): the spark2 test is queued (mesh 619, then 60 steps at a fixed 1°, run
    620). Then torque and pressures against the level-5 mesh at matching rotor angles.
 2. Measured step limit: `MAXCO=10` and `15` at 20° each, to set cfdt's cells-per-step cap from data, not the safe
-   value of 2.
+   value of 2. On the long-cell mesh, after 620. On one mesh the step raises the flow's Courant number and the
+   interface rate together; they separate only through 620's Courant numbers (Co at 1°, and where its peak sits) and
+   the locator at a failure (interface cell or flow cell). The port's 02 caps MAXCO's step at `MAX_DEG` (1°) and runs
+   a fixed `STEP_DEG`.
 3. Per-step cost: locator off (`WHERE_STEPS=0`); the stitching and `MeshPhi` share from the step profile; check
-   whether `MeshPhi` can use a looser tolerance.
+   whether `MeshPhi` can use a looser tolerance. 620 had the locator for its first 30 steps: compare steps 31-60.
+   Expected 2-3× v2506 on the long-cell mesh (about 16× fewer interface faces); this measurement decides the gate.
 4. Fewer cells and shorter runs: `COARSE=1` away from the gap; variants started from a developed flow (`init_from` /
    `mapFields`).
 5. The O-grid in cfdt's own meshing, including the level rule (cells per degree depends only on the refinement level
@@ -191,6 +195,8 @@ Not full parity. One narrow backend, used only where v2506 is clearly better.
   `09_variant` and DES scripts) is the template.
 - Installation: x86_64 binaries (Keysight/openfoam.com apt) on mochi and carbonio; Perlmutter has a user build.
   arm64 (sparks) has source only, so build from source there only if a spark is needed for v2506.
+  A separate `FOAM_BASHRC` per backend, sourced in the job only (never in the router's or the server's shell), and a
+  startup check that `WM_PROJECT_VERSION` matches the requested backend.
 - First steps once priority 1 is done, on mochi or carbonio:
   1. install ESI v2506;
   2. run the existing S50 v2506 case on a coarse mesh to measure local cost per revolution;
