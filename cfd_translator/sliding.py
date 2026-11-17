@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.17.1
+Version: 2026.11.17.3
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -563,13 +563,24 @@ def thin_wall_cells(mesh, g, f, inz, wall_faces, a, o, top: int = 8) -> dict:
 def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = None) -> None:
     """Can this zone slide? Raises SlidingError with what to change; small deviations become plan notes.
     Records plan['sliding'] (names, interface size, moving walls)."""
-    from .case import _same_rotation, rotation_key
     zn = zone["name"]
     cells = mesh.zones[zn]
     inz = np.zeros(mesh.ncells, bool)
     inz[cells] = True
     a, o = _frame(zone)
     notes = plan.setdefault("notes", [])
+    n0 = len(notes)
+    try:
+        _check(mesh, g, zone, plan, patches, refine, cells, inz, a, o, notes)
+    finally:
+        if plan.get("backend") == "esi":          # cyclicAMI: the NCC-only notes go, the rest lose NCC examples
+            from .esi import adapt_notes
+            notes[n0:] = adapt_notes(notes[n0:])
+
+
+def _check(mesh, g, zone, plan, patches, refine, cells, inz, a, o, notes) -> None:
+    from .case import _same_rotation, rotation_key
+    zn = zone["name"]
     # 1. the boundary between the zone and the rest: a surface of revolution about the axis
     f, _flip = interface(mesh, cells)
     if not len(f):

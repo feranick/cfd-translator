@@ -20,9 +20,11 @@ couplings); this file is about the code.
   v14 cost estimate for a sliding run exceeds a threshold (section 7); it never switches silently.
 - **Mesh once.** The ESI backend takes cfdt's v14 mesh and its meshing checks unchanged, and only writes and runs
   the ESI case. To test first:
-  - whether v2506 reads OpenFOAM 14's zone files (`cellZoneList`/`faceZoneList` header classes) and v14 binary
-    meshes: a v2506 `checkMesh` on a cfdt-written mesh settles it, and if not the headers are converted when the
-    ESI case is written;
+  - zone files (tested 17 Nov, carbonio, on cfdt's `r2_g5_plain_sl6` mesh): v2506 refuses OpenFOAM 14's zone
+    files as written (`unexpected class name faceZoneList expected regIOobject`). With the class line of
+    `cellZones`/`faceZones`/`pointZones` rewritten to `regIOobject`, it reads the mesh fully (463,635 cells, zone
+    checks pass, `Mesh OK`), so the ESI writer must rewrite those headers and nothing else. cfdt's
+    `constant/polyMesh` is the conformal mesh (patch and wall types only), the ESI path's starting point;
   - v2506's directional refinement in snappyHexMesh stays a later option.
 
 ## 2. Status of the decision gate (17 Nov)

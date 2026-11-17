@@ -257,3 +257,26 @@ def test_the_transient_run_goes_to_esi_after_the_steady_start(tmp_path, monkeypa
     seen.clear()
     runner._solve_transient(case, st, plan, 3600, 1, folder, saved, 0.0, [], m)
     assert seen == [("run", True, "esi")]                                            # not split again
+
+
+def test_ncc_notes_adapted_for_esi():
+    notes = ["sliding interface: estimated projected volume fraction 0.571 with the stator side owning the couple",
+             "the sliding interface has 300,000 faces: every time step re-intersects them and rebuilds the mesh",
+             "sliding zone 'imp': 12 interface faces facing along the axis lie on none of its end planes (-1.5 mm, at r 52): "
+             "an end face's edge dragged by snapping, usually where it meets the cylinder next to a wall (S50 v14 port, "
+             "mesh 621: the top rim corner, coverage 0 to 1.95 at rest, diverged within 17 steps). Finer cells there",
+             "sliding interface, stator side: 3 cells next to walls (thinnest 0.01 mm): a wall feature there is snapped "
+             "onto. Such cells seeded the S50's NCC divergence (v14 port, 2026.11.14); keep the interface away",
+             "sliding interface cells: worst non-orthogonality 40 deg"]
+    out = esi.adapt_notes(notes)
+    assert len(out) == 3 and not any("projected volume fraction" in n or "1.95" in n or "NCC" in n for n in out)
+    assert "lowWeightCorrection" in out[0] and "Finer cells there" in out[0] and out[2] == notes[4]
+
+
+def test_sliding_check_notes_on_esi(tmp_path):
+    m = pump_mesh()
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    v14 = write_case(_study(), m, patches_for(m), tmp_path / "a")
+    e = write_case(_esi_study(), m, patches_for(m), tmp_path / "b")
+    assert not any("projected volume fraction" in n for n in e.get("notes", []))
+    assert len(e.get("notes", [])) <= len(v14.get("notes", []))

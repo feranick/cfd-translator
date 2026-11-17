@@ -1,6 +1,6 @@
 """esi.py — the ESI OpenFOAM (openfoam.com v2506) backend for sliding meshes: cyclicAMI instead of OpenFOAM 14's
 non-conformal coupling, for gap-dominated pumps where NCC needs far smaller steps (other/esi_v2506_backend.md).
-Version: 2026.11.17.2
+Version: 2026.11.17.3
 
 Selected explicitly with solve.backend 'esi' (never silently), only for a transient study with a sliding zone. The
 mesh, its checks and the steady MRF start are cfdt's OpenFOAM 14 path, unchanged (mesh once; the start runs on the
@@ -475,6 +475,32 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, launch: s
             (f", built on the case decomposed for {procs} ranks (it stays decomposed)" if par else "") +
             (f"; zone files' header class set for ESI ({', '.join(changed)})" if changed else "") +
             (f"; cyclicAMI entries added to {nf} field files" if nf else "")]
+
+
+# ---- notes of the sliding checks ---------------------------------------------------------------------------------
+_NCC_ONLY = ("projected volume fraction", "re-intersects", "interface cells per time step", "interface cells (r ",
+             "pass stator cells of other sizes", "differ in size", "mesh-flux correction")
+_NCC_EXAMPLE = [re.compile(r"\s*\((?:S50 v14 port|S50 on spark|Perlmutter sliding7|NCC ladder)[^()]*(?:\([^()]*\)[^()]*)*\)"),
+                re.compile(r"\s*Such cells seeded the S50's NCC divergence \(v14 port, [^)]*\);")]
+
+
+def adapt_notes(notes: list[str]) -> list[str]:
+    """sliding.check's notes for the ESI backend: those about OpenFOAM 14's stitching (projected volume fraction,
+    cells passed per step, size mismatch across the couple, re-intersection cost) go; the geometric ones (slivers,
+    dragged edges, end gaps, uncovered faces, rotor walls) stay without their NCC examples, and say why they matter
+    for an AMI (low weights where the two sides' surfaces do not match)."""
+    out = []
+    for n in notes:
+        if any(k in n for k in _NCC_ONLY):
+            continue
+        m = n
+        for rx in _NCC_EXAMPLE:
+            m = rx.sub("", m)
+        if m != n:
+            m += " (with cyclicAMI: faces where the two sides do not match get low weights, and lowWeightCorrection " \
+                 "falls back to their own cell there)"
+        out.append(m)
+    return out
 
 
 # ---- the log and the fields after the run ------------------------------------------------------------------------
