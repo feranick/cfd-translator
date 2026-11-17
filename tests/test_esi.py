@@ -326,4 +326,8 @@ def test_torque_split_by_part_and_cad_face(tmp_path):
         assert parts["pressure"] + parts["viscous"] == pytest.approx(t, rel=1e-5, abs=1e-15)
     faces = r["torque_by_cad_face_Nm"]
     assert faces and sum(f_["torque"] for f_ in faces) == pytest.approx(r["torque_Nm"], rel=1e-5, abs=1e-15)
-    assert all(f_["area_mm2"] > 0 and f_["wall"] in r["rotating_walls"] for f_ in faces)
+    assert all(f_["area_mm2"] > 0 and f_["wall"] in r["rotating_walls"] and "Nm_per_kPa" in f_ for f_ in faces)
+    assert "last iteration" in r["torque_by_wall_basis"]
+    # a uniform pressure on the blade (a closed set of faces round it) gives no torque: the faces' sensitivities
+    # to the pressure level add up to about nothing over the wall
+    assert abs(sum(f_["Nm_per_kPa"] for f_ in faces)) < 1e-6 + 1e-3 * sum(abs(f_["Nm_per_kPa"]) for f_ in faces)

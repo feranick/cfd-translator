@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.17.6
+Version: 2026.11.17.7
 
     results(study, mesh, plan, fields) -> dict
 
@@ -555,22 +555,36 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             parts[wn] = {"pressure": _r(float(mp.sum())), "viscous": _r(float(mv.sum()))}
             tags = mesh.btag[f - ni]
             Aw = np.linalg.norm(g["Sf"][f], axis=1)
+            # the pressure torque's dependence on the pressure level: sum (r x S) . axis per face, N m per Pa. Zero on
+            # a closed surface or an exact surface of revolution; a snapped (faceted) open face picks up torque from the
+            # pressure level itself, p dM/dp, which no other code's pressure level reproduces
+            dmdp = np.cross(arm, g["Sf"][f] * SCALE ** 2) @ a
             for t in np.unique(tags):
                 m = tags == t
-                d = by_face.setdefault(int(t), {"wall": wn, "pressure": 0.0, "viscous": 0.0, "area_mm2": 0.0})
+                d = by_face.setdefault(int(t), {"wall": wn, "pressure": 0.0, "viscous": 0.0, "area_mm2": 0.0,
+                                                "dmdp": 0.0})
                 d["pressure"] += float(mp[m].sum())
                 d["viscous"] += float(mv[m].sum())
                 d["area_mm2"] += float(Aw[m].sum())
+                d["dmdp"] += float(dmdp[m].sum())
         top = sorted(by_face.items(), key=lambda kv: -abs(kv[1]["pressure"] + kv[1]["viscous"]))[:16]
+        rev_z = set()                                  # CAD faces found to be surfaces of revolution (snappy)
+        for v in (mesh.info.get("revolution_tags") or {}).values():
+            rev_z |= {int(x) for x in v}
         power = -torque * zp["omega_rad_s"]
         out.setdefault("rotating", {})[zn] = {"torque_Nm": _r(torque), "power_W": _r(power),
                                               "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
                                               "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf"),
                                               "torque_by_wall_Nm": by_wall, "torque_parts_Nm": parts,
+                                              "torque_by_wall_basis": "the final fields (the last iteration or time "
+                                                                      "step); torque_Nm is the monitor's window mean",
                                               "torque_by_cad_face_Nm": [
                                                   {"tag": t, "wall": d["wall"], "torque": _r(d["pressure"] + d["viscous"]),
                                                    "pressure": _r(d["pressure"]), "viscous": _r(d["viscous"]),
-                                                   "area_mm2": _r(d["area_mm2"])} for t, d in top]}
+                                                   "area_mm2": _r(d["area_mm2"]),
+                                                   "Nm_per_kPa": _r(1e3 * d["dmdp"]),
+                                                   **({"surface_of_revolution": True} if t in rev_z else {})}
+                                                  for t, d in top]}
         if not zp["rotating_walls"]:
             warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
     # porous zones: their resistance enters the momentum balance like the MRF source (porous.py)
