@@ -331,3 +331,35 @@ def test_torque_split_by_part_and_cad_face(tmp_path):
     # a uniform pressure on the blade (a closed set of faces round it) gives no torque: the faces' sensitivities
     # to the pressure level add up to about nothing over the wall
     assert abs(sum(f_["Nm_per_kPa"] for f_ in faces)) < 1e-6 + 1e-3 * sum(abs(f_["Nm_per_kPa"]) for f_ in faces)
+
+
+def test_whole_revolutions_with_times_given_to_seven_digits():
+    """640: end_time 0.1241379 and average_from 0.062069 at 2900 rpm are 3 revolutions, not 2."""
+    from cfd_translator.transient import settings
+    st = _esi_study()
+    st["rotating"][0]["rpm"] = 2900
+    st["solve"]["transient"].update(end_time=0.1241379, average_from=0.062069)
+    s = settings(st)
+    assert s["average_revolutions"] == 3 and s["average_from"] == pytest.approx(0.0620690, abs=1e-6)
+
+
+def test_zone_holes_found_inside_the_cylinder(tmp_path):
+    """post.zone_holes: cells inside the zone's cylinder but left out of the zone are counted, with places."""
+    import numpy as np
+    from cfd_translator.post import zone_holes
+    m = pump_mesh()
+    st = _study()
+    st["rotating"] = [{k: v for k, v in st["rotating"][0].items() if k != "motion"}]
+    st["solve"] = {}
+    full = zone_of(m, 11.5)
+    m.info["snapped_zones"] = {"rotor": full}
+    plan = write_case(st, m, patches_for(m), tmp_path / "c")
+    g = m.geometry()
+    assert zone_holes(st, m, g, plan)["rotor"]["cells"] == 0
+    z = st["rotating"][0]
+    d = g["C"] - np.asarray(z.get("center", [0, 0, 0]), float)
+    r = np.linalg.norm(d[:, :2], axis=1)
+    keep = np.asarray([c for c in m.zones["rotor"] if not (5.0 < r[c] < 7.0)], np.int64)
+    m.zones["rotor"] = keep
+    zh = zone_holes(st, m, g, plan)["rotor"]
+    assert zh["cells"] > 0 and zh["places"] and all(4.5 < p_["r_mm"] < 7.5 for p_ in zh["places"])

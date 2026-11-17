@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.17.1
+Version: 2026.11.17.8
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -104,7 +104,9 @@ def settings(study: dict, mesh=None) -> dict | None:
             out["max_co"] = float(tr.get("max_co", 2.0))
             out["max_dt"] = float(f"{min(out['max_dt'], deg / 360.0 * Trev):.4g}")
             out["dt"] = min(out["dt"], out["max_dt"])
-        n = int(np.floor((T - out["average_from"]) / Trev + 1e-9))
+        # whole revolutions in the averaging window, with a tolerance for times given to a few digits (640:
+        # end_time 0.1241379 and average_from 0.062069 gave 2.99999 revolutions, so 2 were averaged, not 3)
+        n = int(np.floor((T - out["average_from"]) / Trev + 1e-4))
         if n >= 1:
             out["average_from"] = float(f"{T - n * Trev:.10g}")
         out.update(period=Trev, revolutions=float(f"{T / Trev:.4g}"), average_revolutions=max(n, 0),

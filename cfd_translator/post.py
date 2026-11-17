@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.17.7
+Version: 2026.11.17.8
 
     results(study, mesh, plan, fields) -> dict
 
@@ -117,6 +117,52 @@ def wall_flux_where(mesh, g, plan: dict, wall_faces: dict, inflow: float, top: i
                        "in_zone": round(nz / n, 2), "faces": n})
     return {"by_wall": by_wall, "cad_faces": tags[:top], "places": places,
             "zone_radius_mm": None if zp is None else zp.get("radius_mm")}
+
+
+def zone_holes(study: dict, mesh, g, plan: dict, top: int = 8) -> dict:
+    """Cells whose centres lie inside a rotating zone's cylinder (radius, span; one cell's size in from its edge) but
+    are not in the zone: an MRF zone made by snappyHexMesh from a surface can leave cells out where walls wall them
+    off, and there the frame is wrong (the walls of such cells move at Omega x r against fluid that does not turn).
+    S50 noboth_s1 (2026.11.17): impeller faces at r 37-39, z -72 only 94 % in the zone, with a source/sink pair through
+    them. Per zone: count, volume, cells next to the zone's rotating walls, and the places, largest first."""
+    out = {}
+    for z in study.get("rotating") or []:
+        zn = z.get("name")
+        if zn not in (mesh.zones or {}) or zn not in (plan.get("zones") or {}):
+            continue
+        a = np.asarray(z["axis"], float)
+        a = a / np.linalg.norm(a)
+        d = g["C"] - np.asarray(z.get("center", [0, 0, 0]), float)
+        ax = d @ a
+        rad = np.linalg.norm(d - np.outer(ax, a), axis=1)
+        h = np.cbrt(np.abs(g["V"]))
+        s0, s1 = z.get("span", [-np.inf, np.inf])
+        inside = (rad <= float(z["radius"]) - h) & (ax >= float(s0) + h) & (ax <= float(s1) - h)
+        inz = np.zeros(mesh.ncells, bool)
+        inz[np.asarray(mesh.zones[zn], np.int64)] = True
+        hole = np.nonzero(inside & ~inz)[0]
+        rec = {"cells": int(len(hole)), "volume_mm3": _r(float(np.abs(g["V"][hole]).sum())),
+               "zone_cells": int(inz.sum())}
+        if len(hole):
+            ni = mesh.ninternal
+            wallcell = np.zeros(mesh.ncells, bool)
+            for wn in plan["zones"][zn].get("rotating_walls", []):
+                P = next((q for q in mesh.patches if q["name"] == wn), None)
+                if P:
+                    wallcell[mesh.owner[P["start"]:P["start"] + P["n"]]] = True
+            rec["next_to_rotating_walls"] = int(wallcell[hole].sum())
+            # places: cubes of about 2 mm, largest volume first
+            key = np.floor(g["C"][hole] / 2.0).astype(np.int64)
+            groups = {}
+            for c, k in zip(hole, map(tuple, key)):
+                groups.setdefault(k, []).append(c)
+            pl = sorted(groups.values(), key=lambda cs: -float(np.abs(g["V"][cs]).sum()))[:top]
+            rec["places"] = [{"cells": len(cs), "volume_mm3": _r(float(np.abs(g["V"][cs]).sum())),
+                              "at_mm": np.round(g["C"][cs].mean(axis=0), 2).tolist(),
+                              "r_mm": round(float(rad[cs].mean()), 2), "s_mm": round(float(ax[cs].mean()), 2),
+                              "next_to_rotating_walls": int(wallcell[cs].sum())} for cs in pl]
+        out[zn] = rec
+    return out
 
 
 def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
@@ -541,6 +587,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         gross_a += np.abs(msrc).sum(axis=0)
         c0 = np.asarray(zp["center_mm"], float) * SCALE
         torque, by_wall, parts, by_face = 0.0, {}, {}, {}
+        dm_total = 0.0
         for wn in zp["rotating_walls"]:
             f, F = face_forces[wn]
             arm = g["Cf"][f] * SCALE - c0
@@ -559,6 +606,8 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             # a closed surface or an exact surface of revolution; a snapped (faceted) open face picks up torque from the
             # pressure level itself, p dM/dp, which no other code's pressure level reproduces
             dmdp = np.cross(arm, g["Sf"][f] * SCALE ** 2) @ a
+            parts[wn]["Nm_per_kPa"] = _r(1e3 * float(dmdp.sum()))
+            dm_total = dm_total + float(dmdp.sum())
             for t in np.unique(tags):
                 m = tags == t
                 d = by_face.setdefault(int(t), {"wall": wn, "pressure": 0.0, "viscous": 0.0, "area_mm2": 0.0,
@@ -576,6 +625,12 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                                               "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
                                               "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf"),
                                               "torque_by_wall_Nm": by_wall, "torque_parts_Nm": parts,
+                                              # the rotor's torque per kPa of pressure level, summed over its walls:
+                                              # zero for a closed rotor (each face's share cancels with the opposite
+                                              # face's); nonzero where the walls leave the rotor open (a cut to a pocket,
+                                              # the zone's edge) or faceting does not close, so the torque then depends
+                                              # on the case's pressure level (outlet at 0 here, another code's inlet)
+                                              "pressure_level_Nm_per_kPa": _r(1e3 * dm_total),
                                               "torque_by_wall_basis": "the final fields (the last iteration or time "
                                                                       "step); torque_Nm is the monitor's window mean",
                                               "torque_by_cad_face_Nm": [
@@ -645,6 +700,20 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
                          f"the inflow), most through {worst!r}. With rotation: a stationary wall inside a rotating zone, "
                          "or a rotating wall outside it, that is not a surface of revolution about the axis "
                          "(checks.wall_flux.where: the CAD faces and places, inside or outside the zone)")
+    if plan.get("zones"):
+        try:
+            zh = zone_holes(study, mesh, g, plan)
+        except Exception as exc:  # noqa: BLE001
+            zh = {"note": f"not computed ({type(exc).__name__}: {exc})"}
+        if zh:
+            checks["rotating_zone_holes"] = zh
+            for zn, rec in zh.items():
+                if isinstance(rec, dict) and rec.get("cells") and rec.get("next_to_rotating_walls"):
+                    w0 = rec["places"][0]
+                    warns.append(f"rotating zone {zn!r}: {rec['cells']} cells ({rec['volume_mm3']:g} mm3) inside its "
+                                 f"cylinder are not in the zone, {rec['next_to_rotating_walls']} of them next to its "
+                                 f"rotating walls (most at r {w0['r_mm']} s {w0['s_mm']} mm): there the walls move at "
+                                 "Omega x r against fluid in the stationary frame (checks.rotating_zone_holes)")
     if por:
         # the balance above already holds the porous source: inflow - outflow of momentum = wall and boundary forces +
         # the media's reactions. Say which reactions the part's forces hold, and flag those left out
