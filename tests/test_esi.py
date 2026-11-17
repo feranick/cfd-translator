@@ -222,6 +222,9 @@ def test_the_transient_run_goes_to_esi_after_the_steady_start(tmp_path, monkeypa
 
     def fake_step(fm, cmd, log, c, timeout, raise_on_error=True, **k):
         seen.append((cmd.split()[0], fm.get("version")))
+        if fm.get("version") == "v2506":                 # ESI's utilities see a controlDict without function objects
+            cd = foamio.read_foam((c / "system" / "controlDict").read_text())
+            assert cd["application"] == "pimpleFoam" and not cd.get("functions")
         if cmd.startswith("createBaffles"):
             f, _ = interface(m, m.zones["rotor"])
             b = (c / "constant" / "polyMesh" / "boundary").read_text()
@@ -242,7 +245,7 @@ def test_the_transient_run_goes_to_esi_after_the_steady_start(tmp_path, monkeypa
     assert seen[4] == ("run", True, "esi")                                           # the sliding run on ESI
     assert not (case / "constant" / "MRFProperties").exists()
     cd = foamio.read_foam((case / "system" / "controlDict").read_text())
-    assert cd["application"] == "pimpleFoam"
+    assert cd["application"] == "pimpleFoam" and "cfdtAverage" in cd["functions"]      # the run's, back
     U = foamio.read_foam((case / "0" / "U").read_text())["boundaryField"]
     assert U["blade"]["type"] == "movingWallVelocity" and U["rotor_rotor"]["type"] == "cyclicAMI"
     assert "regIOobject" in (case / "constant" / "polyMesh" / "faceZones").read_text()

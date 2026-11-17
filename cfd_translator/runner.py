@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.17.1
+Version: 2026.11.17.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -1014,6 +1014,7 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
             notes = _write_tr(case, study, plan, esi_ready=True)
             notes = esi_to_sliding(case, plan, mesh, lambda cmd, log: foam._step(em, cmd, log, case, 3600), procs,
                                    foam.launch(procs) if procs > 1 else None) + notes
+            _write_tr(case, study, plan, esi_ready=True)          # the run's controlDict, with its function objects
         else:
             from .sliding import to_sliding
             notes = to_sliding(case, plan, mesh, lambda cmd, log: foam._step(fm, cmd, log, case, 3600), procs,

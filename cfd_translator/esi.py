@@ -1,6 +1,6 @@
 """esi.py — the ESI OpenFOAM (openfoam.com v2506) backend for sliding meshes: cyclicAMI instead of OpenFOAM 14's
 non-conformal coupling, for gap-dominated pumps where NCC needs far smaller steps (other/esi_v2506_backend.md).
-Version: 2026.11.17.1
+Version: 2026.11.17.2
 
 Selected explicitly with solve.backend 'esi' (never silently), only for a transient study with a sliding zone. The
 mesh, its checks and the steady MRF start are cfdt's OpenFOAM 14 path, unchanged (mesh once; the start runs on the
@@ -412,6 +412,10 @@ def to_sliding(case: Path, plan: dict, mesh, run_step, procs: int = 1, launch: s
     uf.write_text(txt)
     (case / "constant" / "MRFProperties").unlink(missing_ok=True)
     (case / "constant" / "dynamicMeshDict").write_text(dynamic_mesh_dict(sl))
+    # the utilities below read system/controlDict: one without function objects (theirs would be constructed, and
+    # need fields and patches as the run has them); write_transient writes the run's afterwards
+    if plan.get("transient"):
+        (case / "system" / "controlDict").write_text(control_dict(plan["transient"], []))
     poly = case / "constant" / "polyMesh"
     f, flip = interface(mesh, mesh.zones[sl["zone"]])
     write_face_zone(poly, sl["face_zone"], f, flip)
