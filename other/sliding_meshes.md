@@ -42,10 +42,17 @@ arc at the interface's radius over the cells' size along it. On an O-grid it doe
 | S50 v14, fixed 1 degree | 8.5 | 22 plateau, then runaway | diverged within a few steps of full speed (every mesh and ramp) |
 | S50 v14, maxCo 5 | about 1.5 (0.17 degrees) | 5 | runs, 149 steps from full speed |
 | S50 v2506 cyclicAMI, fixed 1 degree | 8.5 | about 25 in a few cells | runs, 8 revolutions |
+| S50 v14, long cells (`OGRID_ANISO`, run 634), fixed 1 degree | 2.13 | 43-70 | diverged from step 7 (start-up jet over the vane tops) |
+| S50 v14, long cells, 90-degree ramp then full speed (run 636) | 2.13 | 22 plateau in the ramp, 24 -> 53 at full speed | diverged about 10 steps after full speed |
+| rung 2 g = 5 v14 (job 639), fixed 1 degree | 1.74 | rising | diverged at step 28 |
+| rung 2 g = 5 ESI cyclicAMI (cfd-translator `solve.backend: "esi"`, job 638), same mesh, fixed 1 degree | 1.74 | 6 typical, 11 max | runs, 3 revolutions; AMI weights 0.93-1.41, flux balance 1.4e-6 |
 
-- **The limit:** lowering the step lowers both the sliding rate and the flow's Courant number, so these runs bracket
-  the limit without saying which of the two sets it. The safe value is 2 cells per step. The real limit lies between
-  2.3 and 8.5; `MAXCO=10` and `15` on the S50 would narrow it.
+- **The limit (17 Nov):** the cells-per-step cap alone is not OpenFOAM 14's limit. On rung 2 at 1.74 cells per step
+  and on the S50's long-cell mesh at 2.13, v14 diverged at a fixed 1 degree, while ESI's cyclicAMI ran rung 2's
+  identical mesh at 1 degree with a Courant number of 6-11. v14 NCC needs a Courant-limited step (cfd-translator's
+  default: Courant 2, at most `degrees_per_step`) on these meshes. The S50's flow Courant number at 1 degree comes from
+  the leakage over the vane tops, which scales with the rotor's speed: a ramp delays the runaway (636), it does not
+  cure it.
 - **cfd-translator:** `solve.transient.cells_per_step` (default 2; null for no cap) caps the step once the mesh is
   known. The run-time estimate plans with the capped step.
 
@@ -196,11 +203,12 @@ What follows:
 
 - **First numbers, design trends, many variants:** MRF (frozen rotor). Check two or three rotor angles.
 - **Performance, pulsations, rotor-stator interaction, production:**
-  - **cyclicAMI (ESI v2506) at 1 degree a step** when it is available. It is about 25 x cheaper per revolution on
-    the S50 today, and tolerant of the sliding rate.
-  - **OpenFOAM 14 NCC (cfd-translator's sliding zone)** for exact conservation, for runs on cfd-translator's
-    machines, and for validation. Keep it to 2 interface cells per step, and mesh the gap by the rules above.
-  - Aim to bring NCC within 2-4 x of cyclicAMI with long interface cells before moving design studies to it.
+  - **cyclicAMI (ESI v2506) at 1 degree a step: the production route for sliding studies** (cfd-translator
+    `solve.backend: "esi"`, 2026.11.17; the same mesh, checks and steady start as OpenFOAM 14). It holds 1 degree a
+    step where v14 does not (rung 2 job 638 against 639, the S50).
+  - **OpenFOAM 14 NCC (cfd-translator's default sliding zone)** with its Courant-2 step: exact conservation, every
+    cfd-translator machine, and validation. Keep it to 2 interface cells per step and mesh the gap by the rules
+    above. Its cost against cyclicAMI on the same mesh and machine: rung 2 job 642 (spark1) measures it.
 - **What to run first, on new hardware, a new OpenFOAM build or a new kind of machine:**
   1. **The propeller tutorial** (`ncc_ladder/rung1_propeller`): shipped, fixed 1 degree, the target's cells per
      step, and maxCo 20. It tells environment problems from coupling limits in an hour.

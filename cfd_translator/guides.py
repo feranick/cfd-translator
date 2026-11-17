@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.17.1
+Version: 2026.11.17.5
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -24,12 +24,13 @@ GUIDES = {
             "(solve.transient.cells_per_step caps it; the S50 diverged at 8.5), no thin cells at walls within 2 cells "
             "of the interface (interface_cells.thin_wall_cells), end faces on grid planes (interface_cells.end_faces), "
             "averages after the first revolution (the start from rest drives tens of m/s beside blade tips and in "
-            "narrow gaps), and validate against MRF on the same mesh. Per revolution it costs about 25 x ESI "
-            "cyclicAMI at 1 degree on the S50 today.",
+            "narrow gaps), and validate against MRF on the same mesh. OpenFOAM 14 also needs its Courant-limited step "
+            "(the default, Courant 2): at a fixed 1 degree it diverged on rung 2 (1.74 cells per step) and on the S50 "
+            "where ESI cyclicAMI ran the same mesh stably; so it costs many more steps per revolution.",
             "solve.backend 'esi' (explicit, sliding only): the same mesh, checks and steady MRF start, then the sliding "
             "run in ESI OpenFOAM (v2506 pimpleFoam, a cyclicAMI pair on the zone's cylinder) at a fixed "
-            "degrees_per_step (1 by default, no cells_per_step cap): the route for gap-dominated pumps while OpenFOAM "
-            "14 cannot hold 1 degree a step. Results as on OpenFOAM 14, plus solve.sliding.ami (the AMI's weights). Needs "
+            "degrees_per_step (1 by default, no cells_per_step cap): the production route for sliding studies at 1 "
+            "degree a step (rung 2: stable at Courant 6-11 where OpenFOAM 14 diverged). Results as on OpenFOAM 14, plus solve.sliding.ami (the AMI's weights). Needs "
             "ESI OpenFOAM on the machine (machines(): status openfoam_esi). Not with energy, cavitation, porous zones, "
             "scalars, external flow, p_below or the locator (other/esi_v2506_backend.md).",
         ],

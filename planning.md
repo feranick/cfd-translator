@@ -189,6 +189,7 @@ Spec: `other/esi_v2506_backend.md`. 2026.11.17.1: esi.py (`solve.backend: "esi"`
 on OpenFOAM 14, then ESI decomposePar / createBaffles (cyclicAMI) / mergeOrSplitBaffles / pimpleFoam; tested with
 stand-ins and a captured v2506 log only. Next: a v2506 checkMesh on a cfdt mesh (zone header classes), rung 2 g = 5
 through cfdt on carbonio (both backends), then the coarse S50 like-for-like.
+17 Nov evening: ESI ran rung 2 g = 5 at 1 degree (638: stable, AMI 0.93-1.41, balance 1.4e-6, torque -2.6 % against v14 Courant-2 sl6); v14 at a fixed 1 degree diverged on the same mesh (639) and on the S50 long-cell mesh even after a ramp (634, 636). The gate tilts to ESI for production sliding runs at 1 degree; v14 keeps its Courant-2 step (its cost: 642). 640: ESI 6 revolutions for the head/torque comparison.
 
 Not full parity. One narrow backend, used only where v2506 is clearly better.
 

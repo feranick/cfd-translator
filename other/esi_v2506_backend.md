@@ -53,8 +53,18 @@ couplings); this file is about the code.
   cells per step, against 190 for v2506 on Perlmutter. The hardware differs, so this is not a conclusion, but it is
   nowhere near 25 times; that factor belongs to the 0.17° rate. Each step takes about 130 `MeshPhi` iterations
   (plan item 3).
-- **Gate stays open** until the ramp test and the like-for-like carbonio comparison (section 7). For now the ESI
-  backend is the route for gap-dominated pumps until v14 runs at 1°; the two tests could reverse that within days.
+- **Ramp test 636 (17 Nov):** a 90° spin-up at 1° held the Courant peak at about 22-23. At full speed it climbed
+  to about 53 within 10 steps and ran away at step ~101, so the ramp delays the jet but does not cure it: the tip
+  leakage scales with speed.
+- **Same mesh, same machine (rung 2 g = 5, spark1, 18 ranks, fixed 1°, 1.74 interface cells per step):**
+  - ESI (638): stable; Courant peak 11, AMI weights 0.93-1.41 in motion, flux balance error 1.4e-6, torque
+    -3.357 N·m against v14 sliding (Courant 2) -3.446.
+  - v14 (639): diverged at step 28 (Courant 5e4).
+
+  So the cells-per-step cap is not v14's only limit: on these meshes it needs a Courant-limited step. Job 642 (v14,
+  default Courant 2) measures what that costs per revolution on the same mesh and machine.
+- **Gate (17 Nov):** it tilts to the ESI backend as the route for sliding studies that need a fixed 1° step. v14
+  stays the default with its Courant-limited step; job 642 gives the cost ratio for §7.
 
 ## 3. Installation and environment
 
