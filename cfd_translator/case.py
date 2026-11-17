@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.12.11
+Version: 2026.11.17.1
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -731,6 +731,7 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         (case / "system" / "fvConstraints").unlink()
     (case / "case.foam").write_text("")
     slide = [z for z in zones.values() if z.get("motion") == "sliding"]
+    plan["backend"] = str((study.get("solve") or {}).get("backend") or "openfoam.org")
     if slide:
         from .sliding import check as _sliding_check
         _sliding_check(mesh, g, slide[0], plan, patches, (study.get("mesh") or {}).get("refine"))

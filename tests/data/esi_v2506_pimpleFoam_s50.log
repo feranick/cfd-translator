@@ -1,0 +1,281 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2506                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _615aae61d7-20250627 OPENFOAM=2506 version=v2506
+Arch   : "LSB;label=32;scalar=64"
+Exec   : pimpleFoam -parallel
+Date   : Nov 10 2026
+Time   : 19:05:51
+Host   : node0
+PID    : 1150973
+I/O    : uncollated
+Case   : /scratch/s50_sliding_v2506
+nProcs : 512
+Hosts  :
+(
+    (node 128)
+    (node 128)
+    (node 128)
+    (node 128)
+)
+Pstream initialized with:
+    node communication : on [type=host] (512 ranks, 4 nodes)
+    topology controls  : none
+    consensus exchange : 0 (tuning: 0)
+    exchange algorithm : 0
+    commsType          : nonBlocking
+    polling iterations : 0
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh for time = 0
+
+Selecting dynamicFvMesh dynamicMotionSolverFvMesh
+Selecting motion solver: solidBody
+Applying motion to cellZone: rotor
+Selecting solid-body motion function rotatingMotion
+
+PIMPLE: no residual control data found. Calculations will employ 3 corrector loops
+
+Reading field p
+
+Reading field U
+
+Reading/calculating face flux field phi
+
+AMI: Creating AMI for source:AMI1 and target:AMI2
+AMI: Patch source faces: 1467421
+AMI: Patch target faces: 1467421
+AMI: distributed
+AMI: Patch source sum(weights) min:1 max:1.1025322 average:1.0001945
+AMI: Patch target sum(weights) min:1 max:1.1025322 average:1.0001945
+Selecting incompressible transport model Newtonian
+Selecting turbulence model type RAS
+Selecting RAS turbulence model kOmegaSST
+Selecting patchDistMethod meshWave
+RAS
+{
+    RASModel        kOmegaSST;
+    turbulence      on;
+    printCoeffs     on;
+    alphaK1         0.85;
+    alphaK2         1;
+    alphaOmega1     0.5;
+    alphaOmega2     0.856;
+    gamma1          0.55555556;
+    gamma2          0.44;
+    beta1           0.075;
+    beta2           0.0828;
+    betaStar        0.09;
+    a1              0.31;
+    b1              1;
+    c1              10;
+    F3              false;
+    decayControl    false;
+    kInf            0;
+    omegaInf        0;
+}
+
+No MRF models present
+
+No finite volume options present
+Constructing face velocity Uf
+
+Courant Number mean: 0 max: 0
+Courant Number mean: 0 max: 0
+
+Starting time loop
+
+forces torque:
+    rho: rhoInf
+    Freestream density (rhoInf) set to 998.2
+    Not including porosity effects
+pressure totalPressure:
+    Operating mode: total
+    Not including hydrostatic effects
+
+surfaceFieldValue ptIn:
+    operation     = weightedAverage
+    weight field  = (phi)
+
+
+surfaceFieldValue ptOut:
+    operation     = weightedAverage
+    weight field  = (phi)
+
+
+surfaceFieldValue pIn:
+    operation     = weightedAverage
+    weight field  = (phi)
+
+
+surfaceFieldValue pOut:
+    operation     = weightedAverage
+    weight field  = (phi)
+
+
+surfaceFieldValue Qin:
+    operation     = sum
+
+
+surfaceFieldValue Qout:
+    operation     = sum
+
+
+fieldAverage fieldAverage:
+    Restarting averaging for fields:
+        U: starting averaging at time 0
+        p: starting averaging at time 0
+
+Courant Number mean: 0 max: 0
+Time = 5.7471e-05
+
+PIMPLE: iteration 1
+AMI: Creating AMI for source:AMI1 and target:AMI2
+AMI: Patch source faces: 1467421
+AMI: Patch target faces: 1467421
+AMI: distributed
+AMI: Patch source sum(weights) min:0.097907816 max:1.3680787 average:1.0008002
+AMI: Patch source identified 4 faces with weights less than 0.2
+AMI: Patch target sum(weights) min:0.097956543 max:1.2810593 average:1.0007915
+AMI: Patch target identified 4 faces with weights less than 0.2
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.0056640799, No Iterations 8
+GAMG:  Solving for pcorr, Initial residual = 0.039234149, Final residual = 0.0009459826, No Iterations 1
+time step continuity errors : sum local = 6.3211856e-05, global = -5.325913e-07, cumulative = -5.325913e-07
+Mesh Courant Number mean: 0.09979182 max: 38.045767
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.093187044, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 1, Final residual = 0.092417386, No Iterations 3
+smoothSolver:  Solving for Uz, Initial residual = 1, Final residual = 0.01536485, No Iterations 1
+GAMG:  Solving for p, Initial residual = 1, Final residual = 0.038721008, No Iterations 5
+GAMG:  Solving for p, Initial residual = 0.037760179, Final residual = 0.00095188316, No Iterations 1
+time step continuity errors : sum local = 6.0962053e-05, global = -1.5900646e-06, cumulative = -2.1226559e-06
+GAMG:  Solving for p, Initial residual = 0.016504667, Final residual = 0.00040608844, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.0083695672, Final residual = 5.5707771e-05, No Iterations 3
+time step continuity errors : sum local = 3.4640021e-06, global = -1.2658581e-07, cumulative = -2.2492417e-06
+PIMPLE: iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.11890425, Final residual = 0.0062980783, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.091996304, Final residual = 0.0073663597, No Iterations 2
+smoothSolver:  Solving for Uz, Initial residual = 0.07567403, Final residual = 0.0042091691, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.032734799, Final residual = 0.00070451679, No Iterations 4
+GAMG:  Solving for p, Initial residual = 0.016027567, Final residual = 0.00054579344, No Iterations 1
+time step continuity errors : sum local = 3.0593962e-05, global = -9.0192656e-07, cumulative = -3.1511683e-06
+GAMG:  Solving for p, Initial residual = 0.0081943047, Final residual = 0.00029924805, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.0033654067, Final residual = 1.7055106e-05, No Iterations 4
+time step continuity errors : sum local = 9.4903456e-07, global = -5.296902e-08, cumulative = -3.2041373e-06
+PIMPLE: iteration 3
+smoothSolver:  Solving for Ux, Initial residual = 0.027149648, Final residual = 9.4708864e-08, No Iterations 48
+smoothSolver:  Solving for Uy, Initial residual = 0.023173239, Final residual = 9.324762e-08, No Iterations 46
+smoothSolver:  Solving for Uz, Initial residual = 0.024209963, Final residual = 8.8775932e-08, No Iterations 51
+GAMG:  Solving for p, Initial residual = 0.029638628, Final residual = 0.00076506736, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.01128899, Final residual = 0.00053497237, No Iterations 1
+time step continuity errors : sum local = 3.2429583e-05, global = -6.3950841e-07, cumulative = -3.8436457e-06
+GAMG:  Solving for p, Initial residual = 0.022540888, Final residual = 0.00047427578, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.0085350461, Final residual = 8.4943406e-05, No Iterations 3
+time step continuity errors : sum local = 4.9726823e-06, global = -1.2724177e-08, cumulative = -3.8563699e-06
+smoothSolver:  Solving for omega, Initial residual = 0.0073504482, Final residual = 7.4969487e-08, No Iterations 10
+bounding omega, min: -13166.927 max: 310731.06 average: 3058.9032
+smoothSolver:  Solving for k, Initial residual = 1, Final residual = 8.7807847e-08, No Iterations 26
+ExecutionTime = 10.8 s  ClockTime = 17 s
+
+Courant Number mean: 0.13180216 max: 68.392862
+Time = 0.000114942
+
+PIMPLE: iteration 1
+AMI: Creating AMI for source:AMI1 and target:AMI2
+AMI: Patch source faces: 1467421
+AMI: Patch target faces: 1467421
+AMI: distributed
+AMI: Patch source sum(weights) min:0.17209739 max:1.3044496 average:1.0008138
+AMI: Patch source identified 4 faces with weights less than 0.2
+AMI: Patch target sum(weights) min:0.17222989 max:1.2992291 average:1.0008043
+AMI: Patch target identified 4 faces with weights less than 0.2
+GAMG:  Solving for pcorr, Initial residual = 1, Final residual = 0.0068775562, No Iterations 8
+GAMG:  Solving for pcorr, Initial residual = 0.31592256, Final residual = 0.0080876378, No Iterations 1
+time step continuity errors : sum local = 8.7236465e-07, global = -4.0470065e-09, cumulative = -3.8604169e-06
+Mesh Courant Number mean: 0.09979182 max: 38.045767
+smoothSolver:  Solving for Ux, Initial residual = 0.18662862, Final residual = 0.016523481, No Iterations 1
+smoothSolver:  Solving for Uy, Initial residual = 0.27901766, Final residual = 0.0097067624, No Iterations 1
+smoothSolver:  Solving for Uz, Initial residual = 0.28958519, Final residual = 0.0070533623, No Iterations 1
+GAMG:  Solving for p, Initial residual = 0.077310629, Final residual = 0.0037604182, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.18121419, Final residual = 0.004190218, No Iterations 2
+time step continuity errors : sum local = 4.5325827e-05, global = 1.6762092e-06, cumulative = -2.1842077e-06
+GAMG:  Solving for p, Initial residual = 0.075541211, Final residual = 0.0022920997, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.11038041, Final residual = 0.00077287966, No Iterations 4
+time step continuity errors : sum local = 2.8744228e-06, global = -7.6725165e-09, cumulative = -2.1918803e-06
+PIMPLE: iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.011001681, Final residual = 0.00089864246, No Iterations 2
+smoothSolver:  Solving for Uy, Initial residual = 0.012633949, Final residual = 0.00061285155, No Iterations 2
+smoothSolver:  Solving for Uz, Initial residual = 0.012168016, Final residual = 0.0011768309, No Iterations 1
+GAMG:  Solving for p, Initial residual = 0.07963423, Final residual = 0.0030597984, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.1509228, Final residual = 0.0036345706, No Iterations 2
+time step continuity errors : sum local = 1.2374968e-05, global = 5.3239928e-07, cumulative = -1.659481e-06
+GAMG:  Solving for p, Initial residual = 0.081861147, Final residual = 0.0023274421, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.035287721, Final residual = 0.0002120422, No Iterations 4
+time step continuity errors : sum local = 8.3509166e-07, global = 1.8305734e-08, cumulative = -1.6411752e-06
+PIMPLE: iteration 3
+smoothSolver:  Solving for Ux, Initial residual = 0.011046848, Final residual = 7.8276135e-08, No Iterations 31
+smoothSolver:  Solving for Uy, Initial residual = 0.012599351, Final residual = 8.246355e-08, No Iterations 28
+smoothSolver:  Solving for Uz, Initial residual = 0.012811549, Final residual = 8.3417502e-08, No Iterations 33
+GAMG:  Solving for p, Initial residual = 0.15416173, Final residual = 0.0051069174, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.053552456, Final residual = 0.0018384472, No Iterations 2
+time step continuity errors : sum local = 6.7984961e-06, global = 1.8325947e-07, cumulative = -1.4579158e-06
+GAMG:  Solving for p, Initial residual = 0.14109545, Final residual = 0.0036269427, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.037059943, Final residual = 0.0002091706, No Iterations 4
+time step continuity errors : sum local = 5.1889689e-07, global = -2.05469e-08, cumulative = -1.4784627e-06
+smoothSolver:  Solving for omega, Initial residual = 0.0017157847, Final residual = 6.7395952e-08, No Iterations 10
+bounding omega, min: -4937.6125 max: 312047.89 average: 3269.0808
+smoothSolver:  Solving for k, Initial residual = 0.024702608, Final residual = 9.7081068e-08, No Iterations 22
+ExecutionTime = 16.17 s  ClockTime = 22 s
+
+Courant Number mean: 0.1312396 max: 52.884276
+Time = 0.000172413
+
+...
+GAMG:  Solving for p, Initial residual = 0.16761608, Final residual = 0.0066530061, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.028262419, Final residual = 0.0013216157, No Iterations 2
+time step continuity errors : sum local = 1.8034011e-06, global = -1.4031821e-09, cumulative = 0.00064438309
+GAMG:  Solving for p, Initial residual = 0.041892765, Final residual = 0.0011225035, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.0062329656, Final residual = 3.4573479e-05, No Iterations 7
+time step continuity errors : sum local = 4.9728637e-08, global = -1.4793159e-10, cumulative = 0.00064438294
+PIMPLE: iteration 2
+smoothSolver:  Solving for Ux, Initial residual = 0.0015422856, Final residual = 0.00013598491, No Iterations 2
+smoothSolver:  Solving for Uy, Initial residual = 0.0010264173, Final residual = 8.6584254e-05, No Iterations 2
+smoothSolver:  Solving for Uz, Initial residual = 0.0010416196, Final residual = 7.337843e-05, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.091898034, Final residual = 0.002544707, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.027256338, Final residual = 0.00082324372, No Iterations 2
+time step continuity errors : sum local = 9.5189313e-07, global = -6.1590468e-10, cumulative = 0.00064438233
+GAMG:  Solving for p, Initial residual = 0.026373349, Final residual = 0.00090050898, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.005089484, Final residual = 3.0597884e-05, No Iterations 7
+time step continuity errors : sum local = 3.3936608e-08, global = 1.2493089e-10, cumulative = 0.00064438245
+PIMPLE: iteration 3
+smoothSolver:  Solving for Ux, Initial residual = 0.00038896766, Final residual = 8.6922535e-08, No Iterations 35
+smoothSolver:  Solving for Uy, Initial residual = 0.00026408739, Final residual = 8.487523e-08, No Iterations 32
+smoothSolver:  Solving for Uz, Initial residual = 0.00031836051, Final residual = 8.4322912e-08, No Iterations 28
+GAMG:  Solving for p, Initial residual = 0.10124973, Final residual = 0.0028332725, No Iterations 2
+GAMG:  Solving for p, Initial residual = 0.01699433, Final residual = 0.00064332275, No Iterations 2
+time step continuity errors : sum local = 7.7625569e-07, global = 5.9803082e-10, cumulative = 0.00064438305
+GAMG:  Solving for p, Initial residual = 0.04048619, Final residual = 0.00078542171, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.012009321, Final residual = 9.5460182e-05, No Iterations 4
+time step continuity errors : sum local = 1.1308297e-07, global = -1.7782331e-09, cumulative = 0.00064438127
+smoothSolver:  Solving for omega, Initial residual = 0.0004844811, Final residual = 6.3890873e-08, No Iterations 9
+smoothSolver:  Solving for k, Initial residual = 0.001658617, Final residual = 8.9653578e-08, No Iterations 18
+bounding k, min: 9.8563739e-16 max: 11.651661 average: 0.92116776
+ExecutionTime = 15439.82 s  ClockTime = 15448 s
+
+    functionObjects::pressure totalPressure writing field: pTot
+fieldAverage fieldAverage write:
+    Calculating averages
+
+    Writing average fields
+
+End
+
+Finalising parallel run

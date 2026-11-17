@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.13.7
+Version: 2026.11.17.1
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -57,7 +57,8 @@ def tool_status() -> dict:
     from .foam import find_foam
 
     from . import executor
-    out = {"translator": __version__, "openfoam": find_foam(), "default_solver": _solver(None),
+    from .esi import find_esi
+    out = {"translator": __version__, "openfoam": find_foam(), "openfoam_esi": find_esi(), "default_solver": _solver(None),
            "procs": int(os.environ.get("CFDT_PROCS", "1")), "executor": executor.status()}
     for mod, key in (("gmsh", "gmsh"), ("build123d_translator", "build123d_translator"), ("fea_translator", "fea_translator")):
         try:

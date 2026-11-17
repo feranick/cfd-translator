@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.14.7
+Version: 2026.11.17.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -269,9 +269,17 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         **({"ncc_owner": sl["ncc_owner"], "ncc_owner_by": sl.get("ncc_owner_by")}
                            if sl.get("ncc_owner") else {})}
                     from .sliding import BALANCE_WARN, interface_balance
+                    esi_run = plan.get("backend") == "esi"
+                    if esi_run:
+                        out["solve"]["sliding"]["coupling"] = "cyclicAMI (ESI OpenFOAM)"
+                        out["solve"]["backend"] = "esi"
                     try:
                         qin = sum(float(v.get("Q") or 0.0) for v in (plan.get("inlets") or {}).values()) or None
-                        ib = interface_balance(case, sl, qin)
+                        if esi_run:
+                            from .esi import ami_balance
+                            ib = ami_balance(case, sl, qin)
+                        else:
+                            ib = interface_balance(case, sl, qin)
                     except Exception as exc:  # noqa: BLE001
                         ib = {"note": f"not read ({type(exc).__name__}: {exc})"}
                     if ib:
@@ -299,7 +307,13 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                                      f"interface down to {thin['worst_fraction']:g} of its cells' thickness (see "
                                      "solve.sliding.interface_cells.thin_wall_cells)")
                     from .transient import stitcher_stats
-                    sst = stitcher_stats(case / "log.foamRun")
+                    sst = None if esi_run else stitcher_stats(case / "log.foamRun")
+                    if esi_run:
+                        from .esi import ami_notes, ami_stats_file
+                        ams = ami_stats_file(case / "log.foamRun")
+                        if ams:
+                            out["solve"]["sliding"]["ami"] = ams
+                            warns += ami_notes(ams)
                     if sst:
                         out["solve"]["sliding"]["stitcher"] = sst
                         pv = (sl.get("interface_cells") or {}).get("projected_volume_fraction") or {}
@@ -919,7 +933,7 @@ def _continue_transient(study: dict, folder: Path):
     if new["average_from"] > old_from * (1 + 1e-9) and new["average_from"] > 0:
         restart_averages(folder / "case")
         notes.append(f"time averages start again at {new['average_from']:g} s")
-    write_transient(folder / "case", study, plan)
+    _write_tr(folder / "case", study, plan, esi_ready=bool(plan.get("sliding", {}).get("backend") == "esi"))
     state = {"prepared": True, "segments": 0, "init_done": True, "started": True,
              "time_steps": int(old.get("time_steps", 0)), "init_iterations": old.get("init_iterations"),
              "continued_from": str(src), "continued_at": t, "sliding_done": bool(plan.get("sliding"))}
@@ -927,6 +941,17 @@ def _continue_transient(study: dict, folder: Path):
         pickle.dump((mesh, patches, selection, plan, list(warns) + notes), f)
     (folder / "transient.json").write_text(json.dumps(state))
     return mesh, patches, selection, plan, list(warns) + notes, state
+
+
+def _write_tr(case: Path, study: dict, plan: dict, esi_ready: bool = False) -> list:
+    """The transient run's system files: OpenFOAM 14's, or (solve.backend 'esi', once the case is the ESI sliding
+    case) ESI's. Returns notes."""
+    if esi_ready and plan.get("backend") == "esi":
+        from .esi import write_transient as _esi_write
+        return _esi_write(case, study, plan)
+    from .transient import write_transient
+    write_transient(case, study, plan)
+    return []
 
 
 def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs: int, folder: Path, state: dict,
@@ -937,6 +962,11 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     from .transient import after_init, write_transient
     tr = plan["transient"]
     sf = folder / "transient.json"
+    esi = plan.get("backend") == "esi"
+    bk = {"backend": "esi"} if esi else {}           # foam.run's backend (OpenFOAM 14 when not given)
+    if esi:
+        from .esi import require
+        require()                                   # before any time is spent: the ESI environment must be there
 
     def save():
         sf.write_text(json.dumps(state))
@@ -971,14 +1001,24 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     elif state.get("init_notes"):
         warns += [n for n in state["init_notes"] if n not in warns]
     if plan.get("sliding") and not state.get("sliding_done"):
-        # the zone's cells start turning: the mesh is split at its cylinder and coupled non-conformally (sliding.py)
-        from .sliding import to_sliding
+        # the zone's cells start turning: the mesh is split at its cylinder and coupled non-conformally (sliding.py),
+        # or (solve.backend 'esi') by a cyclicAMI pair in ESI OpenFOAM (esi.py)
         fm = foam.find_foam()
         if not (case / "log.checkMesh").exists():            # the conformal mesh, before it is split
             foam._step(fm, "checkMesh", "log.checkMesh", case, 900, raise_on_error=False)
-        notes = to_sliding(case, plan, mesh, lambda cmd, log: foam._step(fm, cmd, log, case, 3600), procs,
-                           foam.launch(procs) if procs > 1 else None)
-        write_transient(case, study, plan)
+        if esi:
+            from .esi import require, to_sliding as esi_to_sliding
+            em = require()
+            # ESI's own controlDict and schemes first: its utilities read system/ (OpenFOAM 14's function objects are
+            # not ESI's)
+            notes = _write_tr(case, study, plan, esi_ready=True)
+            notes = esi_to_sliding(case, plan, mesh, lambda cmd, log: foam._step(em, cmd, log, case, 3600), procs,
+                                   foam.launch(procs) if procs > 1 else None) + notes
+        else:
+            from .sliding import to_sliding
+            notes = to_sliding(case, plan, mesh, lambda cmd, log: foam._step(fm, cmd, log, case, 3600), procs,
+                               foam.launch(procs) if procs > 1 else None)
+            write_transient(case, study, plan)
         state.update(sliding_done=True, sliding_notes=notes)
         save()
         warns += notes
@@ -1004,12 +1044,12 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
             save()
     left = timeout - (time.time() - t_job)
     try:
-        info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin)
+        info = foam.run(case, max(left, 120.0), procs, resume=resume, deadline=t_job + timeout - margin, **bk)
     except foam.FoamError:
         # S50 on spark2 (2026.11.03): the first mesh motion crashed in OpenFOAM's mesh-flux correction at the
         # interface (fvMeshStitchers::moving::unconformInternalFaceCorrectMeshPhi, free(), exit 139). It is optional
         # (cfd.direct, 'Using NCC': conservation holds without it; it removes pressure noise): once more without it
-        if not (plan.get("sliding") and tr.get("correct_mesh_phi", True) and mesh_phi_crash(case)):
+        if esi or not (plan.get("sliding") and tr.get("correct_mesh_phi", True) and mesh_phi_crash(case)):
             raise
         tr["correct_mesh_phi"] = False
         write_transient(case, study, plan)
@@ -1041,7 +1081,7 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])
         left = timeout - (time.time() - t_job)
         if left > margin + 120.0 and t_sw < float(tr["end_time"]) - 1e-12:
-            info = foam.run(case, left, procs, resume=True, deadline=t_job + timeout - margin)
+            info = foam.run(case, left, procs, resume=True, deadline=t_job + timeout - margin, **bk)
         else:
             info = dict(info, reached_end=t_sw >= float(tr["end_time"]) - 1e-12, log=dict(info["log"], iterations=0))
     state["time_steps"] = int(state.get("time_steps", 0)) + int(info["log"]["iterations"])

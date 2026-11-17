@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.16.2
+Version: 2026.11.17.1
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -670,7 +670,7 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
                                  f"is capped to {new_deg:g} degrees ({lim:g} cells, solve.transient.cells_per_step; "
                                  f"{360.0 / new_deg:.0f} steps a revolution): OpenFOAM 14's coupling ran the S50 at 1.5 "
                                  "and diverged at 8.5 (NCC ladder, 2026.11.14)")
-            elif cps > CELLS_PER_STEP_NOTE:
+            elif cps > CELLS_PER_STEP_NOTE and plan.get("backend") != "esi":
                 notes.append(f"sliding interface: the rotor passes {cps:.1f} interface cells per time step "
                              f"({step_deg:g} degrees at r {float(np.median(rr)):.1f} mm, cells about {h_t:.3g} mm; "
                              "solve.transient.cells_per_step null: not capped): OpenFOAM 14's coupling ran the S50 at "
@@ -776,7 +776,7 @@ def check(mesh, g, zone: dict, plan: dict, patches: list, refine: list | None = 
         own = "the rotor (zone) side" if zo["max"] <= oo["max"] else "the stator side"
         pick = zo if zo["max"] <= oo["max"] else oo
         where = "; ".join(f"{p_['pvf']} at {p_['at']} mm" for p_ in pick["places"][:3])
-        if best > PVF_REFUSE:
+        if best > PVF_REFUSE and plan.get("backend") != "esi":   # cyclicAMI does not stitch cells: no such limit
             # Perlmutter sliding7 (2026.11.12): OpenFOAM warned 0.54-0.64 at every step and the run diverged after
             # 4-5 steps (Courant 62 -> 1.3e5); spark1 (2026.11.04): 1.06 and pcorr NaN. Stop before the solve
             raise SlidingError(

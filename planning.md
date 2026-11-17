@@ -183,7 +183,12 @@ development and tests run on the sparks.
 Done when cfdt can mesh and run an S50-class pump on v14 from a study, at a known and documented cost per
 revolution, validated against MRF and the v2506 reference.
 
-### Priority 2 (after priority 1): limited ESI v2506 support for specific cases
+### Priority 2: limited ESI v2506 support for specific cases (started 2026.11.17.1 alongside priority 1)
+
+Spec: `other/esi_v2506_backend.md`. 2026.11.17.1: esi.py (`solve.backend: "esi"`): mesh, checks and steady MRF start
+on OpenFOAM 14, then ESI decomposePar / createBaffles (cyclicAMI) / mergeOrSplitBaffles / pimpleFoam; tested with
+stand-ins and a captured v2506 log only. Next: a v2506 checkMesh on a cfdt mesh (zone header classes), rung 2 g = 5
+through cfdt on carbonio (both backends), then the coarse S50 like-for-like.
 
 Not full parity. One narrow backend, used only where v2506 is clearly better.
 

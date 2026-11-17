@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.14.6
+Version: 2026.11.17.1
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -74,6 +74,11 @@ def settings(study: dict, mesh=None) -> dict | None:
     # for 8 revolutions); the hand-built v2506 run went at 1 deg a step with Courant ~25 in a handful of cells,
     # mean 0.12, and stayed stable (Perlmutter, 2026.11)
     fixed = "max_co" in tr and tr["max_co"] is None
+    # the ESI backend (cyclicAMI) runs a sliding mesh at a fixed degrees_per_step unless max_co is given: the
+    # hand-built S50 v2506 run went at 1 degree a step with Courant 25-68 in a handful of snapped cells
+    esi = str((study.get("solve") or {}).get("backend") or "") == "esi"
+    if esi and "max_co" not in tr and sliding_zone(study):
+        fixed = True
     out = {"end_time": T, "average_from": float(tr.get("average_from", T / 3)),
            "max_co": None if fixed else float(tr.get("max_co", 1.0)), "fixed_step": fixed,
            "write_interval": W,
@@ -106,8 +111,9 @@ def settings(study: dict, mesh=None) -> dict | None:
                    degrees_per_step=deg, sliding=sl["name"], correct_mesh_phi=bool(tr.get("correct_mesh_phi", True)),
                    # at most this many interface cells passed per step (sliding.check caps the step once the mesh
                    # is known; None: no cap). NCC ladder 2026.11.14: the S50 ran at 1.5 and diverged at 8.5
-                   cells_per_step=(None if ("cells_per_step" in tr and tr["cells_per_step"] is None)
-                                   else float(tr.get("cells_per_step", 2.0))))
+                   cells_per_step=(None if esi or ("cells_per_step" in tr and tr["cells_per_step"] is None)
+                                   else float(tr.get("cells_per_step", 2.0))),
+                   **({"backend": "esi"} if esi else {}))
     return out
 
 
@@ -479,7 +485,7 @@ def after_init(case: Path) -> float | None:
 
 
 _TIME = re.compile(r"^Time = ([-+0-9.eE]+)s?\s*$", re.M)
-_CO = re.compile(r"Courant Number mean: ([-+0-9.eE]+) max: ([-+0-9.eE]+)")
+_CO = re.compile(r"(?<!Mesh )Courant Number mean: ([-+0-9.eE]+) max: ([-+0-9.eE]+)")   # not ESI's mesh Courant
 _DT = re.compile(r"^deltaT = ([-+0-9.eE]+)", re.M)
 
 

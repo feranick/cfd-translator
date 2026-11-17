@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.14.1
+Version: 2026.11.17.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -48,7 +48,8 @@ CO_ABSURD = 1e4              # CFDT_DIVERGE_CO; a fixed step runs at Courant ~25
 RES_HIGH = 0.5               # every time step's largest first initial residual (p, p_rgh, U) at least this ...
 RES_STEPS = 30               # ... for this many time steps in a row ...
 RES_SKIP = 20                # ... after the first time steps (a start from rest or a mapped field begins near 1)
-_CO = re.compile(r"Courant Number mean: \S+ max: (\S+)")
+# the flow's Courant number, not ESI's "Mesh Courant Number" line (checkMeshCourantNo)
+_CO = re.compile(r"(?<!Mesh )Courant Number mean: \S+ max: (\S+)")
 _RES = re.compile(r"Solving for (p_rgh|p|Ux|Uy|Uz), Initial residual = ([-+0-9.eE]+)")
 _STEP = re.compile(r"^Time = ", re.M)
 TAIL_BYTES = 8 * 1024 * 1024
@@ -435,7 +436,7 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     try:
         rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
                    cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline,
-                   watch_log=Path(case) / logname if "foamRun" in cmd else None,
+                   watch_log=Path(case) / logname if ("foamRun" in cmd or "pimpleFoam" in cmd) else None,
                    mem_log=Path(case) / logname if "snappyHexMesh" in cmd else None).returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
@@ -459,17 +460,24 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
 
 
 def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: bool = False,
-        deadline: float | None = None) -> dict:
+        deadline: float | None = None, backend: str = "openfoam.org") -> dict:
     """checkMesh, then the solver. Returns the parsed logs; raises FoamError on failure.
     resume (transient runs): continue from the latest time (no cleaning, no checkMesh; the decomposition is
     kept when it has as many ranks). deadline (epoch seconds): ask the run to write and stop then
     (transient.request_stop); info['reached_end'] says whether endTime was reached. The fields are
-    reconstructed only when it was (or the run is steady)."""
-    foam = find_foam()
+    reconstructed only when it was (or the run is steady). backend 'esi': ESI OpenFOAM's pimpleFoam in its own
+    environment (esi.py; a sliding case made by esi.to_sliding), its log still log.foamRun."""
+    esi = backend == "esi"
+    if esi:
+        from .esi import require
+        foam = require()
+    else:
+        foam = find_foam()
     if not foam or "error" in (foam or {}):
         raise FoamError((foam or {}).get("error", "OpenFOAM not found (install openfoam.org >= 11, or set CFDT_FOAM)"))
+    solver = "pimpleFoam" if esi else "foamRun"
     case = Path(case)
-    out = {"openfoam": foam.get("version")}
+    out = {"openfoam": foam.get("version"), **({"backend": "esi"} if esi else {})}
     if not resume:
         for p in case.iterdir():                 # results of an earlier run must not be read as this one's
             try:
@@ -504,9 +512,9 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
         lp = launch(procs)
         out["launch"] = lp
         out["binding"] = "hwthread" if "--map-by hwthread" in lp else "default"
-        solve = (f"{lp} foamRun -parallel", "log.foamRun")
+        solve = (f"{lp} {solver} -parallel", "log.foamRun")
     else:
-        solve = ("foamRun", "log.foamRun")
+        solve = (solver, "log.foamRun")
     stop = None
     if deadline is not None:
         from .transient import request_stop

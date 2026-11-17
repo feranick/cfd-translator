@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.15.1
+Version: 2026.11.17.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -26,6 +26,12 @@ GUIDES = {
             "averages after the first revolution (the start from rest drives tens of m/s beside blade tips and in "
             "narrow gaps), and validate against MRF on the same mesh. Per revolution it costs about 25 x ESI "
             "cyclicAMI at 1 degree on the S50 today.",
+            "solve.backend 'esi' (explicit, sliding only): the same mesh, checks and steady MRF start, then the sliding "
+            "run in ESI OpenFOAM (v2506 pimpleFoam, a cyclicAMI pair on the zone's cylinder) at a fixed "
+            "degrees_per_step (1 by default, no cells_per_step cap): the route for gap-dominated pumps while OpenFOAM "
+            "14 cannot hold 1 degree a step. Results as on OpenFOAM 14, plus solve.sliding.ami (the AMI's weights). Needs "
+            "ESI OpenFOAM on the machine (machines(): status openfoam_esi). Not with energy, cavitation, porous zones, "
+            "scalars, external flow, p_below or the locator (other/esi_v2506_backend.md).",
         ],
         "zone": [
             "A cylinder (center, axis, radius, span) around the rotor in open fluid: between the impeller's outer "

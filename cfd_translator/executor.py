@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.14.7
+Version: 2026.11.17.1
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -719,6 +719,8 @@ def sliding_degrees(study: dict, sl: dict, tr: dict) -> float:
     """degrees_per_step as the run will use it: capped so that the rotor passes at most cells_per_step (2)
     interface cells a step (sliding.check does the same on the mesh; the router plans with this)."""
     deg = float(tr.get("degrees_per_step", 1.0))
+    if str((study.get("solve") or {}).get("backend") or "") == "esi":
+        return deg                          # cyclicAMI: no cap (esi.py)
     lim = tr.get("cells_per_step", 2.0) if "cells_per_step" in tr else 2.0
     h = interface_cell_mm(study, sl)
     if lim and h:

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.14.6
+Version: 2026.11.17.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -153,7 +153,8 @@ STUDY_KEYS = {
              "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
-             "p_below_regions, free_flow (pumps: flow held, then the inlet's total pressure), locator (sliding: where it fails)}",
+             "p_below_regions, free_flow (pumps: flow held, then the inlet's total pressure), locator (sliding: where it fails)}; "
+             "backend: esi (sliding: cyclicAMI, guide('pumps'))",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
@@ -188,7 +189,7 @@ MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers",
              "gap", "quality", "max_cells", "optimize", "procs"}
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
-              "transient", "init_from", "init_fields"}
+              "transient", "init_from", "init_fields", "backend"}
 AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
@@ -1045,6 +1046,8 @@ def validate_study(st: dict) -> dict:
             errs.append("solve.transient.locator: only with a sliding zone (rotating[].motion 'sliding')")
     from .sections import errors as _sec_errors
     errs += _sec_errors(st)
+    from .esi import errors as _esi_errors
+    errs += _esi_errors(st)
     # images
     if "images" in st:
         errs += image_errors(st["images"], two_d, _field_names(st), bool((st.get("reference") or {}).get("velocity")))
