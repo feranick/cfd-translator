@@ -110,7 +110,9 @@ was real and each has a check.
      round, so 2.1 at level 3, 4.3 at level 4 and 8.5 at level 5, at any radius.
    - A refinement region (a gap band, a vane band, a sphere at a tongue) that brings any interface face to a higher
      level quietly halves the step once per extra level, because the cap follows the finest faces.
-   - Keep every region that meets the interface at the interface's level. Get fine planes along the axis from the
+   - Keep every region that meets the interface at the interface's level, and the interface surface's own level
+     too (snappyHexMesh's `refinementSurfaces` entry for the faceZone): the S50's long-cell meshes 621 and 624 left
+     it at (4 4) and had every interface face at level 4 (4.3 cells per degree, 1.28 M faces) instead of 3. Get fine planes along the axis from the
      background (finer z layers at the zone's ends), not from an extra level.
    - **Check:** `interface_cells.cells_per_step`, and on the port `ogrid.py check`.
 6. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
