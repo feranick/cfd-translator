@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.06.1
+Version: 2026.11.17.6
 
     results(study, mesh, plan, fields) -> dict
 
@@ -148,6 +148,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
     ang, scale_a = np.zeros(3), 0.0
     gross_a = np.zeros(3)        # per axis: sum of |moment| of every face force and flux (and MRF source)
     face_forces = {}
+    face_parts = {}          # {patch: (pressure force, viscous force) per face}: the torque's split
     net_phi, inflow = 0.0, 0.0
     wall_faces = []          # (face indices, F per face) of every wall patch
     wall_flux = {}           # flow through walls (should be none): {wall: (net, gross)} m3/s
@@ -197,6 +198,7 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         scale_m = max(scale_m, float(np.linalg.norm(F.sum(axis=0))), float(np.linalg.norm(Mo.sum(axis=0))),
                       float(np.linalg.norm(Fp.sum(axis=0))))
         face_forces[nm] = (f, F)
+        face_parts[nm] = (Fp, Fv)
         rf = g["Cf"][f] * SCALE - cofr
         Ma, Fa = np.cross(rf, Mo).sum(axis=0), np.cross(rf, F).sum(axis=0)
         ang += Ma + Fa
@@ -538,17 +540,37 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
         ang += msrc.sum(axis=0)
         gross_a += np.abs(msrc).sum(axis=0)
         c0 = np.asarray(zp["center_mm"], float) * SCALE
-        torque, by_wall = 0.0, {}
+        torque, by_wall, parts, by_face = 0.0, {}, {}, {}
         for wn in zp["rotating_walls"]:
             f, F = face_forces[wn]
-            tw = float(np.cross(g["Cf"][f] * SCALE - c0, F).sum(axis=0) @ a)
+            arm = g["Cf"][f] * SCALE - c0
+            tw = float(np.cross(arm, F).sum(axis=0) @ a)
             by_wall[wn] = _r(tw)
             torque += tw
+            # where the torque comes from: pressure against friction per wall, and per CAD face (vanes, shroud, hub,
+            # back disc), to compare with another code's moment.dat (pressure_z, viscous_z) face by face
+            Fp_, Fv_ = face_parts[wn]
+            mp = np.cross(arm, Fp_) @ a
+            mv = np.cross(arm, Fv_) @ a
+            parts[wn] = {"pressure": _r(float(mp.sum())), "viscous": _r(float(mv.sum()))}
+            tags = mesh.btag[f - ni]
+            Aw = np.linalg.norm(g["Sf"][f], axis=1)
+            for t in np.unique(tags):
+                m = tags == t
+                d = by_face.setdefault(int(t), {"wall": wn, "pressure": 0.0, "viscous": 0.0, "area_mm2": 0.0})
+                d["pressure"] += float(mp[m].sum())
+                d["viscous"] += float(mv[m].sum())
+                d["area_mm2"] += float(Aw[m].sum())
+        top = sorted(by_face.items(), key=lambda kv: -abs(kv[1]["pressure"] + kv[1]["viscous"]))[:16]
         power = -torque * zp["omega_rad_s"]
         out.setdefault("rotating", {})[zn] = {"torque_Nm": _r(torque), "power_W": _r(power),
                                               "rpm": _r(zp["omega_rad_s"] * 60 / (2 * np.pi)), "cells": zp["cells"],
                                               "rotating_walls": zp["rotating_walls"], "motion": zp.get("motion", "mrf"),
-                                              "torque_by_wall_Nm": by_wall}
+                                              "torque_by_wall_Nm": by_wall, "torque_parts_Nm": parts,
+                                              "torque_by_cad_face_Nm": [
+                                                  {"tag": t, "wall": d["wall"], "torque": _r(d["pressure"] + d["viscous"]),
+                                                   "pressure": _r(d["pressure"]), "viscous": _r(d["viscous"]),
+                                                   "area_mm2": _r(d["area_mm2"])} for t, d in top]}
         if not zp["rotating_walls"]:
             warns.append(f"rotating zone {zn!r} has no rotating walls (give the impeller faces rotation: {zn!r})")
     # porous zones: their resistance enters the momentum balance like the MRF source (porous.py)

@@ -250,3 +250,4 @@ def test_reprocess_with_other_averaging_settings(tmp_path, monkeypatch):
     assert st2["solve"]["average"] == {"window": 0.5} and plan2["monitors"]["settings"]["window"] == 0.5
     bad = api.reprocess(str(req), average={"window": 2})["studies"]["v"]
     assert bad["ok"] is False and bad["why"] == "invalid average"
+

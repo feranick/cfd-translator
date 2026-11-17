@@ -295,3 +295,35 @@ def test_brief_shows_the_coupling():
     b = brief(r)["solve"]
     assert b["backend"] == "esi" and b["s_per_step"] == 2.0 and b["sliding"]["ami"]["max"] == 1.41
     assert b["sliding"]["interface_balance_error"] == 1.4e-6 and b["sliding"]["cells_per_step"] == 1.74
+
+
+def test_torque_split_by_part_and_cad_face(tmp_path):
+    """post.results(): each rotating wall's torque as pressure + viscous and per CAD face (2026.11.17.6: to set
+    cfdt's S50 power gap against another code's moment.dat face by face). The pump mesh with the rotor as an MRF zone,
+    a still fluid with a uniform pressure: the friction of the turning blade gives the torque, the pressure none."""
+    import numpy as np
+    from cfd_translator.post import results
+    m = pump_mesh()
+    st = _study()
+    st["rotating"] = [{k: v for k, v in st["rotating"][0].items() if k != "motion"}]
+    st["solve"] = {}
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    plan = write_case(st, m, patches_for(m), tmp_path / "c")
+    g = m.geometry()
+    zp = plan["zones"]["rotor"]
+    pat = {}
+    for P in m.patches:
+        f = np.arange(P["start"], P["start"] + P["n"])
+        U = np.zeros((len(f), 3))
+        if P["name"] in zp["rotating_walls"]:
+            U = np.cross(np.asarray(zp["axis"]) * zp["omega_rad_s"], g["Cf"][f] * 1e-3)
+        pat[P["name"]] = {"U": U, "p": np.full(len(f), 0.3), "phi": np.zeros(len(f)), "wss": None, "nut": None}
+    res, _ = results(st, m, plan, {"U": np.zeros((m.ncells, 3)), "p": np.full(m.ncells, 0.3), "patches": pat})
+    r = res["rotating"]["rotor"]
+    assert r["torque_by_wall_Nm"] and abs(r["torque_Nm"]) > 0 and abs(r["torque_parts_Nm"][r["rotating_walls"][0]]["viscous"]) > 0
+    for wn, t in r["torque_by_wall_Nm"].items():
+        parts = r["torque_parts_Nm"][wn]
+        assert parts["pressure"] + parts["viscous"] == pytest.approx(t, rel=1e-5, abs=1e-15)
+    faces = r["torque_by_cad_face_Nm"]
+    assert faces and sum(f_["torque"] for f_ in faces) == pytest.approx(r["torque_Nm"], rel=1e-5, abs=1e-15)
+    assert all(f_["area_mm2"] > 0 and f_["wall"] in r["rotating_walls"] for f_ in faces)
