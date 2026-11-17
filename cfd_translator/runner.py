@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.17.2
+Version: 2026.11.17.4
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -265,7 +265,7 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                         "degrees_per_step": tr.get("degrees_per_step"), "interface_faces": sl["interface_faces"],
                         "interface_lean_deg": sl["interface_lean_deg"], "rotor_walls": sl["moving_walls"],
                         "spinning_walls": sl.get("spinning_walls", []), "interface_cells": sl.get("interface_cells"),
-                        "correct_mesh_phi": tr.get("correct_mesh_phi", True),
+                        **({} if plan.get("backend") == "esi" else {"correct_mesh_phi": tr.get("correct_mesh_phi", True)}),
                         **({"ncc_owner": sl["ncc_owner"], "ncc_owner_by": sl.get("ncc_owner_by")}
                            if sl.get("ncc_owner") else {})}
                     from .sliding import BALANCE_WARN, interface_balance

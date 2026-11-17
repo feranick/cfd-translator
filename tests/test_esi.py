@@ -280,3 +280,18 @@ def test_sliding_check_notes_on_esi(tmp_path):
     e = write_case(_esi_study(), m, patches_for(m), tmp_path / "b")
     assert not any("projected volume fraction" in n for n in e.get("notes", []))
     assert len(e.get("notes", [])) <= len(v14.get("notes", []))
+
+
+def test_brief_shows_the_coupling():
+    from cfd_translator.api import brief
+    r = {"ok": True, "results": {"pump": {"head_m": 1.0}}, "mesh": {"cells": 10},
+         "solve": {"openfoam": "v2506", "backend": "esi", "transient": True, "time_steps": 1080,
+                   "step_profile": {"s_per_step": 2.0},
+                   "sliding": {"coupling": "cyclicAMI (ESI OpenFOAM)", "degrees_per_step": 1.0, "revolutions": 3.0,
+                               "ami": {"min": 0.93, "max": 1.41, "average_min": 1.0009, "average_max": 1.0048,
+                                       "at_rest": {}, "updates": 1081},
+                               "interface_balance": {"error": 1.4e-6},
+                               "interface_cells": {"cells_per_step": {"value": 1.74}}}}}
+    b = brief(r)["solve"]
+    assert b["backend"] == "esi" and b["s_per_step"] == 2.0 and b["sliding"]["ami"]["max"] == 1.41
+    assert b["sliding"]["interface_balance_error"] == 1.4e-6 and b["sliding"]["cells_per_step"] == 1.74

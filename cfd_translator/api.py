@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.17.1
+Version: 2026.11.17.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -745,8 +745,29 @@ def brief(r: dict) -> dict:
     out["checks"] = {k: (v.get("error") if isinstance(v, dict) else v) for k, v in ck.items()
                      if k in ("mass_balance", "momentum_balance", "energy_balance")}
     sv = r.get("solve") or {}
-    out["solve"] = {k: sv[k] for k in ("iterations", "converged", "transient", "settled", "time_steps", "procs")
-                    if k in sv}
+    out["solve"] = {k: sv[k] for k in ("openfoam", "backend", "iterations", "converged", "transient", "settled",
+                                       "time_steps", "procs") if k in sv}
+    sl = sv.get("sliding")
+    if isinstance(sl, dict):
+        # the coupling's health in a few numbers: OpenFOAM 14's stitcher or ESI's AMI weights, the flux balance
+        c = {k: sl[k] for k in ("coupling", "degrees_per_step", "revolutions", "averaged_revolutions") if k in sl}
+        ami = sl.get("ami")
+        if isinstance(ami, dict):
+            c["ami"] = {k: ami[k] for k in ("min", "max", "average_min", "average_max", "low_weight_faces_max")
+                        if k in ami}
+        st = sl.get("stitcher")
+        if isinstance(st, dict):
+            c["stitcher"] = {k: st[k] for k in ("projected_volume_fraction_max", "coverage_min") if k in st}
+        ib = sl.get("interface_balance")
+        if isinstance(ib, dict) and "error" in ib:
+            c["interface_balance_error"] = ib["error"]
+        cps = ((sl.get("interface_cells") or {}).get("cells_per_step") or {}).get("value")
+        if cps is not None:
+            c["cells_per_step"] = cps
+        out["solve"]["sliding"] = c
+    sp = sv.get("step_profile")
+    if isinstance(sp, dict) and "s_per_step" in sp:
+        out["solve"]["s_per_step"] = sp["s_per_step"]
     m = r.get("mesh") or {}
     out["mesh"] = {k: m[k] for k in ("cells", "kind", "max_non_orthogonality") if k in m}
     lay = m.get("layers")
