@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.18.2
+Version: 2026.11.18.3
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -93,7 +93,7 @@ def job_time(study: dict | None = None, estimate_min: float | None = None) -> tu
 
 
 # ---- per-study run settings (study.run) within the machine's caps ------------------------------------
-RUN_KEYS = {"timeout_s", "mem", "procs", "queue"}
+RUN_KEYS = {"timeout_s", "mem", "procs", "queue", "after", "after_mode"}   # run.after: llmt-runtime's
 mem_mb = S.mem_mb          # '8G' -> 8192 (SLURM's units: K, M (default), G, T); None if malformed
 
 
@@ -304,11 +304,11 @@ def run_errors(st: dict) -> list[str]:
     if r is None:
         return []
     if not isinstance(r, dict):
-        return ["run: {timeout_s, mem, procs, queue}"]
+        return ["run: {timeout_s, mem, procs, queue, after, after_mode}"]
     errs = []
     bad = set(r) - RUN_KEYS
     if bad:
-        errs.append(f"run: unknown keys {sorted(bad)} (timeout_s, mem, procs, queue)")
+        errs.append(f"run: unknown keys {sorted(bad)} (timeout_s, mem, procs, queue, after, after_mode)")
     cap = caps()
     t = r.get("timeout_s")
     if t is not None:
@@ -926,7 +926,7 @@ def _solver_of(request: Path) -> str:
 # keeps describing the running job k, with the waiting one under 'next_job'; k hands over (job.json becomes k+1's)
 # only when it ends wanting more time. A k+1 that starts without the hand-over (k killed, cancelled, failed or done)
 # exits at once without a word, and job k's end is classified as before.
-STOP_FILE = "stop_after_job"       # cancel(at='job_end'): the running job finishes, no next job is chained
+STOP_FILE = J.STOP_FILE           # 'stop_after_job': cancel(at='job_end') (llmt-runtime's cancel_request)
 NEXT_LOG_MODE = "append"          # a pre-submitted job appends to job.log: an unused one must not wipe job k's log
 
 
@@ -996,26 +996,7 @@ def not_handed_over(folder: Path) -> bool:
     return str(cur.get("job_id")) != str(me) and str((cur.get("next_job") or {}).get("job_id")) == str(me)
 
 
-def stop_requested(folder: Path) -> bool:
-    return (Path(folder) / STOP_FILE).is_file()
-
-
-def iso_local(t: float) -> str:
-    """Epoch seconds as this machine's local time with its UTC offset (2026-11-17T14:38:17-05:00)."""
-    from datetime import datetime
-    return datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
-
-
-def with_offset(stamp: str | None) -> str | None:
-    """A SLURM time (the controller's local time, no offset: 2026-11-17T19:38:17) with this machine's offset; other
-    strings unchanged."""
-    if not isinstance(stamp, str) or len(stamp) != 19 or stamp[10:11] != "T":
-        return stamp
-    from datetime import datetime
-    try:
-        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").astimezone().isoformat(timespec="seconds")
-    except ValueError:
-        return stamp
+stop_requested = J.stop_requested    # cancel(at='job_end'): llmt-runtime's flag (stop_after_job)
 
 
 def submit(request: Path, name: str, study: dict, after: str | None = None, segment: int | None = None) -> dict:
@@ -1239,6 +1220,7 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
                 ahead = pending_ahead()
             st = {"state": "queued", **base, "reason": s.get("reason"), "ahead": ahead.get(jid, s.get("ahead"))}
             if s.get("expected_start"):
+                from llmt_runtime.requests import with_offset
                 st["expected_start"] = with_offset(s["expected_start"])
             elif s.get("expected_start_note"):     # SLURM's one-year placeholder: no start time (llmt-runtime)
                 st["expected_start_note"] = s["expected_start_note"]
@@ -1398,7 +1380,8 @@ def eta_start(job: dict, reason: str, slurm_start: str | None) -> dict | None:
     when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
     if slurm_start and slurm_start not in ("N/A", "Unknown") and slurm_start[:19] <= when:
         return None
-    return {"expected_start": iso_local(t), "expected_start_slurm": with_offset(slurm_start) or None,
+    from llmt_runtime.requests import iso, with_offset
+    return {"expected_start": iso(t), "expected_start_slurm": with_offset(slurm_start) or None,
             "expected_start_note": f"from the running jobs' own progress: {cand[1]}; SLURM counts their whole time "
                                    "limit (an upper bound)"}
 

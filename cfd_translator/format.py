@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.18.2
+Version: 2026.11.18.3
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -170,7 +170,9 @@ STUDY_KEYS = {
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
     "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3; chain: each point from the previous), temperature C | p_vapour Pa, model, iterations, "
                   "inlet_gas_fraction (air, no vapour: f | [f per npsh] | {saturated_at: Pa})}: liquid + vapour (VoF); guide('pumps')",
-    "run": "{timeout_s, mem ('8G' per node, SLURM's --mem; 'auto'), procs, queue}: overrides of the machine's defaults, within its caps (status)",
+    "run": "{timeout_s, mem ('8G' per node, SLURM's --mem; 'auto'), procs, queue, after, after_mode}: overrides of the machine's defaults, within its caps (status)",
+    "run.after": "'<request>/<study>' | '<study>' | list: start when those runs (all jobs) end",
+    "run.after_mode": "any (default) | ok: cancelled unless they end ok",
     "mesh_scales": "[1, 0.707, 0.5]: a study per factor on all mesh sizes (<name>_L1..; mesh convergence in "
                    "'variants'); or variants: {suffix: {changes}}",
     "analysis": "steady",

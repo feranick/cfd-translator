@@ -150,20 +150,40 @@ def test_stop_after_job(tmp_path, monkeypatch, slurm_job):
     assert "after job 1" in state["stopped"] and any("cancel at job_end" in w for w in warns)
 
 
-def test_cancel_at_job_end_flags_transient_slurm_runs(tmp_path):
+def test_cancel_at_job_end_through_the_runtime(tmp_path, monkeypatch):
+    """cancel(at='job_end') is llmt-runtime's cancel_request: the stop_after_job flag (cfdt's name), a waiting next job
+    cancelled."""
     req = tmp_path / "req"
-    for n in ("des", "steady", "done"):
+    for n in ("des", "done"):
         (req / n).mkdir(parents=True)
-        (req / n / "job.json").write_text(json.dumps({"job_id": "1"}))
+    (req / "des" / "job.json").write_text(json.dumps({"job_id": "1", "next_job": {"job_id": "2"}}))
+    (req / "done" / "job.json").write_text(json.dumps({"job_id": "3"}))
     (req / "done" / "done.json").write_text("{}")
-    meta = {"names": ["des", "steady", "done"],
-            "studies": {"des": {"solve": {"transient": {"end_time": 3}}}, "steady": {"solve": {}},
-                        "done": {"solve": {"transient": {"end_time": 3}}}}}
+    meta = {"names": ["des", "done"], "studies": {"des": {"solve": {"transient": {"end_time": 3}}},
+                                                  "done": {"solve": {"transient": {"end_time": 3}}}}}
     (req / "request.json").write_text(json.dumps(meta))
+    cancelled = []
+    monkeypatch.setattr(executor.J, "scancel", lambda ids: cancelled.extend(ids))
     out = api.cancel(str(req), None, "job_end")
     assert out["stop_after_job"] == ["des"] and (req / "des" / executor.STOP_FILE).is_file()
-    assert set(out["not_flagged"]) == {"steady", "done"}
+    assert executor.STOP_FILE == "stop_after_job" and executor.stop_requested(req / "des")
+    assert cancelled == ["2"] and out["not_flagged"] == {"done": "finished"}
     assert "error" in api.cancel(str(req), None, "later")
+
+
+def test_run_after_keys_are_accepted_and_checked(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    a = _study(chain="together")
+    b = dict(_study(), solve={}, run={"after": "a", "after_mode": "ok"})
+    v = api.validate({"a": a, "b": b})
+    assert not any("unknown keys" in e for e in v["studies"]["b"]["errors"]), v["studies"]["b"]
+    self_ = dict(_study(), solve={}, run={"after": "b"})
+    assert any("cannot wait for itself" in e for e in api.validate({"b": self_})["studies"]["b"]["errors"])
+    gone = dict(_study(), solve={}, run={"after": "run_nothing/x"})
+    assert any("no study x" in e for e in api.validate({"g": gone})["studies"]["g"]["errors"])
+    assert any("after_mode" in e for e in api.validate({"m": dict(_study(), solve={}, run={"after": "a", "after_mode":
+                                                                                         "maybe"}),
+                                                    "a": a})["studies"]["m"]["errors"])
 
 
 def test_job_end_info(tmp_path):
@@ -178,18 +198,6 @@ def test_job_end_info(tmp_path):
     assert info["job_ends"][-6] in "+-" and info["job_ends"][-3] == ":"            # with its UTC offset
     (d / "job.json").write_text(json.dumps({"job_id": "101"}))                      # handed over, 101 not started
     assert api.job_end_info(d) == {}
-
-
-def test_times_with_offset(monkeypatch):
-    monkeypatch.setenv("TZ", "America/New_York")
-    time.tzset()
-    try:
-        assert executor.with_offset("2026-11-17T14:38:17") == "2026-11-17T14:38:17-05:00"
-        assert executor.with_offset("N/A") == "N/A" and executor.with_offset(None) is None
-        assert executor.iso_local(0).endswith("-05:00")
-    finally:
-        monkeypatch.delenv("TZ")
-        time.tzset()
 
 
 def test_chain_validation():
