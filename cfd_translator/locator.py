@@ -2,7 +2,7 @@
 steps, each rank's cells with the largest projected volume fraction (fvMeshStitcher's measure) and Courant number,
 with the velocity, the mesh velocity and every face's flux of the worst (and of watched cells), to
 processor*/cfdtWhere.dat; and the reader that turns those files into results.solve.sliding.locator.
-Version: 2026.11.14.5
+Version: 2026.11.17.9
 
 From the S50 v14 port (nersc/s50_sliding_v14, jobs 61249082-61290075), where it found the cells the divergence
 started in. Opt-in (solve.transient.locator): the function object is compiled when foamRun starts (OpenFOAM's
@@ -304,10 +304,18 @@ def summary(loc: dict, n: int = 3) -> str:
 FRAME = "cfdt_locator.json"
 
 
-def write_frame(case: Path, axis, center) -> None:
-    """The sliding zone's axis and centre (mm) beside the case, for diverged_note (which has no plan)."""
+def write_frame(case: Path, axis, center, radius=None, span=None, omega=None) -> None:
+    """The rotating zone's axis and centre (mm) beside the case, for diverged_note and diverge.report (which have no
+    plan); with its radius, span (mm along the axis from the centre) and speed (rad/s) when given."""
     import json
-    (Path(case) / FRAME).write_text(json.dumps({"axis": list(map(float, axis)), "center_mm": list(map(float, center))}))
+    fr = {"axis": list(map(float, axis)), "center_mm": list(map(float, center))}
+    if radius is not None:
+        fr["radius_mm"] = float(radius)
+    if span is not None:
+        fr["span_mm"] = [float(x) for x in span]
+    if omega is not None:
+        fr["omega_rad_s"] = float(omega)
+    (Path(case) / FRAME).write_text(json.dumps(fr))
 
 
 def diverged_note(case: Path) -> str:

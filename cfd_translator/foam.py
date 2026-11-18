@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.17.1
+Version: 2026.11.17.9
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -278,6 +278,18 @@ def _wait(p, cmd, timeout, cancel_file, deadline, on_deadline, watch_log, mem_lo
             next_look = time.time() + WATCH_S
             dv = divergence(watch_log)
             if dv is not None:
+                # a transient run writes its fields first (stopAt writeNow at the end of the step; the time step may
+                # crawl at 1000 iterations a solve, so at most CFDT_DIVERGE_WRITE_S): diverge.report reads them
+                from .diverge import write_seconds
+                grace = min(write_seconds(), max(0.0, timeout - (time.time() - t0)))
+                if on_deadline is not None and grace > 0 and p.poll() is None:
+                    try:
+                        on_deadline()
+                        p.wait(timeout=grace)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    except Exception:  # noqa: BLE001 (the stop request must never hide the divergence)
+                        pass
                 _kill_group(p)
                 from .locator import diverged_note
                 raise Diverged(divergence_message(dv) + diverged_note(Path(watch_log).parent))
@@ -519,12 +531,16 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     if deadline is not None:
         from .transient import request_stop
         stop = (lambda: request_stop(case))
-    rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
+    from .diverge import attach
+    try:
+        rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
+    except Diverged as exc:                    # where it blew up, from the fields it wrote (diverge.py)
+        raise attach(exc, case) from None
     log = (case / "log.foamRun").read_text(errors="replace") if (case / "log.foamRun").is_file() else ""
     dv = divergence(case / "log.foamRun")
     if dv is not None:                         # it ended on its own (short run), but diverged
         from .locator import diverged_note
-        raise Diverged(divergence_message(dv) + diverged_note(case))
+        raise attach(Diverged(divergence_message(dv) + diverged_note(case)), case)
     out["log"] = foamio.parse_log(log)
     if "fatal" in out["log"]:
         raise FoamError("OpenFOAM stopped:\n" + out["log"]["fatal"])

@@ -122,7 +122,16 @@ was real and each has a check.
      it at (4 4) and had every interface face at level 4 (4.3 cells per degree, 1.28 M faces) instead of 3. Get fine planes along the axis from the
      background (finer z layers at the zone's ends), not from an extra level.
    - **Check:** `interface_cells.cells_per_step`, and on the port `ogrid.py check`.
-6. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
+6. **One fine band over the whole interface, side and ends.** A study that takes an MRF study's refinements gets
+   bands made for the frozen rotor's flow, not for the interface. S50 noboth with ESI (spark2, job 643): rc_noboth's
+   bands left the side from z -82.25 to -77.1 and the floor in 1.25 mm cells while the rest of the side was 0.25
+   mm; the interface had unmatched faces, a stray end face 90 degrees off and 141 one-cell floor faces, and the run
+   diverged at its second sliding step (Courant 5.5e7). The hand-built sliding7 set (a 0.125 mm ring r 59.2-60.2
+   over the whole span, a 0.25 mm band r 58.5-61, 0.25 mm cylinders over both ends) ran ESI at 1 degree on all
+   five designs and DES.
+   - **Check:** validation warns when mesh.refine leaves part of the zone's cylinder (side or ends, 2 of a region's
+     cells either side) in cells more than 2x its finest band's (`sliding.refine_coverage`).
+7. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
    as `rotatingWallVelocity` walls. Blades must lie inside it (`movingWallVelocity`). A hexagonal socket is not a
    surface of revolution.
 

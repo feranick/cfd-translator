@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.17.3
+Version: 2026.11.17.9
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -210,6 +210,116 @@ def off_surface(Cf, Sf, h, a, o, R: float, s0: float, s1: float, top: int = 6) -
     return {"max_cells": round(float(cells.max()), 2), "max_deg": round(float(ang.max()), 1),
             "share_over_half_cell": round(float((cells > 0.5).mean()), 4),
             "share_over_30_deg": round(float((ang > 30).mean()), 4), "places": places}
+
+
+COVER_RATIO = 2.0        # a part of the zone's cylinder in cells over this many times its finest band's: uncovered
+
+
+def _contains(r: dict, P: np.ndarray) -> np.ndarray:
+    """Which points P (mm) a mesh.refine region (box, cylinder or hollow cylinder, sphere) holds."""
+    if "box" in r:
+        b = np.asarray(r["box"], float)
+        return np.all((P >= b[:3]) & (P <= b[3:]), axis=1)
+    if "cylinder" in r:
+        c = r["cylinder"]
+        ca = np.asarray(c["axis"], float)
+        ca = ca / np.linalg.norm(ca)
+        dd = P - np.asarray(c.get("center", [0, 0, 0]), float)
+        ax = dd @ ca
+        rad = np.linalg.norm(dd - np.outer(ax, ca), axis=1)
+        s0, s1 = c.get("span", [-np.inf, np.inf])
+        return ((rad <= float(c["radius"])) & (rad >= float(c.get("inner_radius", 0) or 0)) &
+                (ax >= float(s0)) & (ax <= float(s1)))
+    if "at" in r:
+        return np.linalg.norm(P - np.asarray(r["at"], float), axis=1) <= float(r["r"])
+    return np.zeros(len(P), bool)
+
+
+def refine_coverage(zone: dict, refine: list | None, ratio: float = COVER_RATIO) -> dict | None:
+    """Does mesh.refine cover the sliding zone's cylinder (its side and both ends) with its finest band all over?
+    A point counts as covered by a region when the region holds it and the points 2 of the region's cells either
+    side across the surface. Returns None when it does (or when no band reaches the cylinder: the interface is then
+    even at the zone surface's own level), else {finest_mm, side: [{axial_mm: [from, to], size_mm}], ends: [{end,
+    axial_mm, r_mm: [from, to], size_mm}]} for the parts in cells more than ratio x coarser (size_mm None: no region,
+    the zone surface's own level).
+    S50 noboth with ESI (spark2, job 643, 2026-11-17): rc_noboth's refinements, made for the MRF zone, left the
+    side from z -82.25 to -77.1 and the floor in 1.25 mm cells while the rest of the side was 0.25 mm; the interface
+    had unmatched faces, a stray end face 90 degrees off and 141 one-cell floor faces, and the run diverged at its
+    second sliding step. The hand-built sliding7 mesh (0.125 mm ring r 59.2-60.2 over the whole span, 0.25 mm bands
+    over both ends) ran ESI at 1 degree on all five designs."""
+    if zone.get("region") or "span" not in zone or "radius" not in zone:
+        return None
+    regs = [(i, r, float(r["size"])) for i, r in enumerate(refine or [])
+            if isinstance(r, dict) and "distance" not in r and isinstance(r.get("size"), (int, float)) and r["size"] > 0]
+    if not regs:
+        return None
+    a, o = _frame(zone)
+    e1, e2 = _basis(a)
+    R = float(zone["radius"])
+    s0, s1 = map(float, zone["span"])
+    th = np.linspace(0, 2 * np.pi, 16, endpoint=False)
+    D = np.outer(np.cos(th), e1) + np.outer(np.sin(th), e2)            # (16, 3) radial directions
+    ds = min(0.25, (s1 - s0) / 100)
+    s = np.unique(np.concatenate([np.arange(s0, s1, ds), [s1]]))
+    rr = np.linspace(0, R, 41)
+
+    def sizes(P, n):
+        out = np.full(len(P), np.inf)
+        for _, r, h in regs:
+            m = 2 * h
+            ok = _contains(r, P) & _contains(r, P + m * n) & _contains(r, P - m * n)
+            out[ok] = np.minimum(out[ok], h)
+        return out
+    P = (o + np.outer(s, a))[:, None, :] + R * D[None, :, :]            # side: (len(s), 16, 3)
+    side = sizes(P.reshape(-1, 3), np.tile(D, (len(s), 1))).reshape(len(s), len(th)).max(axis=1)
+    ends = {}
+    for nm, se in (("start", s0), ("end", s1)):
+        Q = (o + se * a) + rr[:, None, None] * D[None, :, :]             # (41, 16, 3)
+        ends[nm] = (se, sizes(Q.reshape(-1, 3), np.tile(a, (Q.shape[0] * Q.shape[1], 1))).reshape(len(rr), len(th))
+                    .max(axis=1))
+    fin = np.concatenate([side] + [v for _, v in ends.values()])
+    if not np.isfinite(fin).any():
+        return None
+    finest = float(fin[np.isfinite(fin)].min())
+    lim = ratio * finest * (1 + 1e-9)
+    ax0 = float(o @ a)
+
+    def coarsest(v):
+        return None if not np.isfinite(v).all() else float(v.max())
+    out = {"finest_mm": finest, "side": [], "ends": []}
+    bad = side > lim
+    k = 0
+    while k < len(s):
+        if not bad[k]:
+            k += 1
+            continue
+        j = k
+        while j + 1 < len(s) and bad[j + 1]:
+            j += 1
+        out["side"].append({"axial_mm": [round(float(ax0 + s[k]), 3), round(float(ax0 + s[j]), 3)], "size_mm": coarsest(side[k:j + 1])})
+        k = j + 1
+    for nm, (se, v) in ends.items():
+        b = v > lim
+        if b.any():
+            out["ends"].append({"end": nm, "axial_mm": round(float(ax0 + se), 3),
+                                "r_mm": [round(float(rr[b].min()), 2), round(float(rr[b].max()), 2)],
+                                "size_mm": coarsest(v[b])})
+    return out if out["side"] or out["ends"] else None
+
+
+def coverage_message(name: str, cov: dict, axis_name: str = "the axis") -> str:
+    def sz(x):
+        return f"{x:g} mm cells" if x is not None else "no band (the zone surface's own level)"
+    parts = [f"the side from {axis_name} {p['axial_mm'][0]:g} to {p['axial_mm'][1]:g} ({sz(p['size_mm'])})"
+             for p in cov["side"][:4]]
+    parts += [f"the {e['end']} face at {axis_name} {e['axial_mm']:g}, r {e['r_mm'][0]:g}-{e['r_mm'][1]:g} "
+              f"({sz(e['size_mm'])}; an end inside a wall does not matter)" for e in cov["ends"]]
+    return (f"rotating {name!r}: mesh.refine leaves part of the sliding zone's cylinder outside its finest band "
+            f"({cov['finest_mm']:g} mm): {'; '.join(parts)}. The interface's cells must match all along and around it: "
+            "where it crosses coarser cells it gets unmatched faces and stray end faces (S50 noboth with ESI diverged "
+            "at its second step this way). Cover the whole side with a hollow mesh.refine cylinder on the axis "
+            "(inner_radius; the radius +- 2 cells or more) over the full span, and each end with a cylinder 2 cells "
+            "or more either side of it")
 
 
 def not_round_regions(refine: list, Cf, a, o) -> list:

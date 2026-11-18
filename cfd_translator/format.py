@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.17.1
+Version: 2026.11.17.9
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -1011,6 +1011,18 @@ def validate_study(st: dict) -> dict:
                         "a meshed surface for its cells to slide along it)")
         if two_d:
             errs.append(f"rotating {sliding[0]!r}: no sliding mesh in 2d")
+        try:                                   # a fine band over only part of the interface (sliding.refine_coverage)
+            import numpy as np
+            from .sliding import coverage_message, refine_coverage
+            zs = next(z for z in rot if z.get("motion") == "sliding")
+            cov = refine_coverage(zs, (st.get("mesh") or {}).get("refine"))
+            if cov:
+                ax = np.asarray(zs["axis"], float)
+                ax = ax / np.linalg.norm(ax)
+                nm = next((c for c, e in zip("xyz", np.eye(3)) if ax @ e > 1 - 1e-9), None)
+                warns.append(coverage_message(zs["name"], cov, nm or "s"))
+        except Exception:  # noqa: BLE001 (a warning must never fail a validation)
+            pass
     if isinstance(tr, dict) and "correct_mesh_phi" in tr and (not sliding or not isinstance(tr["correct_mesh_phi"], bool)):
         errs.append("solve.transient.correct_mesh_phi: true | false, with a sliding zone only (OpenFOAM's mesh-flux "
                     "correction at the interface; default true)")

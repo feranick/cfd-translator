@@ -1,6 +1,6 @@
 """transient.py — time-accurate runs: URANS (kOmegaSST), DES (kOmegaSSTDES) and laminar unsteady flow, with
 time averages and runs that continue over several SLURM jobs.
-Version: 2026.11.17.8
+Version: 2026.11.17.9
 
     settings(study, mesh) -> dict | None                 solve.transient with defaults filled in
     write_transient(case, study, plan)                   controlDict, fvSchemes, fvSolution, momentumTransport
@@ -394,7 +394,8 @@ def write_transient(case: Path, study: dict, plan: dict) -> None:
     lc = locator.settings((study.get("solve") or {}).get("transient") or {}) if plan.get("sliding") else None
     if lc:                                       # where a sliding run goes wrong (opt-in: compiled at start)
         funcs.append(locator.function(lc))
-        locator.write_frame(case, plan["sliding"]["axis"], plan["sliding"]["center_mm"])
+        if not (Path(case) / locator.FRAME).is_file():         # write_case's has the radius, span and speed too
+            locator.write_frame(case, plan["sliding"]["axis"], plan["sliding"]["center_mm"])
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       latestTime;\n\nstartTime       0;\n\n"
           f"stopAt          endTime;\n\nendTime         {tr['end_time']:.8g};\n\ndeltaT          {tr['dt']:.6g};\n\n"
           + ("adjustTimeStep  no;\n\nwriteControl    runTime;\n\n" if tr.get("fixed_step") else

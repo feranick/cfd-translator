@@ -285,3 +285,40 @@ def test_sliding_results_follow_the_normal_reliability_tests():
     assert ok and not why
     out["solve"]["sliding"]["interface_balance"] = {"error": 0.05}
     assert not _verdict(out, {"averaged": {}, "checks": {}})[0]
+
+
+# ---- refine_coverage: a fine band over all of the sliding zone's cylinder (S50 noboth ESI, job 643) ----
+def _s50_zone():
+    return {"name": "impeller", "axis": [0, 0, 1], "center": [0, 0, -82.25], "radius": 59.7, "span": [0, 36.0],
+            "motion": "sliding", "rpm": 2900}
+
+
+def _cyl(c, r, span, size, inner=None):
+    d = {"cylinder": {"center": [0, 0, c], "axis": [0, 0, 1], "radius": r, "span": span}, "size": size}
+    if inner:
+        d["cylinder"]["inner_radius"] = inner
+    return d
+
+
+def test_refine_coverage_sliding7_set_covers():
+    from cfd_translator.sliding import refine_coverage
+    s7 = [_cyl(-106, 64, [0, 64], 1.25), _cyl(-47.5, 61, [0, 2.5], 0.25), _cyl(-83.5, 61, [0, 2.5], 0.25),
+          _cyl(-83.5, 61, [0, 38.5], 0.25, 58.5), _cyl(-83.5, 60.2, [0, 38.5], 0.125, 59.2)]
+    assert refine_coverage(_s50_zone(), s7) is None
+    assert refine_coverage(_s50_zone(), []) is None                  # no band at all: even at the surface level
+    assert refine_coverage(_s50_zone(), [_cyl(-106, 64, [0, 64], 1.25)]) is None   # one band all over
+
+
+def test_refine_coverage_mrf_set_leaves_the_floor_coarse():
+    from cfd_translator.sliding import coverage_message, refine_coverage
+    rc = [_cyl(-106, 64, [0, 64], 1.25), _cyl(-77.1, 61, [0, 30.8], 0.25, 58.5)]
+    cov = refine_coverage(_s50_zone(), rc)
+    assert cov["finest_mm"] == 0.25
+    side = cov["side"][0]
+    assert side["axial_mm"][0] == -82.25 and -77.3 < side["axial_mm"][1] < -77.0 and side["size_mm"] == 1.25
+    assert {e["end"] for e in cov["ends"]} == {"start", "end"}
+    msg = coverage_message("impeller", cov, "z")
+    assert "the side from z -82.25 to" in msg and "1.25 mm cells" in msg
+    # off the band and inside no region: 'no band'
+    cov2 = refine_coverage(_s50_zone(), [_cyl(-77.1, 61, [0, 30.8], 0.25, 58.5)])
+    assert cov2["side"][0]["size_mm"] is None and "no band" in coverage_message("impeller", cov2)
