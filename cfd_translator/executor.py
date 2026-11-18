@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.18.4
+Version: 2026.11.18.5
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -1222,6 +1222,16 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
             continue
         if state == "unknown":
             out[n] = {"state": "unknown", **base, "why": s.get("why")}
+            continue
+        if state == "waiting":
+            # run.after: queued behind other runs (llmt-runtime 2026.11.18.1). Not final: carbonio, 2026-11-18, cfdt
+            # 2026.11.18.4 wrote it as a failed result ('the job left the queue without a result') while job 5904
+            # was pending on its dependency, and the runtime then no longer moved its wait
+            st = {"state": "waiting", **base, "reason": s.get("reason")}
+            for k in ("expected_start", "expected_start_note"):
+                if s.get(k):
+                    st[k] = s[k]
+            out[n] = st
             continue
         if state == "queued":
             if ahead is None:

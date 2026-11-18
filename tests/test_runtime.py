@@ -512,3 +512,22 @@ def test_drop_next_moves_waiting_studies_back_before_the_cancel(slurm, monkeypat
     gone = json.loads((slurm / "jobs" / "101.json").read_text())
     assert gone["state"] == "CANCELLED"
     assert executor.drop_next(a / "s") is None                    # once
+
+
+def test_a_waiting_study_is_not_written_as_failed(slurm, monkeypatch):
+    """carbonio (SLURM 26.05, cfdt 2026.11.18.4): a run.after study pending on its dependency (job 5904) was reported
+    'failed: the job left the queue without a result' and its result file written; llmt-runtime calls it 'waiting'."""
+    monkeypatch.setenv("FAKE_SBATCH_PENDING", "1")
+    _fake_job(slurm, "100", pid=os.getpid())
+    a = _request(slurm, "100")
+    req_b = slurm.parent / "out" / "run_b"
+    (req_b / "b").mkdir(parents=True)
+    study_b = dict(COUETTE, run={"after": f"{a.name}/s"})
+    (req_b / "request.json").write_text(json.dumps({"names": ["b"], "solver": "ref", "started": time.time(),
+                                                    "studies": {"b": study_b}}))
+    jb = executor.submit(req_b, "b", study_b)["job_id"]
+    st = executor.slurm_states(req_b, ["b"], {"b": study_b})["b"]
+    assert st["state"] == "waiting" and st["job_id"] == jb and st["reason"].startswith(f"after {a.name}/s")
+    assert not (req_b / "b" / "b.json").exists()
+    s2 = api.status(str(req_b), 0.0)
+    assert s2["progress"]["b"]["state"] == "waiting" and not s2["studies"]
