@@ -616,3 +616,4 @@ other/supercomputers/openfoam-v2506-hpc-recipes.md   building and running ESI Op
 | 2026.10.16.1 | First version: steady incompressible (laminar, kOmegaSST), internal/external, 2D/3D; own polyMesh writer; Gmsh tets and swept meshes with boundary layers; reference 2D solver; 8 benchmarks; feat loads; MCP server. Tested without OpenFOAM and Gmsh (15 tests; reference benchmarks pass). |
 
 Author: Nicola Ferralis <feranick@hotmail.com>
+ 
