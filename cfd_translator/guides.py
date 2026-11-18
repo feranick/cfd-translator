@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.17.5
+Version: 2026.11.18.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -30,7 +30,11 @@ GUIDES = {
             "solve.backend 'esi' (explicit, sliding only): the same mesh, checks and steady MRF start, then the sliding "
             "run in ESI OpenFOAM (v2506 pimpleFoam, a cyclicAMI pair on the zone's cylinder) at a fixed "
             "degrees_per_step (1 by default, no cells_per_step cap): the production route for sliding studies at 1 "
-            "degree a step (rung 2: stable at Courant 6-11 where OpenFOAM 14 diverged). Results as on OpenFOAM 14, plus solve.sliding.ami (the AMI's weights). Needs "
+            "degree a step (rung 2: stable at Courant 6-11 where OpenFOAM 14 diverged). Results as on OpenFOAM 14, plus solve.sliding.ami (the AMI's weights). "
+            "Cost about 150 core-seconds per million cells per step: the S50 on a 13.2 M-cell mesh takes 110 s a step on "
+            "18 ranks, so 8 revolutions (2880 steps) take about 4 days on one spark or mochi (the run continues across "
+            "jobs by itself); run half a revolution first to check the coupling. Cover the whole interface with one fine "
+            "band (validation warns otherwise). Needs "
             "ESI OpenFOAM on the machine (machines(): status openfoam_esi). Not with energy, cavitation, porous zones, "
             "scalars, external flow, p_below or the locator (other/esi_v2506_backend.md).",
         ],

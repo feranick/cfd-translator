@@ -154,6 +154,18 @@ says so in the results.
 - **Stored per backend and machine:** measured core-seconds per million cells per step, as a bench entry, not one
   constant. Figures so far: v2506 about 190 (Perlmutter, 13.7 M cells, 512 ranks); v14 about 98 (spark2, 8.65 M
   cells, 18 ranks, 634's steps 3-10). Different hardware, so not yet comparable.
+- **Measured through cfdt (17-18 Nov), fixed 1° per step:**
+
+  | case | machine, ranks | cells | s per step | core-s per M cells per step | 8 revolutions (2880 steps) |
+  |---|---|---|---|---|---|
+  | S50 noboth, sliding7's mesh block (646) | spark2, 18 | 13.2 M | 110 | about 150 | about 88 h of steps: about 4 days on one spark or mochi with meshing and the steady start |
+  | rung 2, g = 5 (638, 640) | spark1, 18 | 0.46 M | 2.0 | about 78 | 1.6 h |
+
+  - 646's coupling: 0.34 % of the interface faces unmatched (643 on the MRF study's refinements: 5 %), AMI weights
+    averaging 1.002, interface flux error 6.8e-4. The 8-revolution run is mochi job 3288
+    (`run_20261117_s50_noboth_esi_m7_8rev`).
+  - Against v14 at Courant 2 on the same mesh: 3 times the cost per revolution on rung 2 (642); on the S50 its
+    clearance cells would force about 1/20° a step, so v14 is not an option there.
 - **Suggestion rule:** suggest the ESI backend when the v14 estimate (steps from `cells_per_step`, cells, cost
   per cell) exceeds about 4 times the ESI estimate for the same study.
 
