@@ -486,3 +486,29 @@ def test_waits_keep_to_the_calls_deadline(ms, tmp_path, monkeypatch):
     assert r["state"] == "running" and 6 < waits[0] <= 7
     api.in_worker("meshing", "case", {"study": {}, "name": "d"}, 30)
     assert 29 < waits[1] <= 30
+
+
+def test_drop_next_moves_waiting_studies_back_before_the_cancel(slurm, monkeypatch):
+    """cfdt 2026.11.18.4 (llmt-runtime's order since 2026.11.18.2): a 'together' run that ends in its job drops its
+    waiting next job; a study of another request with run.after on that run waited for both jobs, and must follow the
+    current job again before the next one is cancelled (afterany counts a cancel as an end)."""
+    monkeypatch.setenv("FAKE_SBATCH_PENDING", "1")
+    _fake_job(slurm, "100", pid=os.getpid())                     # the run's current job: running
+    _fake_job(slurm, "101", state="PENDING")                     # its next job, waiting behind it
+    a = _request(slurm, "100", job={"next_job": {"job_id": "101", "segment": 2}, "chain": "together"})
+    req_b = slurm.parent / "out" / "run_b"
+    (req_b / "b").mkdir(parents=True)
+    study_b = dict(COUETTE, run={"after": f"{a.name}/s"})
+    (req_b / "request.json").write_text(json.dumps({"names": ["b"], "solver": "ref", "started": time.time(),
+                                                    "studies": {"b": study_b}}))
+    info = executor.submit(req_b, "b", study_b)
+    jb = info["job_id"]
+    assert sorted(J.read_job(req_b / "b")["after_jobs"]) == ["100", "101"]
+    assert executor.drop_next(a / "s") == "101"
+    assert J.read_job(req_b / "b")["after_jobs"] == ["100"]
+    rec = json.loads((slurm / "jobs" / f"{jb}.json").read_text())
+    assert any("Dependency=afterany:100" in u for u in rec.get("updates", [])), rec.get("updates")
+    assert J.read_job(a / "s")["next_job"]["dropped"]
+    gone = json.loads((slurm / "jobs" / "101.json").read_text())
+    assert gone["state"] == "CANCELLED"
+    assert executor.drop_next(a / "s") is None                    # once

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.18.3
+Version: 2026.11.18.4
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -911,7 +911,8 @@ def validate_study(st: dict) -> dict:
             if "chain" in tr and tr["chain"] not in ("together", "share"):
                 errs.append("solve.transient.chain: 'together' (default: each next SLURM job is submitted as the "
                             "previous one starts, so a run's jobs follow each other) or 'share' (submitted at its end: "
-                            "runs submitted meanwhile take turns with it)")
+                            "runs submitted meanwhile take turns with it); where the machine's scheduler is multifactor with an "
+                            "age weight, the router defaults to 'share' (machines(): slurm.chain_together)")
             pb = tr.get("p_below")
             if pb is not None and (not isinstance(pb, list) or not pb or len(pb) > 8
                                    or not all(_num(v) and v > 0 for v in pb) or len(set(pb)) != len(pb)):

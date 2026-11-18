@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.18.3
+Version: 2026.11.18.4
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -975,15 +975,23 @@ def hand_over(folder: Path) -> dict | None:
 
 
 def drop_next(folder: Path) -> str | None:
-    """The run ends in this job (done, failed, stopped): scancel the waiting next job. Returns its id."""
+    """The run ends in this job (done, failed, stopped): scancel the waiting next job. Returns its id.
+    In llmt-runtime's order (its stop_after_job, 2026.11.18.2): marked dropped first, the studies waiting for this run
+    (run.after) moved back to the current job, then the cancel. afterany counts a cancelled job as ended, so a study
+    left waiting on the dropped job could start while the current one still runs (the runtime's gate would send it back,
+    but only after it took a job slot)."""
     folder = Path(folder)
     cur = J.read_job(folder)
     nxt = (cur.get("next_job") or {}).get("job_id")
-    if not nxt:
+    if not nxt or cur["next_job"].get("dropped"):
         return None
-    J.scancel([str(nxt)])
     cur["next_job"] = dict(cur["next_job"], dropped=round(time.time(), 1))
     write_atomic(folder / "job.json", json.dumps(cur))
+    try:
+        RT.jobs.notify_waiters(folder.parent, folder.name)     # waiting studies follow the current job again
+    except Exception:  # noqa: BLE001 (the cancel must happen)
+        pass
+    J.scancel([str(nxt)])
     return str(nxt)
 
 
