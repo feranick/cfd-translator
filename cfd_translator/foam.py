@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.17.9
+Version: 2026.11.18.6
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -531,6 +531,8 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     if deadline is not None:
         from .transient import request_stop
         stop = (lambda: request_stop(case))
+    if transient:
+        align_writes(case)
     from .diverge import attach
     try:
         rc = _step(foam, solve[0], solve[1], case, timeout, raise_on_error=False, deadline=deadline, on_deadline=stop)
@@ -557,14 +559,66 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
     if transient:
         from .transient import latest_time, reset_stop
         reset_stop(case)
-        m = re.search(r"endTime\s+([-+0-9.eE]+);", (case / "system" / "controlDict").read_text())
+        cdt = (case / "system" / "controlDict").read_text()
+        m = re.search(r"endTime\s+([-+0-9.eE]+);", cdt)
         t = latest_time(case)
-        reached = bool(m and t is not None and t >= float(m.group(1)) * (1 - 1e-6))
+        reached = bool(m and t is not None and t >= end_tolerance(float(m.group(1)), cdt))
         out["time"] = t
     out["reached_end"] = reached
     if procs > 1 and reached and not dec:
         _step(foam, "reconstructPar -latestTime", "log.reconstructPar", case, timeout)
     return out
+
+
+def align_writes(case: Path) -> float | None:
+    """Make endTime a write time for this run. OpenFOAM counts write times from the run's own start time, so after a
+    resume (each SLURM job of a multi-job run starts from the latest time written) the write grid shifts and the last
+    step is written only by chance. carbonio, 2026-11-18: a run resumed at 0.0021264 s wrote 0.0028161 and 0.0031609
+    s, then reached endTime 0.00344828 without writing it; the next job started again from 0.0031609 s, and so on until
+    max_jobs. The top-level writeInterval becomes (endTime - start) / k, the nearest k at or above the asked interval's
+    count. Returns the interval written, or None (nothing to do)."""
+    from .transient import latest_time
+    f = Path(case) / "system" / "controlDict"
+    try:
+        cd = f.read_text()
+    except OSError:
+        return None
+    wc = re.search(r"^writeControl\s+(\w+)\s*;", cd, re.M)
+    if not wc or wc.group(1) not in ("runTime", "adjustableRunTime", "adjustable"):
+        return None
+    m_end = re.search(r"^endTime\s+([-+0-9.eE]+)\s*;", cd, re.M)
+    m_w = re.search(r"^writeInterval\s+([-+0-9.eE]+)\s*;", cd, re.M)
+    m_w0 = re.search(r"^//\s*cfdt writeInterval\s+([-+0-9.eE]+)", cd, re.M)     # the study's, kept across jobs
+    if not (m_end and m_w):
+        return None
+    end, w = float(m_end.group(1)), float(m_w0.group(1) if m_w0 else m_w.group(1))
+    t0 = latest_time(case) or 0.0
+    span = end - t0
+    if span <= 0 or w <= 0:
+        return None
+    k = max(1, math.ceil(span / w - 1e-6))
+    w_new = span / k
+    cd = re.sub(r"^writeInterval\s+[-+0-9.eE]+\s*;", f"writeInterval   {w_new:.12g};", cd, count=1, flags=re.M)
+    if not m_w0:
+        cd = cd.replace(f"writeInterval   {w_new:.12g};", f"writeInterval   {w_new:.12g};\n// cfdt writeInterval {w:.12g}", 1)
+    f.write_text(cd)
+    return w_new
+
+
+def end_tolerance(end: float, control_dict: str) -> float:
+    """The time from which a transient run has reached endTime. A fixed step stops within half a step of endTime, not
+    on it: OpenFOAM runs while t < endTime - deltaT/2. carbonio, 2026-11-18: 60 steps of 1 degree ended at
+    0.0034482759 s against endTime 0.00344828 (1e-6 relative was 0.0034482766), so the run was 'not finished' and every
+    next job (max_jobs) started again at the end time."""
+    tol = end * 1e-6
+    fixed = re.search(r"adjustTimeStep\s+(no|off|false)\s*;", control_dict)
+    dt = re.search(r"deltaT\s+([-+0-9.eE]+);", control_dict)
+    if fixed and dt:
+        try:
+            tol = max(tol, 0.5 * float(dt.group(1)))
+        except ValueError:
+            pass
+    return end - tol
 
 
 class _Decomposed:

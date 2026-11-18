@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.18.2
+Version: 2026.11.18.6
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -820,7 +820,9 @@ def _verdict(out: dict, res: dict) -> tuple[bool, list]:
         if not sv.get("settled"):
             why.append("the time averages have not converged "
                        f"({'; '.join(av.get('why', [])) or 'no averaged history: see results.averaged'})")
-        if sv.get("reached_time") is not None and sv["reached_time"] < sv.get("end_time", 0) * (1 - 1e-6):
+        ts = sv.get("time_step") or {}
+        tol = max(sv.get("end_time", 0) * 1e-6, 0.5 * float(ts.get("dt") or 0) if ts.get("fixed") else 0.0)
+        if sv.get("reached_time") is not None and sv["reached_time"] < sv.get("end_time", 0) - tol:
             why.append(f"the run stopped at t = {sv['reached_time']} s of {sv['end_time']} s")
         ch = res.get("checks", {})
         if ch.get("mass_balance", {}).get("error", 0) > 1e-3:

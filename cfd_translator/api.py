@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.3
+Version: 2026.11.18.6
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -862,8 +862,10 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
             if n in st:
                 s_ = st[n]
                 studies[n] = {k: s_.get(k) for k in ("state", "job_id", "reason", "expected_start", "expected_start_slurm",
-                                                      "ahead", "stage", "iteration", "max_iterations", "time", "end_time",
-                                                      "eta_min_max", "job_elapsed_min", "why")
+                                                      "expected_start_note", "ahead", "stage", "iteration",
+                                                      "max_iterations", "time", "end_time", "eta_min_max",
+                                                      "job_elapsed_min", "job_ends", "job_limit", "job_segment",
+                                                      "next_job_waiting", "stop_after_job", "why")
                               if s_.get(k) is not None}
                 if isinstance(s_.get("mesh"), dict) and s_["mesh"].get("cells"):
                     studies[n]["mesh_cells"] = s_["mesh"]["cells"]
@@ -875,7 +877,7 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
                 studies[n] = {"state": "cancelled", "job_id": jid}
             else:
                 studies[n] = {"state": "local", "job_id": jid}
-        live = any(v.get("state") in ("queued", "running") for v in studies.values())
+        live = any(v.get("state") in ("queued", "waiting", "running", "unknown") for v in studies.values())
         if active and not live:
             continue
         out.append({"request": str(req), "started": meta.get("started"), "active": live, "studies": studies})

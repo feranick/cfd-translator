@@ -116,7 +116,8 @@ def _fake_job(state_dir: Path, jid: str, **rec) -> None:
     """A job in the fake's queue (a record as its sbatch writes them; pid 999999: not running)."""
     d = state_dir / "jobs"
     d.mkdir(parents=True, exist_ok=True)
-    base = {"name": "cfdt:r:s", "cpus": 1, "t0": time.time(), "log": "x", "pid": 999999, "node": "fake1"}
+    base = {"name": "cfdt:r:s", "cpus": 1, "t0": time.time(), "log": str(state_dir / f"{jid}.log"), "pid": 999999,
+            "node": "fake1"}           # its log in the fake's folder (a bare "x" landed in the repo when a test cancelled it)
     (d / f"{jid}.json").write_text(json.dumps({**base, **rec}))
 
 
@@ -531,3 +532,14 @@ def test_a_waiting_study_is_not_written_as_failed(slurm, monkeypatch):
     assert not (req_b / "b" / "b.json").exists()
     s2 = api.status(str(req_b), 0.0)
     assert s2["progress"]["b"]["state"] == "waiting" and not s2["studies"]
+    # jobs(): the waiting study is listed as active (carbonio, 2026.11.18.5: jobs(active=True) left it out), and the
+    # running run shows when its job stops itself
+    t = time.time()
+    (a / "s" / "transient.json").write_text(json.dumps({"job": {"id": "100", "segment": 1, "stops_at": t + 600,
+                                                                "limit_at": t + 900, "next_job": "101"}}))
+    reqs = {r["request"]: r for r in api.jobs(10, active=True)["requests"]}
+    assert reqs[str(req_b)]["studies"]["b"]["state"] == "waiting" and reqs[str(req_b)]["active"]
+    assert "after " in reqs[str(req_b)]["studies"]["b"]["reason"]
+    ra = reqs[str(a)]["studies"]["s"]
+    assert ra["state"] == "running" and ra["job_segment"] == 1 and ra["next_job_waiting"] == "101"
+    assert ra["job_ends"][-6] in "+-"

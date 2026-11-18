@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.18.5
+Version: 2026.11.18.6
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -1272,6 +1272,11 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
             st = {**prog, "state": "running", **base, "job_elapsed_min": s.get("job_elapsed_min")}
             if s.get("node"):
                 st["node"] = s["node"]
+            try:                       # a multi-job run's current job: job_ends, its segment, a waiting next job
+                from .api import job_end_info
+                st.update(job_end_info(request / n))
+            except Exception:  # noqa: BLE001
+                pass
             out[n] = st
             continue
         why = s.get("why") or "the job left the queue without a result"

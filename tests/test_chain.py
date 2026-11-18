@@ -205,3 +205,37 @@ def test_chain_validation():
     assert validate_study(st)["ok"]
     bad = _study(chain="alternate")
     assert any("solve.transient.chain" in e for e in validate_study(bad)["errors"])
+
+
+def test_a_fixed_step_run_reaches_its_end_within_half_a_step():
+    """carbonio, 2026-11-18: 60 steps of 1 degree ended at 0.0034482759 s against endTime 0.00344828; with a 1e-6
+    relative tolerance the run was 'not finished' and its next jobs started again at the end time."""
+    from cfd_translator.foam import end_tolerance
+    fixed = "endTime 0.00344828;\ndeltaT 5.747126e-05;\nadjustTimeStep  no;\n"
+    assert 0.0034482759 >= end_tolerance(0.00344828, fixed)
+    assert 0.0034 < end_tolerance(0.00344828, fixed)                       # a step short is not the end
+    adj = "endTime 0.00344828;\ndeltaT 5.747126e-05;\nadjustTimeStep  yes;\n"
+    assert 0.0034482759 < end_tolerance(0.00344828, adj)                   # adjustable: it lands on endTime
+
+
+def test_end_time_is_a_write_time_after_a_resume(tmp_path):
+    """carbonio, 2026-11-18: a run resumed at 0.0021264381 s wrote 0.0028160937 and 0.0031609215 (its own write grid
+    from its start) and reached endTime 0.00344828 unwritten: every next job started again from 0.0031609215."""
+    from cfd_translator.foam import align_writes
+    case = tmp_path / "c"
+    (case / "system").mkdir(parents=True)
+    (case / "processor0" / "0.0021264381").mkdir(parents=True)
+    (case / "system" / "controlDict").write_text(
+        "startFrom       latestTime;\nendTime         0.00344828;\ndeltaT          5.74713e-05;\nadjustTimeStep  no;\n"
+        "writeControl    runTime;\n\nwriteInterval   0.000344828;\n\nfunctions\n{\n    f\n    {\n        writeInterval   1;\n"
+        "    }\n}\n")
+    w = align_writes(case)
+    t0, end = 0.0021264381, 0.00344828
+    k = round((end - t0) / w)
+    assert k == 4 and abs(t0 + k * w - end) < 1e-12 and w <= 0.000344828 * 1.01
+    cd = (case / "system" / "controlDict").read_text()
+    assert "        writeInterval   1;" in cd and "// cfdt writeInterval 0.000344828" in cd
+    (case / "processor0" / "0.0031609215").mkdir()                       # the next job: from the study's interval
+    w2 = align_writes(case)
+    assert round((end - 0.0031609215) / w2) == 1
+    assert (case / "system" / "controlDict").read_text().count("// cfdt writeInterval") == 1
