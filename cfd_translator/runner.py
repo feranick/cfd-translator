@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.17.9
+Version: 2026.11.18.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -244,7 +244,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                 out["solve"].update(converged=False, transient=True, model=tr["model"], end_time=tr["end_time"],
                                     reached_time=info.get("time"), time_steps=tstate.get("time_steps"),
                                     jobs=tstate.get("segments", 0) + 1, init_iterations=tstate.get("init_iterations"),
-                                    averaged_fields=bool(fields.get("averaged")))
+                                    averaged_fields=bool(fields.get("averaged")),
+                                    **({"stopped": tstate["stopped"]} if tstate.get("stopped") else {}))
                 out["solve"].pop("first_residuals", None)
                 from .transient import courant_stats
                 co = courant_stats(case / "log.foamRun")
@@ -973,6 +974,13 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
     def save():
         sf.write_text(json.dumps(state))
     margin = min(900.0, max(60.0, 0.1 * timeout))
+    job = os.environ.get("SLURM_JOB_ID")
+    if job:                                              # when this job stops itself (diverge-free): job_ends
+        state["job"] = {"id": job, "segment": int(state.get("segments", 0)) + 1, "started": round(t_job, 1),
+                        "stops_at": round(t_job + timeout - margin, 1), "limit_at": round(t_job + timeout, 1)}
+        save()
+        _chain_next(folder, study, tr, state, timeout, warns)
+        save()
     if state.get("correct_mesh_phi") is False:          # switched off by an earlier job of this run
         tr["correct_mesh_phi"] = False
     if tr["init"] and not state.get("init_done"):
@@ -1099,10 +1107,16 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         return info
     state["segments"] = int(state.get("segments", 0)) + 1
     save()
-    job = os.environ.get("SLURM_JOB_ID")
-    if job and state["segments"] < tr["max_jobs"]:
-        from .executor import submit
-        nxt = submit(folder.parent, folder.name, study, after=job, segment=state["segments"] + 1)
+    from .executor import STOP_FILE, hand_over, stop_requested, submit
+    if job and stop_requested(folder):
+        # cancel(at='job_end'): this job's results, no next job; the run can go on from them (solve.transient.continue)
+        state["stopped"] = f"after job {state['segments']} at t = {info.get('time')} s (cancel at job_end)"
+        save()
+        warns.append(f"the run was stopped at the end of job {state['segments']} as asked (cancel at job_end, "
+                     f"{STOP_FILE}): results at t = {info.get('time')} s of {tr['end_time']} s; go on with "
+                     "solve.transient.continue: '<request>/<study>'")
+    elif job and state["segments"] < tr["max_jobs"]:
+        nxt = hand_over(folder) or submit(folder.parent, folder.name, study, after=job, segment=state["segments"] + 1)
         if nxt.get("job_id"):
             return {"continued": True, "time": info.get("time"), "end_time": tr["end_time"], "next_job": nxt["job_id"],
                     "segment": state["segments"] + 1}
@@ -1115,6 +1129,35 @@ def _solve_transient(case: Path, study: dict, plan: dict, timeout: float, procs:
         fm = foam.find_foam()
         foam._step(fm, "reconstructPar -latestTime", "log.reconstructPar", case, 3600)
     return info
+
+
+def _chain_next(folder: Path, study: dict, tr: dict, state: dict, timeout: float, warns: list) -> None:
+    """solve.transient.chain 'together' (the default): the run's next job is submitted as this one starts, so it
+    waits behind this job only, not behind the jobs other runs submit meanwhile (executor.presubmit_next). Not when
+    this job is the run's last allowed one, when a stop at its end was asked, or when the study's estimate fits in
+    this job."""
+    from .executor import chain_of, estimate_minutes, presubmit_next, stop_requested
+    seg = int(state.get("segments", 0)) + 1
+    if chain_of(study) != "together" or seg >= tr["max_jobs"] or stop_requested(folder):
+        return
+    if seg == 1:
+        try:
+            est = estimate_minutes(study, "foam")
+        except Exception:  # noqa: BLE001
+            est = None
+        if est is not None and est < 0.8 * timeout / 60:
+            return
+    try:
+        nxt = presubmit_next(folder, study, seg + 1)
+    except Exception as exc:  # noqa: BLE001 (the run goes on; its next job is submitted at its end instead)
+        nxt, why = None, f"{type(exc).__name__}: {exc}"
+    else:
+        why = "sbatch refused it"
+    if nxt:
+        state["job"]["next_job"] = str(nxt["job_id"])
+    else:
+        warns.append(f"chain 'together': the next job could not be submitted early ({why}); it is submitted at the "
+                     "end of this one instead")
 
 
 def upgrade_plan(plan: dict, study: dict) -> list[str]:

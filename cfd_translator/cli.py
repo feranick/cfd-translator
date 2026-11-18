@@ -1,5 +1,5 @@
 """cli.py — the `cfdt` command line. Every command prints JSON.
-Version: 2026.11.13.7
+Version: 2026.11.18.2
 
     cfdt status                          versions; OpenFOAM and Gmsh found or not
     cfdt format > study_format.json      the study format
@@ -68,6 +68,8 @@ def main(argv=None) -> None:
     p = sub.add_parser("cancel")
     p.add_argument("request")
     p.add_argument("names", nargs="*")
+    p.add_argument("--at", choices=["now", "job_end"], default=None,
+                   help="job_end: a multi-job transient run finishes its current SLURM job and chains no next one")
     p = sub.add_parser("reprocess", help="results again from finished cases, without solving")
     p.add_argument("request")
     p.add_argument("names", nargs="*")
@@ -133,7 +135,7 @@ def _command(a) -> dict:
     elif a.cmd == "jobs":
         out = api.jobs(a.limit, a.active)
     elif a.cmd == "cancel":
-        out = api.cancel(a.request, a.names or None)
+        out = api.cancel(a.request, a.names or None, a.at)
     elif a.cmd == "reprocess":
         on = None
         if getattr(a, "onset", None):

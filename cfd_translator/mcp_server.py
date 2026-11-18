@@ -1,5 +1,5 @@
 """mcp_server.py — MCP server: lets LLM-based tools run CFD studies with Gmsh and OpenFOAM.
-Version: 2026.11.13.7
+Version: 2026.11.18.2
 
 Tools (all JSON):
   study_format      the study format: geometry, domain, fluids, models, boundary conditions, selectors. Read it first.
@@ -277,10 +277,11 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
 
 @server.tool()
 @GUARD.tool(ToolError)
-def cancel(request: str, names: list[str] | None = None) -> dict:
+def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:
     """Stops a request's studies (or the named ones): scancel for SLURM jobs, a cancel flag for local
-    ones. Returns their states."""
-    return api.cancel(request, names)
+    ones. Returns their states. at 'job_end': a multi-job transient run finishes its current SLURM job (results at
+    the time reached) and chains no next one (solve.transient.continue goes on from it)."""
+    return api.cancel(request, names, at)
 
 
 @server.tool()

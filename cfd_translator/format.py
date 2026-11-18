@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.17.9
+Version: 2026.11.18.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -31,7 +31,7 @@ R_UNIVERSAL = 8314.462618          # J/(kmol K)
 MODELS = ("laminar", "kOmegaSST", "kOmegaSSTDES")
 TRANSIENT_KEYS = {"end_time", "average_from", "max_co", "write_interval", "init", "max_jobs", "dt", "continue",
                   "degrees_per_step", "correct_mesh_phi", "init_from", "init_fields", "p_below", "p_below_regions", "free_flow", "locator",
-                  "cells_per_step"}
+                  "cells_per_step", "chain"}
 PROFILES = ("uniform", "parabolic")
 BOX_SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 RESERVED = ("walls", "frontAndBack")
@@ -149,7 +149,7 @@ STUDY_KEYS = {
             "max_cells, procs (snappy ranks), optimize}",
     "solve": "{iterations (2000; 3000 kOmegaSST), residual (1e-5), relax: {U, other, p}, procs, energy: transonic, "
              "consistent, start, ramp; average (true | false | {window, min_iterations, drift, scatter}); "
-             "transient: {end_time s, average_from, max_co (null: fixed dt), write_interval, init (steady its first), max_jobs, "
+             "transient: {end_time s, average_from, max_co (null: fixed dt), write_interval, init (steady first), max_jobs, chain, "
              "continue, degrees_per_step (sliding mesh)}: time averages; needed by kOmegaSSTDES; init_from "
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
@@ -906,6 +906,10 @@ def validate_study(st: dict) -> dict:
                 errs.append("solve.transient.init: steady iterations before the transient run (integer >= 0)")
             if "max_jobs" in tr and (not isinstance(tr["max_jobs"], int) or not 1 <= tr["max_jobs"] <= 50):
                 errs.append("solve.transient.max_jobs: 1-50 SLURM jobs in a row (default 10)")
+            if "chain" in tr and tr["chain"] not in ("together", "share"):
+                errs.append("solve.transient.chain: 'together' (default: each next SLURM job is submitted as the "
+                            "previous one starts, so a run's jobs follow each other) or 'share' (submitted at its end: "
+                            "runs submitted meanwhile take turns with it)")
             pb = tr.get("p_below")
             if pb is not None and (not isinstance(pb, list) or not pb or len(pb) > 8
                                    or not all(_num(v) and v > 0 for v in pb) or len(set(pb)) != len(pb)):

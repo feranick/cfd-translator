@@ -227,8 +227,9 @@ def test_eta_start_still_applied_to_queued_jobs(slurm, monkeypatch):
     monkeypatch.setattr(executor, "running_etas", lambda: {"1001": {"node": "fake1", "cpus": 1, "eta_min": 30.0,
                                                                      "name": "r/a"}})
     st = executor.slurm_states(req, ["s"], {"s": COUETTE})["s"]
-    assert st["state"] == "queued" and st["ahead"] == 0 and st["expected_start_slurm"] == later
-    assert st["expected_start"] < later and "own progress" in st["expected_start_note"]
+    assert st["state"] == "queued" and st["ahead"] == 0 and st["expected_start_slurm"].startswith(later)
+    assert st["expected_start"][:19] < later and "own progress" in st["expected_start_note"]
+    assert st["expected_start"][-6] in "+-" and st["expected_start_slurm"][-6] in "+-"     # with the UTC offset
     # SLURM's one-year placeholder (a job ahead without a time limit, carbonio 2026.11.10): no start, the runtime's note
     monkeypatch.setenv("FAKE_START", _t.strftime("%Y-%m-%dT%H:%M:%S", _t.localtime(_t.time() + 365 * 86400)))
     monkeypatch.setattr(executor, "running_etas", lambda: {})

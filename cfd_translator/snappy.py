@@ -1,6 +1,6 @@
 """snappy.py — 3D meshes with snappyHexMesh: hexahedra refined towards the part, cut and snapped to its
 surface and sharp edges, with prism layers on its walls.
-Version: 2026.11.13.2
+Version: 2026.11.18.2
 
     mesh_snappy(study, folder) -> PolyMesh
 
@@ -876,6 +876,9 @@ def memory_estimate(procs: int, cells: float | None, triangles: int | None) -> d
             "triangles": int(triangles) if triangles else None, "cells_estimate": int(cells) if cells else None}
 
 
+KILL_LOW = 0.5      # a snappyHexMesh killed (signal 9) below this share of the job's memory: not the memory limit
+
+
 def meshing_procs(procs: int, cells: float | None, ntri: int, lim: float | None, given: bool) -> tuple[int, dict, str | None]:
     """snappyHexMesh's ranks within the job's memory (lim, MB): fewer than procs when the estimate does not fit and
     mesh.procs was not given. Returns (ranks, the estimate for them with limit_mb and procs, a note or None)."""
@@ -1261,6 +1264,7 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
     layers_dropped = False
     kept_layered = None
     crashes = []
+    kills = []
     for layered in (True, False):
         quality_retried = False
         while True:
@@ -1297,6 +1301,29 @@ def _mesh_snappy(study: dict, folder: Path, notes: list):
                 # layers), not a meshing failure
                 cells = list(log["cells"].values())
                 pk = {k.split(":", 1)[1]: v for k, v in foam.PEAK_MB.items() if k.startswith("log.snappyHexMesh:")}
+                peak = float(foam._LAST_PEAK[0] or 0.0)
+                stg = stage_of(_read(sd / "log.snappyHexMesh"))
+                if lim and peak and peak < KILL_LOW * lim:
+                    # far below the job's limit: not the job's memory (mochi, Rogue DES, 2026-11-17: killed while
+                    # snapping on 20 ranks at a measured 3.6 GB of 56 GB, marked out of memory with "give it 112G";
+                    # the same geometry meshed on 6 ranks). A parallel fault, or a rank's spike between the samples
+                    kills.append({"procs": procs, "stage": stg, "peak_mb": round(peak)})
+                    what = (f"snappyHexMesh was killed{' while ' + stg if stg else ''} (signal 9) on {procs} rank(s) at a "
+                            f"measured peak of {peak / 1024:.3g} GB of the job's {lim / 1024:.3g} GB (sampled every "
+                            f"{foam.MEM_SAMPLE_S:g} s): probably not the job's memory limit")
+                    if procs > 1 and len(kills) == 1:
+                        nxt = max(1, procs // 3)
+                        notes.append(f"{what}: made again on {nxt} rank(s)")
+                        procs = nxt
+                        if procs > 1:
+                            (sd / "system" / "decomposeParDict").write_text(
+                                decompose_dict(procs, np.asarray(st["hi"], float) - np.asarray(st["lo"], float)))
+                        attempt += 1
+                        continue
+                    raise MeshError(f"{what}" + (f"; it was killed on {kills[0]['procs']} ranks first" if len(kills) > 1
+                                                 else "") + f". Set mesh.procs lower (e.g. {max(1, procs // 3)}; 1 meshes "
+                                    "in serial) or CFDT_SNAPPY_PROCS on this machine; more memory (run.mem) is unlikely "
+                                    "to help.\n" + foam._tail(sd / "log.snappyHexMesh", 15))
                 raise foam.Killed(foam.memory_hint("snappyHexMesh", stage_of(_read(sd / "log.snappyHexMesh")),
                                                    cells[-1] if cells else None) +
                                   (" Measured on this node: " + ", ".join(f"{k} {v / 1024:.3g} GB" for k, v in pk.items())

@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study.
-Version: 2026.11.17.1
+Version: 2026.11.18.2
 
 From 2026.11.09.4 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning), the node's
@@ -919,6 +919,105 @@ def _solver_of(request: Path) -> str:
         return "foam"
 
 
+# ---- a multi-job transient run's next job (solve.transient.chain) -----------------------------------------------
+# 'together': job k+1 is submitted when job k starts (afterany:k), so it is older in the queue than anything submitted
+# while k runs and the run's jobs follow each other instead of taking turns with other runs' (mochi, 13-17 Nov: three
+# 3-s DES runs alternated job by job and all headed to finish in ~5 days; one alone would have taken ~2.5). job.json
+# keeps describing the running job k, with the waiting one under 'next_job'; k hands over (job.json becomes k+1's)
+# only when it ends wanting more time. A k+1 that starts without the hand-over (k killed, cancelled, failed or done)
+# exits at once without a word, and job k's end is classified as before.
+STOP_FILE = "stop_after_job"       # cancel(at='job_end'): the running job finishes, no next job is chained
+NEXT_LOG_MODE = "append"          # a pre-submitted job appends to job.log: an unused one must not wipe job k's log
+
+
+def chain_of(study: dict) -> str:
+    tr = ((study or {}).get("solve") or {}).get("transient") or {}
+    return str(tr.get("chain") or "together")
+
+
+def presubmit_next(folder: Path, study: dict, segment: int) -> dict | None:
+    """Submits the run's next job (segment) now, waiting for this one (afterany); job.json stays this job's, with
+    the new one as next_job. Returns the next job's record, or None when it could not be submitted."""
+    folder = Path(folder)
+    me = os.environ.get("SLURM_JOB_ID")
+    if not me:
+        return None
+    cur = J.read_job(folder)
+    if (cur.get("next_job") or {}).get("job_id"):
+        return cur["next_job"]
+    old = os.environ.get("SBATCH_OPEN_MODE")
+    os.environ["SBATCH_OPEN_MODE"] = NEXT_LOG_MODE
+    try:
+        nxt = submit(folder.parent, folder.name, study, after=me, segment=segment)
+    finally:
+        if old is None:
+            os.environ.pop("SBATCH_OPEN_MODE", None)
+        else:
+            os.environ["SBATCH_OPEN_MODE"] = old
+    if not nxt.get("job_id"):
+        if cur:
+            write_atomic(folder / "job.json", json.dumps(cur))
+        return None
+    nxt = dict(nxt, presubmitted=round(time.time(), 1))
+    write_atomic(folder / "job.json", json.dumps(dict(cur, next_job=nxt)))
+    return nxt
+
+
+def hand_over(folder: Path) -> dict | None:
+    """This job ends wanting more time: job.json becomes the waiting next job's. Returns it (None: there is none)."""
+    folder = Path(folder)
+    cur = J.read_job(folder)
+    nxt = cur.get("next_job")
+    if not (nxt or {}).get("job_id"):
+        return None
+    write_atomic(folder / "job.json", json.dumps(nxt))
+    return nxt
+
+
+def drop_next(folder: Path) -> str | None:
+    """The run ends in this job (done, failed, stopped): scancel the waiting next job. Returns its id."""
+    folder = Path(folder)
+    cur = J.read_job(folder)
+    nxt = (cur.get("next_job") or {}).get("job_id")
+    if not nxt:
+        return None
+    J.scancel([str(nxt)])
+    cur["next_job"] = dict(cur["next_job"], dropped=round(time.time(), 1))
+    write_atomic(folder / "job.json", json.dumps(cur))
+    return str(nxt)
+
+
+def not_handed_over(folder: Path) -> bool:
+    """Is this SLURM job a pre-submitted next job that its previous one never handed over?"""
+    me = os.environ.get("SLURM_JOB_ID")
+    if not me:
+        return False
+    cur = J.read_job(folder)
+    return str(cur.get("job_id")) != str(me) and str((cur.get("next_job") or {}).get("job_id")) == str(me)
+
+
+def stop_requested(folder: Path) -> bool:
+    return (Path(folder) / STOP_FILE).is_file()
+
+
+def iso_local(t: float) -> str:
+    """Epoch seconds as this machine's local time with its UTC offset (2026-11-17T14:38:17-05:00)."""
+    from datetime import datetime
+    return datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+
+
+def with_offset(stamp: str | None) -> str | None:
+    """A SLURM time (the controller's local time, no offset: 2026-11-17T19:38:17) with this machine's offset; other
+    strings unchanged."""
+    if not isinstance(stamp, str) or len(stamp) != 19 or stamp[10:11] != "T":
+        return stamp
+    from datetime import datetime
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").astimezone().isoformat(timespec="seconds")
+    except ValueError:
+        return stamp
+
+
 def submit(request: Path, name: str, study: dict, after: str | None = None, segment: int | None = None) -> dict:
     """Writes <request>/<name>/job.sh, submits it, writes job.json (llmt-runtime's submit, with cfdt's hooks). On
     failure writes the study's result {"ok": false, "why": "could not submit: ..."} (never falls back to local).
@@ -935,6 +1034,9 @@ def submit(request: Path, name: str, study: dict, after: str | None = None, segm
         except Exception:  # noqa: BLE001 (no estimate: the timeouts)
             est_min = None
     extra = {"run": dict(S.run_of(study)), "mem_from": mem_plan(study, _cells(study))[1]}
+    trs = (study.get("solve") or {}).get("transient")
+    if isinstance(trs, dict):                  # for the router: a 'together' run's jobs follow each other
+        extra.update(chain=chain_of(study), jobs_left=max(1, int(trs.get("max_jobs", 10)) - int(segment or 1) + 1))
     if segment:
         extra["segment"] = segment
         extra["previous_jobs"] = list((prev or {}).get("previous_jobs", [])) + \
@@ -955,6 +1057,8 @@ def run_study_job(request: str, name: str) -> int:
     from .runner import run_study
 
     req = Path(request).expanduser().resolve()
+    if not_handed_over(req / name):
+        return 0                       # a pre-submitted next job whose previous one ended the run (chain_of)
     meta = json.loads((req / "request.json").read_text())
     study = dict(meta["studies"][name])
     n = os.environ.get("SLURM_NTASKS")
@@ -981,6 +1085,10 @@ def run_study_job(request: str, name: str) -> int:
             f"node before starting ({', '.join(sorted({x['cmd'] for x in reaped}))})")
     if r.get("continued"):              # a transient study goes on in the next job (job.json has its id)
         return 0
+    try:                                # the run ends here: a pre-submitted next job is not needed
+        drop_next(req / name)
+    except Exception:  # noqa: BLE001
+        pass
     r.setdefault("seconds", {})
     if isinstance(r["seconds"], dict):
         r["seconds"]["wall"] = round(time.perf_counter() - t0, 3)
@@ -1131,7 +1239,7 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
                 ahead = pending_ahead()
             st = {"state": "queued", **base, "reason": s.get("reason"), "ahead": ahead.get(jid, s.get("ahead"))}
             if s.get("expected_start"):
-                st["expected_start"] = s["expected_start"]
+                st["expected_start"] = with_offset(s["expected_start"])
             elif s.get("expected_start_note"):     # SLURM's one-year placeholder: no start time (llmt-runtime)
                 st["expected_start_note"] = s["expected_start_note"]
             try:
@@ -1288,9 +1396,9 @@ def eta_start(job: dict, reason: str, slurm_start: str | None) -> dict | None:
         return None
     t = time.time() + 60 * cand[0]
     when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
-    if slurm_start and slurm_start not in ("N/A", "Unknown") and slurm_start <= when:
+    if slurm_start and slurm_start not in ("N/A", "Unknown") and slurm_start[:19] <= when:
         return None
-    return {"expected_start": when, "expected_start_slurm": slurm_start or None,
+    return {"expected_start": iso_local(t), "expected_start_slurm": with_offset(slurm_start) or None,
             "expected_start_note": f"from the running jobs' own progress: {cand[1]}; SLURM counts their whole time "
                                    "limit (an upper bound)"}
 

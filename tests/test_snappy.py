@@ -638,6 +638,7 @@ def test_snappy_killed_for_memory_says_so(tmp_path, monkeypatch):
     from cfd_translator.runner import prepare
 
     def killed(k, txt, case, logname):
+        foam._LAST_PEAK[0] = 7800.0                    # near the job's 8 GB: a memory kill
         (case / logname).write_text("Refinement phase\n----------------\nRefined mesh : cells:2100000\n"
                                     "Snapped mesh : cells:2250000\nShrinking and layer addition phase\n"
                                     "Layer addition iteration 0\n--------------------------------------------------\n"
@@ -652,6 +653,56 @@ def test_snappy_killed_for_memory_says_so(tmp_path, monkeypatch):
     assert "snappyHexMesh was killed while adding prism layers" in msg and "this job had 8 GB" in msg
     assert '"mem": "16G"' in msg and "2,250,000 cells" in msg
     assert type(ei.value).__name__ == "Killed" and hasattr(ei.value, "notes")
+
+
+def test_snappy_killed_far_below_the_limit_is_not_memory(tmp_path, monkeypatch):
+    """mochi, Rogue DES (2026-11-17): killed while snapping (signal 9) at a measured 3.6 GB of 56 GB, reported as out
+    of memory with 'give it 112G'; the same geometry meshed with mesh.procs 6."""
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+
+    def killed(k, txt, case, logname):
+        foam._LAST_PEAK[0] = 3700.0
+        (case / logname).write_text("Refinement phase\n----------------\nRefined mesh : cells:1100000\n"
+                                    "Snapping surfaces\n------------------\n"
+                                    "prterun noticed that process rank 7 with PID 99 on node mochi exited on\n"
+                                    "signal 9 (Killed).\n")
+        return 137
+    _stand_in(monkeypatch, tmp_path, killed)
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", str(56 * 1024))
+    with pytest.raises(snappy.MeshError) as ei:
+        prepare(ST_BOX, tmp_path)
+    msg = str(ei.value)
+    assert "measured peak of 3.61 GB of the job's 56 GB" in msg and "probably not the job's memory limit" in msg
+    assert "Set mesh.procs lower" in msg and "112G" not in msg
+    assert type(ei.value).__name__ == "MeshError"
+
+
+def test_snappy_killed_far_below_the_limit_meshes_again_on_fewer_ranks(tmp_path, monkeypatch):
+    from cfd_translator import foam
+    from cfd_translator.runner import prepare
+    monkeypatch.setattr(foam, "physical_cores", lambda: 8)
+
+    def runs(k, txt, case, logname):
+        if k == 0:
+            foam._LAST_PEAK[0] = 3700.0
+            (case / logname).write_text("Snapping surfaces\nprterun noticed that process rank 1 with PID 9 on node "
+                                        "mochi exited on\nsignal 9 (Killed).\n")
+            return 137
+        return _good_mesh(case, logname)
+    calls = _stand_in(monkeypatch, tmp_path, runs)
+    serial = foam._step
+
+    def step(fm, cmd, logname, case, timeout, raise_on_error=True):      # the parallel run as the serial stand-in's
+        return serial(fm, cmd.split(" ", 3)[-1].replace(" -parallel", "") if " -parallel" in cmd else cmd, logname,
+                      case, timeout, raise_on_error)
+    monkeypatch.setattr(foam, "_step", step)
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", str(56 * 1024))
+    st = dict(ST_BOX, mesh=dict(ST_BOX["mesh"], procs=2))
+    mesh, patches, sel, plan, warns = prepare(st, tmp_path)
+    assert len(calls) == 2
+    txt = " ".join(warns + [str(mesh.info)])
+    assert "probably not the job's memory limit: made again on 1 rank(s)" in txt
 
 
 def test_a_killed_step_raises_killed(tmp_path):

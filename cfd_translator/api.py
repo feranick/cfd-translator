@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.17.4
+Version: 2026.11.18.2
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -882,20 +882,80 @@ def job_progress(folder: Path, study: dict) -> dict:
     out = {k: pr[k] for k in ("stage", "iteration", "max_iterations", "time", "end_time", "eta_min_max") if k in pr}
     if isinstance(pr.get("mesh"), dict) and pr["mesh"].get("cells"):
         out["mesh_cells"] = pr["mesh"]["cells"]
+    out.update(job_end_info(Path(folder)))
     return out
 
 
-def cancel(request: str, names: list[str] | None = None) -> dict:
+def job_end_info(folder: Path) -> dict:
+    """A multi-job transient run's current job: when it stops itself (job_ends: the transient run asks OpenFOAM to
+    write and stop then, before SLURM's limit, job_limit; it ends a few minutes later), its segment, the next job
+    already waiting (chain 'together') and a stop asked at its end."""
+    from .executor import STOP_FILE, iso_local
+    try:
+        st = json.loads((Path(folder) / "transient.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    j = st.get("job") or {}
+    try:
+        cur = json.loads((Path(folder) / "job.json").read_text()).get("job_id")
+    except (OSError, ValueError):
+        cur = None
+    if not j.get("stops_at") or str(j.get("id")) != str(cur):      # handed over: the next job has not started yet
+        return {}
+    out = {"job_ends": iso_local(float(j["stops_at"])), "job_limit": iso_local(float(j["limit_at"])),
+           "job_segment": j.get("segment")}
+    if j.get("next_job"):
+        out["next_job_waiting"] = j["next_job"]
+    if (Path(folder) / STOP_FILE).is_file():
+        out["stop_after_job"] = True
+    return out
+
+
+def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:
     """Stops the request's studies (or the named ones): scancel for SLURM jobs; for local studies a cancel
     flag that the running solver (in whatever process runs it) checks every second. The flags and scancel are
-    llmt-runtime's cancel_request (2026.11.09.4); the local pool's side stays here."""
+    llmt-runtime's cancel_request (2026.11.09.4); the local pool's side stays here. A transient run's next job,
+    submitted early (solve.transient.chain 'together'), goes too.
+    at 'job_end': a multi-job transient run finishes its current SLURM job (results at the time it reached) and
+    chains no next one; solve.transient.continue goes on from it. Other studies are not touched."""
     from .runtime import RT
+    from .executor import STOP_FILE, drop_next
 
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
     meta = json.loads((folder / "request.json").read_text())
+    if at not in (None, "now", "job_end"):
+        return {"error": f"at: 'now' (default) or 'job_end', not {at!r}"}
+    if at == "job_end":
+        known = list(meta.get("names", []))
+        want = list(names) if names else known
+        unknown = [n for n in want if n not in known]
+        if unknown:
+            return {"error": f"no studies {unknown} in this request ({known})"}
+        flagged, skipped = [], {}
+        for n in want:
+            d = folder / n
+            if (d / f"{n}.json").is_file():
+                skipped[n] = "finished"
+            elif not (d / "job.json").is_file() or not (meta.get("studies", {}).get(n, {}).get("solve") or {}).get(
+                    "transient"):
+                skipped[n] = "not a multi-job transient SLURM run: cancel without 'at' stops it now"
+            else:
+                d.mkdir(parents=True, exist_ok=True)
+                (d / STOP_FILE).write_text(str(time.time()))
+                flagged.append(n)
+        return {"request": str(folder), "stop_after_job": flagged, **({"not_flagged": skipped} if skipped else {}),
+                "note": "each flagged run ends with its current SLURM job (results at the time it reached, state done "
+                        "with solve.stopped) and chains no next job; go on later with solve.transient.continue"}
     c = RT.jobs.cancel_request(folder, meta, names)
+    for n in c.get("todo", []):              # a waiting next job of a chained run
+        try:
+            nx = drop_next(folder / n)
+            if nx:
+                c.setdefault("cancelled_jobs", []).append(nx)
+        except Exception:  # noqa: BLE001
+            pass
     if "want" not in c:                      # unknown names
         return c
     names, todo, ids = c["want"], c["todo"], c["cancelled_jobs"]
