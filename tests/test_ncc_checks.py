@@ -322,3 +322,38 @@ def test_refine_coverage_mrf_set_leaves_the_floor_coarse():
     # off the band and inside no region: 'no band'
     cov2 = refine_coverage(_s50_zone(), [_cyl(-77.1, 61, [0, 30.8], 0.25, 58.5)])
     assert cov2["side"][0]["size_mm"] is None and "no band" in coverage_message("impeller", cov2)
+
+
+# ---- rotating[].interface_refine and the MRF coverage warning (S50 648, 2026-11-18) ----
+def test_interface_refine_gives_sliding7s_set():
+    from cfd_translator.sliding import interface_regions, refine_coverage, with_interface_regions
+    z = dict(_s50_zone(), interface_refine=0.25)
+    regs = interface_regions(z)
+    ring, band, lo, hi = regs
+    assert ring["size"] == 0.125 and ring["cylinder"]["inner_radius"] == 59.2 and ring["cylinder"]["radius"] == 60.2
+    assert band["size"] == 0.25 and band["cylinder"]["inner_radius"] == 58.45 and band["cylinder"]["radius"] == 60.95
+    assert ring["cylinder"]["span"] == [-1.0, 37.0] and lo["cylinder"]["span"] == [-1.0, 1.0]
+    assert hi["cylinder"]["span"] == [35.0, 37.0] and "inner_radius" not in hi["cylinder"]
+    st = {"rotating": [z], "mesh": {"mesher": "snappy", "refine": [_cyl(-106, 64, [0, 64], 1.25)]}}
+    st2 = with_interface_regions(st)
+    assert len(st2["mesh"]["refine"]) == 5 and len(st["mesh"]["refine"]) == 1          # the study is not changed
+    assert with_interface_regions(st2)["mesh"]["refine"] == st2["mesh"]["refine"]       # once
+    assert refine_coverage(z, st2["mesh"]["refine"]) is None
+    assert interface_regions(_s50_zone()) == []
+
+
+def test_coverage_warning_for_mrf_zones_too():
+    from cfd_translator.format import validate_study
+    base = {"geometry": {"box": [200, 200, 200]}, "fluid": "water",
+            "bcs": [{"kind": "inlet", "faces": {"nz": -1}, "velocity": 1.0}, {"kind": "outlet", "faces": {"nz": 1}}],
+            "mesh": {"mesher": "snappy", "size": 4,
+                     "refine": [_cyl(-106, 64, [0, 64], 1.25), _cyl(-77.1, 61, [0, 30.8], 0.25, 58.5)]}}
+    mrf = dict(base, rotating=[{k: v for k, v in _s50_zone().items() if k != "motion"}])
+    v = validate_study(mrf)
+    assert v["ok"], v["errors"]
+    w = [x for x in v["warnings"] if "finest band" in x]
+    assert w and "MRF zone" in w[0] and "1671 W" in w[0] and "interface_refine" in w[0]
+    fixed = dict(base, rotating=[dict(mrf["rotating"][0], interface_refine=0.25)])
+    assert not [x for x in validate_study(fixed)["warnings"] if "finest band" in x]
+    bad = dict(base, rotating=[dict(mrf["rotating"][0], interface_refine=-1)])
+    assert any("interface_refine" in e for e in validate_study(bad)["errors"])

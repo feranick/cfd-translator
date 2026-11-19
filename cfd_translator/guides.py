@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.18.1
+Version: 2026.11.18.9
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -47,6 +47,14 @@ GUIDES = {
             "it is: move the zone's ends into the gap and refine the gap (mesh.refine box) to 3 cells or more.",
             "The same zone works for MRF and for sliding: the sliding run's steady start (solve.transient.init) uses "
             "MRF.",
+            "Mesh the zone's surface finely all along it, for MRF as well as sliding: interface_refine: <band size mm> on "
+            "the zone adds a ring of half that size at its radius and a band over its side and both ends (the hand-built "
+            "S50 sliding7 set: 0.125 mm ring, 0.25 mm band). Validation warns when mesh.refine leaves part of the zone's "
+            "cylinder in coarser cells. S50 noboth, frozen rotor: 2026 W on an 8.26 M-cell mesh whose refinements left "
+            "the zone's floor and lower side at 1.25 mm, 1671 +- 7 W on 13.03 M cells with sliding7's set (head 16.44 "
+            "and 15.69 m): the power was 21 % high because of the mesh at the zone's surface, all of it pressure torque, "
+            "not because of the frozen-rotor method (ORCD's frozen rotor: 1794 W, 16.37 m). Check power for mesh "
+            "dependence before comparing designs.",
             "Round rotor walls (hub, shaft, back shroud) may reach outside the sliding zone if their bc holds nothing "
             "else: such a wall gets the rotating-wall velocity everywhere and its friction counts in the torque. "
             "Give them a wall bc of their own (rotation: the zone's name, or {axis, rpm} at the zone's speed); a bc "

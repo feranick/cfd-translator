@@ -130,3 +130,21 @@ def test_wait_kills_when_the_write_takes_too_long(tmp_path, monkeypatch):
     with pytest.raises(foam.Diverged):
         foam._wait(p, "x", 60, None, None, lambda: None, log)
     assert time.time() - t0 < 10 and p.poll() is not None
+
+
+def test_worst_skewness_places_say_what_the_face_is():
+    """S50 648 (2026-11-18): 'skewness 264 at [-8.7, 58.9, -71.0]' with no clue what it was; now internal or boundary,
+    its patch, and its cell's volume and thickness."""
+    import numpy as np
+    m = box_mesh(n=3)
+    g = m.geometry()
+    ni = m.ninternal
+    skew = np.zeros(m.nfaces)
+    fb, fi = ni + 2, 1
+    skew[fb], skew[fi] = 264.0, 5.0
+    places = [{"at": [round(float(v), 1) for v in g["Cf"][fb]], "skewness": 264.0},
+              {"at": [round(float(v), 1) for v in g["Cf"][fi]], "skewness": 5.0}]
+    m._skew_detail(places, skew, np.array([fi, fb]), g, None)
+    b, i = places
+    assert b["face"] == "boundary" and b["patch"] == "walls" and b["cell_thickness_mm"] == [2.0]
+    assert b["cell_volume_mm3"] == [8.0] and len(i["cell_volume_mm3"]) == 2 and i["face"] == "internal"

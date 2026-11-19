@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.18.4
+Version: 2026.11.18.9
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -159,7 +159,7 @@ STUDY_KEYS = {
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis, motion: mrf | "
-                "sliding}]: MRF zones (default) or a sliding mesh (transient, snappy)",
+                "sliding, interface_refine: band mm (fine ring+band over the zone's surface)}]: MRF zones (default) or a sliding mesh",
     "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0,a1,b0,b1]} "
               "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high} | "
               "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,..,z1], view}], "
@@ -996,7 +996,7 @@ def validate_study(st: dict) -> dict:
         znames.append(z["name"])
         errs += _rotation_errors({k: v for k, v in z.items() if k in ("axis", "center", "rpm")}, w, ("rpm",))
         for k in z:
-            if k not in ("name", "axis", "center", "rpm", "radius", "span", "motion"):
+            if k not in ("name", "axis", "center", "rpm", "radius", "span", "motion", "interface_refine"):
                 errs.append(f"{w}: unknown key {k!r}")
         if z.get("motion", "mrf") not in ("mrf", "sliding"):
             errs.append(f"{w}.motion: 'mrf' (default: a frozen rotor, steady) or 'sliding' (the mesh turns; transient)")
@@ -1004,6 +1004,13 @@ def validate_study(st: dict) -> dict:
             errs.append(f"{w}.radius: a positive radius (mm)")
         if "span" in z and (not _vec(z["span"], 2) or z["span"][0] >= z["span"][1]):
             errs.append(f"{w}.span: [s0, s1] (mm along the axis from center, s0 < s1)")
+        if "interface_refine" in z:
+            v = z["interface_refine"]
+            if not _num(v) or v <= 0:
+                errs.append(f"{w}.interface_refine: the band's cell size (mm), > 0: a ring of half that at the zone's "
+                            "radius and a band over its side and both ends (sliding7's interface set)")
+            elif (st.get("mesh") or {}).get("mesher") != "snappy" or "span" not in z:
+                errs.append(f"{w}.interface_refine: needs mesh.mesher snappy and the zone's span")
     if len(set(znames)) != len(znames):
         errs.append("rotating: zone names must be unique")
     sliding = [z["name"] for z in rot if isinstance(z, dict) and z.get("motion") == "sliding" and "name" in z]
@@ -1018,16 +1025,22 @@ def validate_study(st: dict) -> dict:
                         "a meshed surface for its cells to slide along it)")
         if two_d:
             errs.append(f"rotating {sliding[0]!r}: no sliding mesh in 2d")
-        try:                                   # a fine band over only part of the interface (sliding.refine_coverage)
+    if (st.get("mesh") or {}).get("mesher") == "snappy":
+        # a fine band over only part of a rotating zone's cylinder (sliding.refine_coverage): a sliding interface's
+        # cells must match all along it; an MRF zone's surface carries the frame change (S50 648, 2026-11-18)
+        try:
             import numpy as np
-            from .sliding import coverage_message, refine_coverage
-            zs = next(z for z in rot if z.get("motion") == "sliding")
-            cov = refine_coverage(zs, (st.get("mesh") or {}).get("refine"))
-            if cov:
-                ax = np.asarray(zs["axis"], float)
-                ax = ax / np.linalg.norm(ax)
-                nm = next((c for c, e in zip("xyz", np.eye(3)) if ax @ e > 1 - 1e-9), None)
-                warns.append(coverage_message(zs["name"], cov, nm or "s"))
+            from .sliding import coverage_message, refine_coverage, with_interface_regions
+            st_r = with_interface_regions(st)
+            for zs in rot:
+                if not isinstance(zs, dict) or "name" not in zs or not _num(zs.get("radius")):
+                    continue
+                cov = refine_coverage(zs, (st_r.get("mesh") or {}).get("refine"))
+                if cov:
+                    ax = np.asarray(zs["axis"], float)
+                    ax = ax / np.linalg.norm(ax)
+                    nm = next((c for c, e in zip("xyz", np.eye(3)) if ax @ e > 1 - 1e-9), None)
+                    warns.append(coverage_message(zs["name"], cov, nm or "s", zs.get("motion", "mrf")))
         except Exception:  # noqa: BLE001 (a warning must never fail a validation)
             pass
     if isinstance(tr, dict) and "correct_mesh_phi" in tr and (not sliding or not isinstance(tr["correct_mesh_phi"], bool)):

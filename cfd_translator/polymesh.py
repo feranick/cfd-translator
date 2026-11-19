@@ -1,5 +1,5 @@
 """polymesh.py — the fluid mesh as OpenFOAM stores it: points, faces, owner, neighbour, patches.
-Version: 2026.11.13.2
+Version: 2026.11.18.9
 
 Pure NumPy. Cells (tetrahedra, hexahedra, prisms, pyramids; Gmsh node order) become polyMesh faces:
 
@@ -133,6 +133,32 @@ class PolyMesh:
             self._geo = {"Sf": Sf, "Cf": Cf, "C": C, "V": vol3 / 3.0}
         return self._geo
 
+    def _skew_detail(self, places: list, skew, sbad, g, amag) -> None:
+        """Adds to each of quality()'s worst-skewness places: face (internal | boundary), patch (a boundary face's,
+        when patches are set; else its CAD tag), cell_volume_mm3 and cell_thickness_mm (volume over its largest face) of
+        the face's owner (and neighbour). S50 648 (2026-11-18): one face at 264 that checkMesh, run before the pocket
+        removal, had not seen; the report gave no clue what it was."""
+        ni = self.ninternal
+        Cf, V = g["Cf"], np.abs(g["V"])
+        amax = np.zeros(self.ncells)
+        A = np.linalg.norm(g["Sf"], axis=1)
+        np.maximum.at(amax, self.owner, A)
+        np.maximum.at(amax, self.neighbour, A[:ni])
+        for w in places:
+            cand = sbad[np.argmin(np.linalg.norm(Cf[sbad] - np.asarray(w["at"]), axis=1)
+                                  + 1e-9 * np.abs(skew[sbad] - w["skewness"]))]
+            f = int(cand)
+            cells = [int(self.owner[f])] + ([int(self.neighbour[f])] if f < ni else [])
+            w["face"] = "internal" if f < ni else "boundary"
+            if f >= ni:
+                pn = next((p["name"] for p in self.patches if p["start"] <= f < p["start"] + p["n"]), None)
+                if pn:
+                    w["patch"] = pn
+                elif len(self.btag) == self.nfaces - ni:
+                    w["tag"] = int(self.btag[f - ni])
+            w["cell_volume_mm3"] = [float(f"{V[c]:.3g}") for c in cells]
+            w["cell_thickness_mm"] = [float(f"{V[c] / amax[c]:.3g}") if amax[c] > 0 else None for c in cells]
+
     def boundary_slice(self) -> slice:
         return slice(self.ninternal, self.nfaces)
 
@@ -184,6 +210,8 @@ class PolyMesh:
         skew = face_skewness(g["Cf"], Sf, g["C"], self.owner, self.neighbour, ni)
         sbad = np.nonzero(skew > 4.0)[0]
         worst_skew = _places(g["Cf"], sbad, skew, sep, "skewness")
+        if worst_skew:                     # what each worst face is: internal or on which patch, its cell's shape
+            self._skew_detail(worst_skew, skew, sbad, g, amag)
         return {"cells": int(nc), "faces": int(self.nfaces), "internal_faces": int(ni), "points": int(len(self.points)),
                 "non_ortho_over_70": int(len(bad)), "folded_faces": int((nonorth >= 89.0).sum()) if ni else 0,
                 **({"worst_non_ortho": worst} if worst else {}),

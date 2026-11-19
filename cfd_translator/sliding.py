@@ -1,5 +1,5 @@
 """sliding.py — a rotating zone whose cells turn: OpenFOAM 14 non-conformal coupling (NCC), transient.
-Version: 2026.11.17.9
+Version: 2026.11.18.9
 
 An MRF zone freezes the rotor: its results depend on where the blades stand against the cutwater or the
 stator vanes, and every rotor-stator interaction is lost. With rotating[].motion 'sliding' the zone's cells turn
@@ -307,19 +307,74 @@ def refine_coverage(zone: dict, refine: list | None, ratio: float = COVER_RATIO)
     return out if out["side"] or out["ends"] else None
 
 
-def coverage_message(name: str, cov: dict, axis_name: str = "the axis") -> str:
+def coverage_message(name: str, cov: dict, axis_name: str = "the axis", motion: str = "sliding") -> str:
     def sz(x):
         return f"{x:g} mm cells" if x is not None else "no band (the zone surface's own level)"
     parts = [f"the side from {axis_name} {p['axial_mm'][0]:g} to {p['axial_mm'][1]:g} ({sz(p['size_mm'])})"
              for p in cov["side"][:4]]
     parts += [f"the {e['end']} face at {axis_name} {e['axial_mm']:g}, r {e['r_mm'][0]:g}-{e['r_mm'][1]:g} "
               f"({sz(e['size_mm'])}; an end inside a wall does not matter)" for e in cov["ends"]]
-    return (f"rotating {name!r}: mesh.refine leaves part of the sliding zone's cylinder outside its finest band "
-            f"({cov['finest_mm']:g} mm): {'; '.join(parts)}. The interface's cells must match all along and around it: "
-            "where it crosses coarser cells it gets unmatched faces and stray end faces (S50 noboth with ESI diverged "
-            "at its second step this way). Cover the whole side with a hollow mesh.refine cylinder on the axis "
-            "(inner_radius; the radius +- 2 cells or more) over the full span, and each end with a cylinder 2 cells "
-            "or more either side of it")
+    why = ("The interface's cells must match all along and around it: where it crosses coarser cells it gets unmatched "
+           "faces and stray end faces (S50 noboth with ESI diverged at its second step this way)" if motion == "sliding"
+           else "The frozen-rotor zone's surface is where the relative and absolute frames meet; where it crosses "
+           "coarser cells the transfer is smeared (S50 noboth, MRF: 2026 W on rc_noboth's MRF refinements, 8.26 M cells; "
+           "1671 W with sliding7's interface set, 13.03 M cells, at the same head within 0.75 m)")
+    return (f"rotating {name!r}: mesh.refine leaves part of the {motion if motion == 'sliding' else 'MRF'} zone's "
+            f"cylinder outside its finest band ({cov['finest_mm']:g} mm): {'; '.join(parts)}. {why}. Give the zone "
+            "interface_refine: <band size mm> (a 0.5x ring at its radius and a band over its side and both ends, as "
+            "sliding7), or cover the whole side with a hollow mesh.refine cylinder on the axis (inner_radius; the radius "
+            "+- 2 cells or more) over the full span, and each end with a cylinder 2 cells or more either side of it")
+
+
+IFR_CELLS = 4            # interface_refine: the band reaches this many band cells either side of the zone's surface
+
+
+def interface_regions(zone: dict) -> list:
+    """mesh.refine regions for rotating[].interface_refine (h, mm): sliding7's interface set (the hand-built S50 mesh
+    that ran ESI at 1 degree on five designs and gave the reliable frozen rotor 648) scaled to h:
+    - a ring of h/2 cells, radius +- 2 h, over the span and 4 h beyond each end (sliding7: 0.125 mm, r 59.2-60.2);
+    - a band of h cells, radius +- 5 h, over the same span (sliding7: 0.25 mm, r 58.5-61);
+    - a cylinder of h cells over each end, out to radius + 5 h, 4 h either side of it (sliding7: 0.25 mm over the
+      floor, -83.5 to -81, and the top, -47.5 to -45).
+    [] when the zone has no interface_refine, or is not a cylinder."""
+    h = zone.get("interface_refine")
+    if not isinstance(h, (int, float)) or isinstance(h, bool) or h <= 0 or zone.get("region") \
+            or "span" not in zone or "radius" not in zone:
+        return []
+    h = float(h)
+    R = float(zone["radius"])
+    s0, s1 = map(float, zone["span"])
+    c = [float(x) for x in zone.get("center", [0, 0, 0])]
+    ax = [float(x) for x in zone["axis"]]
+    e = IFR_CELLS * h
+
+    def cyl(r, span, size, inner=None):
+        d = {"center": c, "axis": ax, "radius": round(r, 6), "span": [round(span[0], 6), round(span[1], 6)]}
+        if inner is not None:
+            d["inner_radius"] = round(max(0.0, inner), 6)
+        return {"cylinder": d, "size": size}
+    return [cyl(R + 2 * h, [s0 - e, s1 + e], h / 2, R - 2 * h),
+            cyl(R + 5 * h, [s0 - e, s1 + e], h, R - 5 * h),
+            cyl(R + 5 * h, [s0 - e, s0 + e], h),
+            cyl(R + 5 * h, [s1 - e, s1 + e], h)]
+
+
+def with_interface_regions(study: dict) -> dict:
+    """The study with each rotating zone's interface_refine regions in mesh.refine (once: regions already there are
+    not added again). The study itself is not changed."""
+    if not isinstance(study, dict):
+        return study
+    extra = [r for z in study.get("rotating") or [] if isinstance(z, dict) for r in interface_regions(z)]
+    m = study.get("mesh")
+    if not extra or not isinstance(m, dict):
+        return study
+    have = list(m.get("refine") or []) if isinstance(m.get("refine") or [], list) else None
+    if have is None:
+        return study
+    add = [r for r in extra if r not in have]
+    if not add:
+        return study
+    return dict(study, mesh=dict(m, refine=have + add))
 
 
 def not_round_regions(refine: list, Cf, a, o) -> list:

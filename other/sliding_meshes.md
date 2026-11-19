@@ -130,7 +130,18 @@ was real and each has a check.
    over the whole span, a 0.25 mm band r 58.5-61, 0.25 mm cylinders over both ends) ran ESI at 1 degree on all
    five designs and DES.
    - **Check:** validation warns when mesh.refine leaves part of the zone's cylinder (side or ends, 2 of a region's
-     cells either side) in cells more than 2x its finest band's (`sliding.refine_coverage`).
+     cells either side) in cells more than 2x its finest band's (`sliding.refine_coverage`), for MRF zones too since
+     2026.11.18.9.
+   - **The same holds for the frozen rotor.** S50 noboth, MRF: `noboth_s1` (rc_noboth's MRF refinements, 8.26 M
+     cells) gave 16.44 m and 2026 W; job 648 (sliding7's mesh block, 13.03 M cells) 15.69 m and 1671 +- 7 W, 51.1 %,
+     torque -5.27 pressure / -0.25 viscous N m. The 355 W were all pressure torque, and faces 32 and 39 no longer
+     stood out. The "power gap" against ORCD's frozen rotor (1794 W) was cfdt's old mesh, not the method; cfdt now
+     reads 7 % below ORCD in power and 0.7 m lower in head.
+   - **`rotating[].interface_refine: h`** (2026.11.18.9) adds sliding7's set scaled to h: a ring of h/2 cells at the
+     radius +- 2 h, a band of h cells at the radius +- 5 h, both over the span and 4 h beyond it, and a cylinder of h
+     cells over each end (4 h either side, out to the radius + 5 h). h = 0.25 on the S50 gives sliding7's set except
+     its geometry-specific cylinder at the ledge (z -77.1 to -70.9). It is not the default: it costs cells (the S50
+     went from 5.97 M to 13 M), and the right h depends on the pump.
 7. **Surfaces of revolution inside or across the zone:** hub, shaft and back shroud may cross the zone's boundary
    as `rotatingWallVelocity` walls. Blades must lie inside it (`movingWallVelocity`). A hexagonal socket is not a
    surface of revolution.

@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.7
+Version: 2026.11.18.9
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -86,6 +86,8 @@ def prepare_studies(studies: dict) -> tuple[dict, dict, dict]:
             st, e = resolve(st)
             if e:
                 errs.setdefault(n, []).append(e)
+            from .sliding import with_interface_regions
+            st = with_interface_regions(st)      # rotating[].interface_refine as mesh.refine regions
         out[n] = st
     return out, groups, errs
 

@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.18.6
+Version: 2026.11.18.9
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -136,6 +136,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
     folder.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     out = {"name": name, "translator": __version__, "solver": solver}
+    from .sliding import with_interface_regions
+    study = with_interface_regions(study)        # rotating[].interface_refine (already there when api prepared it)
     v = validate_study(study)
     if not v["ok"]:
         out.update(ok=False, why="invalid study", errors=v["errors"])
@@ -194,10 +196,19 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                          + (f"; the narrow gaps found are at {', '.join(str(g['at']) for g in gaps[:3])}" if gaps else "")
                          + ". Refine or widen the gap there, or leave layers out of it (mesh.layers.on)")
         if q.get("max_skewness", 0) > 4 and q.get("worst_skewness"):
+            def what(w):
+                kind = (f"{w.get('face')} face" + (f" of {w['patch']}" if w.get("patch") else "")) if w.get("face") else ""
+                th = w.get("cell_thickness_mm")
+                th = f", cell {'/'.join(f'{x:g}' for x in th if x is not None)} mm thick" if th else ""
+                return f"{w['skewness']} at {w['at']}" + (f" ({kind}{th})" if kind else "")
+            bnd = any(w.get("face") == "boundary" for w in q["worst_skewness"][:4])
             warns.append(f"{q['skewness_over_4']} faces have skewness above 4 (worst {q['max_skewness']:.3g}, as "
-                         "checkMesh computes it): " + "; ".join(f"{w['skewness']} at {w['at']}" for w in q["worst_skewness"][:4])
+                         "checkMesh computes it, on the mesh as solved): " + "; ".join(what(w) for w in q["worst_skewness"][:4])
                          + " mm. Usually a refinement-level jump or a snapped cell squeezed against a wall: move the "
-                         "refinement region's edge away from there, or refine around it")
+                         "refinement region's edge away from there, or refine around it"
+                         + ("; a boundary face's skewness is its cell centre's offset from the face over twice its "
+                            "distance to it: a large value is a cell thin against that wall (one such face shifts the "
+                            "wall's gradient there, not the solution's balance)" if bnd else ""))
         out["case"] = {"inlets": plan["inlets"], "schemes": plan["schemes"], "iterations": plan["iterations"],
                        "residual": plan["residual"], "relax": plan["relax"]}
         if solver == "ref":
