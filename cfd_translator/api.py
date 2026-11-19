@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.6
+Version: 2026.11.18.7
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -26,7 +26,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import multiprocessing as mp
 import os
 import time
 import uuid
@@ -223,9 +222,21 @@ class _Pool:
         workers = int(os.environ.get("CFDT_WORKERS", "2"))
         from .executor import timeout_s
         if self.pool is None:
+            from llmt_runtime.workers import WorkersNotPermitted, make_pool
+
             from .workers import watch_parent       # every worker ends with this server
-            self.pool = mp.get_context("spawn").Pool(workers, maxtasksperchild=10, initializer=watch_parent,
-                                                     initargs=(os.getpid(),))
+            try:
+                # llmt-runtime's make_pool: where the MCP client's sandbox refuses worker processes (Gemini's Mac app,
+                # 2026-11-18: SemLock PermissionError) it raises WorkersNotPermitted with what to do; that is the
+                # tool's error. The studies of this request get it as their result, so their state is final
+                self.pool = make_pool(workers, maxtasksperchild=10, initializer=watch_parent, initargs=(os.getpid(),))
+            except WorkersNotPermitted as exc:
+                from llmt_runtime.jobs import write_atomic
+                for j in jobs:
+                    (Path(folder) / j["name"]).mkdir(parents=True, exist_ok=True)
+                    write_atomic(Path(folder) / j["name"] / f"{j['name']}.json", json.dumps(
+                        {"name": j["name"], "ok": False, "state": "failed", "why": str(exc)}, indent=1))
+                raise
         self.jobs[str(folder)] = {j["name"]: self.pool.apply_async(_run_one, (dict(j, timeout=timeout_s(j["study"])),))
                                   for j in jobs}
 
@@ -240,10 +251,12 @@ _AUX: dict = {"pool": None, "pending": {}}
 
 def _aux_pool():
     if _AUX["pool"] is None:
+        from llmt_runtime.workers import make_pool
+
         from .workers import watch_parent
-        _AUX["pool"] = mp.get_context("spawn").Pool(int(os.environ.get("CFDT_AUX_WORKERS", "2") or 2),
-                                                     initializer=watch_parent, initargs=(os.getpid(),),
-                                                     maxtasksperchild=20)
+        # WorkersNotPermitted (a sandbox without worker processes) reaches the caller as the tool's error
+        _AUX["pool"] = make_pool(int(os.environ.get("CFDT_AUX_WORKERS", "2") or 2), initializer=watch_parent,
+                                 initargs=(os.getpid(),), maxtasksperchild=20)
     return _AUX["pool"]
 
 

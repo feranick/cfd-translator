@@ -543,3 +543,37 @@ def test_a_waiting_study_is_not_written_as_failed(slurm, monkeypatch):
     ra = reqs[str(a)]["studies"]["s"]
     assert ra["state"] == "running" and ra["job_segment"] == 1 and ra["next_job_waiting"] == "101"
     assert ra["job_ends"][-6] in "+-"
+
+
+def test_a_sandbox_without_worker_processes_says_so(tmp_path, monkeypatch):
+    """Gemini's Mac app (2026-11-18): its sandbox refuses multiprocessing (SemLock PermissionError). A local run's answer
+    carries the runtime's WorkersNotPermitted text, its study gets that as a final result, and the server takes the
+    next call (the pools are made again then)."""
+    from llmt_runtime import workers as LW
+    monkeypatch.setenv("CFDT_OUT", str(tmp_path))
+    monkeypatch.setenv("CFDT_EXECUTOR", "local")
+
+    def refuse(*a, **k):
+        raise LW.WorkersNotPermitted(PermissionError(1, "Operation not permitted"))
+    monkeypatch.setattr(LW, "make_pool", refuse)
+    monkeypatch.setattr(api._POOL, "pool", None)
+    monkeypatch.setattr(api, "_AUX", {"pool": None, "pending": {}})
+    with pytest.raises(LW.WorkersNotPermitted, match="worker processes are not permitted here"):
+        api.run({"c": COUETTE}, "ref", wait=1, request_name="run_sandbox")
+    r = json.loads((tmp_path / "run_sandbox" / "c" / "c.json").read_text())
+    assert r["state"] == "failed" and "worker processes are not permitted here" in r["why"]
+    assert api.status(str(tmp_path / "run_sandbox"), 0.0)["done"]
+    with pytest.raises(LW.WorkersNotPermitted):
+        api._aux_pool()
+    # the MCP tool wrapper: a ToolError with the text, and the server goes on
+    import asyncio
+    import inspect as _inspect
+    from cfd_translator import mcp_server
+
+    def call(fn, *a, **k):
+        r = fn(*a, **k)
+        return asyncio.run(r) if _inspect.isawaitable(r) else r
+    with pytest.raises(Exception, match="worker processes are not permitted here") as ei:
+        call(mcp_server.run_studies, {"c2": COUETTE}, solver="ref", wait_s=1, request_name="run_sandbox2")
+    assert type(ei.value).__name__ in ("ToolError", "WorkersNotPermitted")
+    assert call(mcp_server.study_format)["example"]
