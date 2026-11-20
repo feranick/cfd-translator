@@ -1,6 +1,6 @@
 """freeflow.py — a transient pump run whose inlet flow is free (solve.transient.free_flow): the flow is held while
 the run settles, then the inlet holds the total pressure that flow needed and the flow follows the pressure.
-Version: 2026.11.13.5
+Version: 2026.11.20.1
 
 Why (S50, the hand-built v2506 sliding run continued 5 revolutions, 2026.11.13): with the flow held, the head swung
 11-21 m and the eye pressure +-48 kPa (rms 19.7 kPa); with the inlet's total pressure held instead, the head was steady,
@@ -271,7 +271,19 @@ def switch_inlet(case: Path, inlet: str, p0_kin: float) -> list[str]:
     return done
 
 
-def _per_period(t: np.ndarray, v: np.ndarray, t0: float, period: float) -> list[dict]:
+def smooth121(v: np.ndarray) -> np.ndarray:
+    """[1 2 1]/4 over consecutive time steps (the ends repeat their own value): takes the step-to-step jitter out of
+    a probe's extremes (S50 eye probe: +-3 kPa from one step to the next, 2026.11.20)."""
+    v = np.asarray(v, float)
+    if v.size < 3:
+        return v.copy()
+    p = np.concatenate([v[:1], v, v[-1:]])
+    return 0.25 * p[:-2] + 0.5 * p[1:-1] + 0.25 * p[2:]
+
+
+def _per_period(t: np.ndarray, v: np.ndarray, t0: float, period: float, vf: np.ndarray | None = None) -> list[dict]:
+    """Per whole period after t0: mean (time-weighted), min, max, rms about the mean; with vf (the series filtered)
+    also min_f and max_f, its extremes."""
     out = []
     k = 0
     while t0 + (k + 1) * period <= t[-1] + 1e-9:
@@ -279,8 +291,11 @@ def _per_period(t: np.ndarray, v: np.ndarray, t0: float, period: float) -> list[
         if m.sum() >= 3:
             x = v[m]
             mean = _weighted_mean(t[m], x)
-            out.append({"rev": k + 1, "mean": float(f"{mean:.6g}"), "min": float(f"{x.min():.6g}"),
-                        "max": float(f"{x.max():.6g}"), "rms": float(f"{np.sqrt(np.mean((x - mean) ** 2)):.4g}")})
+            r = {"rev": k + 1, "mean": float(f"{mean:.6g}"), "min": float(f"{x.min():.6g}"),
+                 "max": float(f"{x.max():.6g}"), "rms": float(f"{np.sqrt(np.mean((x - mean) ** 2)):.4g}")}
+            if vf is not None:
+                r["min_f"], r["max_f"] = float(f"{vf[m].min():.6g}"), float(f"{vf[m].max():.6g}")
+            out.append(r)
         k += 1
     return out
 
@@ -343,12 +358,13 @@ def report(case: Path, plan: dict, cfg: dict, state: dict, study: dict) -> tuple
         pb = {}
         for nm, (t, p) in probes.items():
             sel = t >= t_sw - 1e-12
-            if sel.sum() >= 3:
-                pb[nm] = _per_period(t[sel], p[sel] * rho, t_sw, span)
+            if sel.sum() >= 3:                     # filtered over the whole series: the switch is not an end
+                pb[nm] = _per_period(t[sel], p[sel] * rho, t_sw, span, smooth121(p * rho)[sel])
         if pb:
             out["probes_p_Pa_by_revolution"] = pb
-    out["note"] = ("per revolution after the switch (whole revolutions; mean, min, max, rms about the mean): the flow "
-                   "pulsates with the inlet's total pressure held; pressures in Pa gauge")
+    out["note"] = ("per revolution after the switch (whole revolutions; mean, min, max, rms about the mean; probes also "
+                   "min_f, max_f: the extremes after [1 2 1]/4 over time steps, without the step-to-step jitter): the "
+                   "flow pulsates with the inlet's total pressure held; pressures in Pa gauge")
     return out, warns
 
 

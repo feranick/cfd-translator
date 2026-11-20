@@ -1,4 +1,4 @@
-"""free_flow (2026.11.13.5): a transient pump run holds the flow while it settles, then the inlet holds the total
+"""free_flow (2026.11.13.5; probes' filtered extremes min_f / max_f 2026.11.20.1): a transient pump run holds the flow while it settles, then the inlet holds the total
 pressure that flow needed (the held phase's last revolutions, or the run it continues) and the flow follows it.
 Runs without OpenFOAM (fields, monitors and the solver stood in by hand)."""
 from __future__ import annotations
@@ -183,8 +183,9 @@ def test_report_per_revolution(tmp_path):
     _monitors(case, t, np.full_like(t, -147800.0), q)
     d = case / "postProcessing" / "cfdtProbes" / "0"
     d.mkdir(parents=True)
+    jit = 3.0 * (-1.0) ** np.arange(t.size)                             # +-3 kPa from one step to the next (S50)
     (d / "p").write_text("# Probe 0 (0 0 -0.04)\n# Time p0\n" + "".join(
-        f"{a:.8g} {-150 + 19 * np.sin(2 * np.pi * 6 * a / PERIOD):.6g}\n" for a in t))
+        f"{a:.8g} {-150 + 19 * np.sin(2 * np.pi * 6 * a / PERIOD) + j:.8g}\n" for a, j in zip(t, jit)))
     plan = {"patches": {"inlet": {"kind": "inlet"}, "outlet": {"kind": "outlet"}}, "monitors": {"probes": ["eye"]}}
     cfg = {"inlet": "inlet", "rho": RHO, "period": PERIOD, "Q_target": 20 / 3600}
     state = {"free_flow": {"switched_at": 4 * PERIOD, "p0_Pa": -147800.0, "p0_from": "held"}}
@@ -193,5 +194,7 @@ def test_report_per_revolution(tmp_path):
     assert len(revs) == 5 and revs[0]["error_pct"] < -1 and abs(revs[-1]["error_pct"]) < 1
     assert revs[0]["pulsation_pct"] == pytest.approx(2.0, rel=0.2)          # +-2 % (the creep adds a little)
     eye = block["probes_p_Pa_by_revolution"]["eye"][0]
-    assert eye["max"] - eye["min"] == pytest.approx(2 * 19 * RHO, rel=0.02)
+    assert eye["max"] - eye["min"] == pytest.approx(2 * 22 * RHO, rel=0.02)           # the jitter on top
+    assert eye["max_f"] - eye["min_f"] == pytest.approx(2 * 19 * RHO, rel=0.01)       # [1 2 1]/4 takes it out
+    assert eye["mean"] == pytest.approx(-150 * RHO, rel=1e-3)
     assert "total_Pa" in block["pressure_by_revolution"]["inlet"] and not w

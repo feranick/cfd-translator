@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.18.9
+Version: 2026.11.20.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -101,7 +101,8 @@ GUIDES = {
             "inlet total pressure, from the start). With the flow held the whole pulsation lands on the suction side "
             "(S50: head 11-21 m and eye pressure +-48 kPa held, +-19 kPa free, means unchanged). average_from at least 4 "
             "revolutions after the switch (the flow settles); results.free_flow gives the flow, the inlet and outlet "
-            "pressures and the probes per revolution.",
+            "pressures and the probes per revolution (probes also min_f / max_f: the extremes after [1 2 1]/4 over time "
+            "steps, without the step-to-step jitter, S50 +-3 kPa; reprocess adds them to older runs).",
             "Pressure statistics of a sliding (or any transient) run: solve.transient.p_below [Pa absolute, e.g. "
             "2339, 20000, 50000: vapour pressure and air-release levels] writes, per cell, the fraction of the "
             "averaging window spent below each (image field p_below_<Pa>), summarised for the domain and each "

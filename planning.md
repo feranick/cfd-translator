@@ -463,6 +463,12 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.20.1**: free_flow probes report `min_f` / `max_f` per revolution, the extremes after [1 2 1]/4 over
+time steps (ends repeated; filtered over the whole series so the switch is not an end): Nicola, for omct's eye
+onset (FL18): the S50 eye probe jitters +-3 kPa from one step to the next, which inflates the raw min/max.
+reprocess builds results.free_flow again from the case (transient.json for the switch time); before, a reprocessed
+transient result lost it. Unverified on OpenFOAM until the S50 free_flow run is reprocessed.
+
 **2026.11.15.1**: `other/sliding_meshes.md` (AMI vs NCC: coupling, step limits, costs, meshing rules, start-up,
 validation, pitfalls, decision guide); guide('pumps') points to it.
 

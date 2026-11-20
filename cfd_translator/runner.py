@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.18.9
+Version: 2026.11.20.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -637,6 +637,17 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP, section
     w = list(w) + _sections_into(study, mesh, plan, fields, res)
     if not res.get("sections") and (old.get("results") or {}).get("sections") and sections is _KEEP:
         res["sections"] = old["results"]["sections"]
+    if transient:                       # free_flow from the case's monitors and probes again (it was dropped before)
+        ff = None
+        if old.get("solver") != "ref" and case.is_dir():
+            tf = folder / "transient.json"
+            tstate = json.loads(tf.read_text()) if tf.is_file() else {}
+            w = list(w)
+            ff = _free_flow_report(case, study, plan, folder, tstate, w)
+        if ff:
+            res["free_flow"] = ff
+        elif (old.get("results") or {}).get("free_flow"):
+            res["free_flow"] = old["results"]["free_flow"]
     out = dict(old)
     solve = dict(old.get("solve") or {})
     if old.get("solver") != "ref" and plan.get("monitors") and case.is_dir():

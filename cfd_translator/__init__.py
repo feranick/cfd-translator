@@ -1,3 +1,3 @@
 """cfd-translator: CFD studies (geometry, fluid, boundary conditions on faces) to OpenFOAM cases and checked results."""
 
-__version__ = "2026.11.18.9"
+__version__ = "2026.11.20.1"
