@@ -207,3 +207,46 @@ def test_the_runner_takes_the_two_fluid_path(tmp_path, monkeypatch):
     assert r["ok"] and r["solve"]["solver"] == "multiphaseEuler" and r["reliable"], r.get("unreliable_because")
     ev = bench.evaluate("bubble_column_euler", r)
     assert ev["passed"], ev
+
+
+def test_air_balance_takes_each_steps_own_flux(tmp_path):
+    """bubble_column_euler on spark1 (2026-11-20, job 766): the top's air flux changes sign between steps; the
+    trapezoid mixed two steps' fluxes (1.19 % of the bubbles' air). Each written flux belongs to the step ending at its
+    time: M_n - M_(n-1) = -F_n dt_n holds exactly."""
+    case = tmp_path / "c"
+    case.mkdir()
+    mon = {"air_mass": "m", "patch_air": {"top": "f"}}
+    plan = {"euler": {"monitors": mon, "steady": False, "air_dispersed0_kg": 1e-6}}
+    t = np.cumsum(np.r_[0.0, np.full(200, 0.004) * (1 + 0.3 * np.sin(np.arange(200)))])
+    F = 1e-6 * np.r_[0.0, np.where(np.arange(200) % 2 == 0, 1.0, -0.8)]
+    M = 5e-6 - np.cumsum(np.r_[0.0, F[1:] * np.diff(t)])
+    _dat(case, "m", list(zip(t, M)))
+    _dat(case, "f", list(zip(t, F)))
+    bal = twophase.air_balance(case, plan)
+    assert bal["error"] < 1e-9 and bal["error_trapezoid"] > 1e-3 and len(bal["series"]) <= 40
+
+
+def test_reprocess_reads_the_monitors_again(tmp_path, monkeypatch):
+    from cfd_translator import runner
+    req = tmp_path / "req"
+    folder = req / "s"
+    case = folder / "case"
+    case.mkdir(parents=True)
+    st = {"fluid": "water", "two_phase": {}}
+    (req / "request.json").write_text(json.dumps({"names": ["s"], "studies": {"s": st}}))
+    plan = {"euler": {"monitors": {"air_mass": "m", "air_volume": "v", "patch_air": {}, "patch_water": {}, "patch_p": {},
+                                   "regions": {}, "moment": {}},
+                      "steady": False, "air_dispersed0_kg": 1e-6, "d_mm": 1, "drag": "SchillerNaumann",
+                      "inlet_gas_fraction": 0.0, "regions": {}, "gravity": [0, 0, 0], "rho_l": 998.2},
+            "patches": {}, "inlets": {}, "zones": {}}
+    twophase.save_plan(case, plan)
+    t = np.linspace(0, 1, 11)
+    _dat(case, "m", [(x, 5e-6) for x in t])
+    _dat(case, "v", [(x, 4e-6) for x in t])
+    (folder / "s.json").write_text(json.dumps({"ok": True, "translator": "2026.11.20.3", "results": {},
+                                               "warnings": ["air mass balance off by 1.19% of the air in play (> 1%)"],
+                                               "reliable": False, "unreliable_because": ["air mass balance off"]}))
+    r = runner.reprocess_study(folder, "s")
+    assert r["reliable"] and r["results"]["two_phase"]["air_mass_balance"]["error"] == 0
+    assert not any("air mass balance" in w for w in r["warnings"]) and r["reprocessed"]["from"] == "the monitors"
+    assert (folder / "s.json.2026.11.20.3.bak").is_file()

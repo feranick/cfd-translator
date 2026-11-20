@@ -1,5 +1,5 @@
 """api.py — what other programs and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.9
+Version: 2026.11.20.4
 
     study_format()                   the study format, for the caller to read
     validate(studies)                static checks, no meshing
@@ -472,6 +472,14 @@ def _progress_of(d: Path, study: dict) -> dict:
     it = _re.findall(r"^Time = ([-+0-9.eE]+)", text, _re.M)
     s = study.get("solve", {})
     trs = s.get("transient")
+    tp_ = study.get("two_phase")
+    if isinstance(tp_, dict):                 # two_phase (twophase.py): its own time or iteration count
+        from .twophase import settings as _tps
+        c_ = _tps(study)
+        if c_["steady"]:
+            s = dict(s, iterations=c_["iterations"])
+        else:
+            trs = {"end_time": c_["end_time"], "init": 0}
     # no steady start when the run starts from another run's fields (init_from): reading its time steps as steady
     # iterations showed 'iteration 1 of 500' at 34,000 s an iteration for runs at t = 0.8 and 1.6 s (2026.11.07)
     # nor when it carries on a finished run (solve.transient.continue: rogue_v4c_cont, 2026.11.12, 'iteration 3 of

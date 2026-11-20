@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.20.3
+Version: 2026.11.20.4
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -579,6 +579,20 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP, section
     old = json.loads(f.read_text())
     if not old.get("ok") or "results" not in old:
         return {"name": name, "ok": False, "why": "not a finished study with results"}
+    from .twophase import PLAN_FILE
+    if (folder / PLAN_FILE).is_file():           # a two-phase run: its monitors read again (twophase.reprocess)
+        from datetime import datetime as _dt
+
+        from .twophase import reprocess as _tp_reprocess
+        try:
+            meta = json.loads((folder.parent / "request.json").read_text())
+            study_ = (meta.get("studies") or {})[name]
+        except (OSError, ValueError, KeyError):
+            return {"name": name, "ok": False, "why": "the request's study is not readable (request.json)"}
+        new = _tp_reprocess(folder, study_, old)
+        new["reprocessed"] = {"by": __version__, "at": _dt.now().isoformat(timespec="seconds"), "from": "the monitors"}
+        (folder / f"{name}.json.{old.get('translator', 'old')}.bak").write_text(json.dumps(old, default=float))
+        return _save(new, folder, name)
     if not (folder / "state.npz").is_file():
         return {"name": name, "ok": False, "why": "no saved mesh (state.npz)"}
     mesh, plan, fields, study = load_state(folder)

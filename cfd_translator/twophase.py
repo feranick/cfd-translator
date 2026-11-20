@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.3
+Version: 2026.11.20.4
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -647,19 +647,27 @@ def air_balance(case: Path, plan: dict) -> dict | None:
         net += f
         inj += np.minimum(f, 0.0)
         per[nm] = float(f"{np.mean(f[tm >= tm[len(tm) // 2]]):.4g}")
+    # each written value is the step's own flux, over the step that ends at its time: a rectangle rule (the
+    # trapezoid of 2026.11.20.3 mixed two steps' fluxes; the bubble column's top flux changes sign between steps)
     dt = np.diff(tm)
-    cum = np.concatenate([[0.0], np.cumsum(0.5 * (net[1:] + net[:-1]) * dt)])
-    injected = -np.concatenate([[0.0], np.cumsum(0.5 * (inj[1:] + inj[:-1]) * dt)])
+    cum = np.concatenate([[0.0], np.cumsum(net[1:] * dt)])
+    injected = -np.concatenate([[0.0], np.cumsum(inj[1:] * dt)])
     err = (M - M[0]) + cum
+    cum_tr = np.concatenate([[0.0], np.cumsum(0.5 * (net[1:] + net[:-1]) * dt)])
+    err_tr = (M - M[0]) + cum_tr
     scale = max(float(injected[-1]), float(plan["euler"].get("air_dispersed0_kg") or 0.0), 1e-30)
     steady = plan["euler"]["steady"]
     out = {"error": float(f"{np.abs(err).max() / scale:.3g}"), "error_end": float(f"{err[-1] / scale:.3g}"),
            "air_in_play_kg": float(f"{scale:.4g}"), "air_mass_start_kg": float(f"{M[0]:.4g}"),
            "air_mass_end_kg": float(f"{M[-1]:.4g}"), "air_out_net_kg": float(f"{cum[-1]:.4g}"),
            "patch_air_kg_s_late": per,
+           "error_of_all_air": float(f"{np.abs(err).max() / max(float(M[0]), 1e-30):.3g}"),
+           "error_trapezoid": float(f"{np.abs(err_tr).max() / scale:.3g}"),
+           "series": [[float(f"{tm[i]:.6g}"), float(f"{M[i] - M[0]:.4g}"), float(f"{-cum[i]:.4g}")]
+                      for i in np.unique(np.linspace(0, len(tm) - 1, 40).astype(int))],
            "basis": ("pseudo-time (local time step): the time integral is over iterations of differing local steps, "
                      "so only the late net flow (in = out) is meaningful" if steady else
-                     "M(t) - M(0) + time integral of the net air outflow")}
+                     "M(t) - M(0) + time integral of the net air outflow; series: [t, M - M0, net inflow so far] (kg)")}
     if steady:                           # in = out at the end, relative to the air flow in
         f_in = -sum(min(v, 0.0) for v in per.values())
         out["error"] = float(f"{abs(sum(per.values())) / max(f_in, 1e-30):.3g}") if f_in > 0 else None
@@ -722,7 +730,7 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
         if a is not None:
             rec["gas_fraction"] = float(f"{_mean(a[0], a[1], t0):.5g}")
             rec["gas_fraction_series"] = [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in
-                                          zip(a[0][:: max(1, len(a[0]) // 200)], a[1][:: max(1, len(a[0]) // 200)])]
+                                          zip(a[0][:: max(1, len(a[0]) // 50)], a[1][:: max(1, len(a[0]) // 50)])]
         if ua is not None and uw is not None:
             va, vw = _mean(ua[0], ua[1], t0), _mean(uw[0], uw[1], t0)
             rec["U_air"] = [float(f"{x:.5g}") for x in va]
@@ -733,7 +741,7 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
     av = _series(case, mon["air_volume"])
     if av is not None:
         tp["air_volume_series"] = [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in
-                                   zip(av[0][:: max(1, len(av[0]) // 200)], av[1][:: max(1, len(av[0]) // 200)])]
+                                   zip(av[0][:: max(1, len(av[0]) // 50)], av[1][:: max(1, len(av[0]) // 50)])]
     rot = _moment_axis(case, mon, plan, t0)
     if rot:
         res["rotating"] = rot
@@ -833,8 +841,24 @@ def run_and_results(case: Path, study: dict, plan: dict, timeout: float, procs: 
             solve["step_profile"] = sp
     except OSError:
         pass
+    save_plan(case, plan)
     res, w = results(case, study, plan)
     warns += w
+    why = verdict(res, plan)
+    return {"solve": solve, "results": res, "unreliable_because": why, "info": info}
+
+
+PLAN_FILE = "twophase_plan.json"
+
+
+def save_plan(case: Path, plan: dict) -> None:
+    """What results() needs (monitors, regions, patches, inlets, zones) beside the case, for reprocess."""
+    import json
+    keep = {k: plan.get(k) for k in ("euler", "patches", "inlets", "zones")}
+    (Path(case).parent / PLAN_FILE).write_text(json.dumps(keep, default=float))
+
+
+def verdict(res: dict, plan: dict) -> list:
     why = []
     bal = res["checks"]["air_mass_balance"]
     if bal.get("error") is None:
@@ -844,4 +868,20 @@ def run_and_results(case: Path, study: dict, plan: dict, timeout: float, procs: 
     ref = (res["two_phase"].get("reference") or {})
     if plan["euler"]["inlet_gas_fraction"] == 0 and ref and ref.get("within_tolerance") is False:
         why.append("head or torque differs from the single-phase reference by more than 2 % at a gas fraction of 0")
-    return {"solve": solve, "results": res, "unreliable_because": why, "info": info}
+    return why
+
+
+def reprocess(folder: Path, study: dict, old: dict) -> dict:
+    """The two-phase results again from the case's monitors (runner.reprocess_study)."""
+    import json
+    folder = Path(folder)
+    plan = json.loads((folder / PLAN_FILE).read_text())
+    res, w = results(folder / "case", study, plan)
+    why = verdict(res, plan)
+    out = dict(old, results=res, reliable=not why)
+    out.pop("unreliable_because", None)
+    if why:
+        out["unreliable_because"] = why
+    out["warnings"] = [x for x in old.get("warnings", []) if not x.startswith("air mass balance")] + \
+        [x for x in w if x not in old.get("warnings", [])]
+    return out
