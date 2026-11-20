@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.6
+Version: 2026.11.20.7
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -108,7 +108,14 @@ def errors(st: dict) -> list[str]:
     if not (vm is False or (_num(vm) and 0 <= vm <= 1)):
         e.append("two_phase.virtual_mass: the coefficient Cvm (0.5) or false")
     if "gravity" in tp and not _vec(tp["gravity"]):
-        e.append("two_phase.gravity: [gx, gy, gz] m/s2 (default [0, 0, -9.81]: check the pump's orientation)")
+        e.append("two_phase.gravity: [gx, gy, gz] m/s2")
+    elif "gravity" not in tp and ("fill_level_mm" in (tp.get("initial") or {}) or any(
+            isinstance(b, dict) and b.get("kind") == "opening" for b in st.get("bcs") or [])):
+        # a free surface or an atmosphere: where 'up' is decides where the air goes. The S50's shaft is horizontal
+        # (impeller axis z, y up: gravity [0, -9.81, 0]); a default along -z would have put the reservoir's free
+        # surface along the shaft (pump chat, 2026-11-20)
+        e.append("two_phase.gravity: required with a free surface (initial.fill_level_mm) or an opening: [gx, gy, gz] "
+                 "m/s2 in the study's frame (S50 and S45+50: [0, -9.81, 0], shaft along z, y up)")
     if tp.get("mode", "steady") not in ("steady", "transient"):
         e.append("two_phase.mode: 'steady' (pseudo-transient, local time step) or 'transient'")
     for k, lo in (("iterations", 1), ("write_every", 1)):
@@ -681,7 +688,13 @@ def air_balance(case: Path, plan: dict) -> dict | None:
                      "M(t) - M(0) + time integral of the net air outflow; series: [t, M - M0, net inflow so far] (kg)")}
     if steady:                           # in = out at the end, relative to the air flow in
         f_in = -sum(min(v, 0.0) for v in per.values())
-        out["error"] = float(f"{abs(sum(per.values())) / max(f_in, 1e-30):.3g}") if f_in > 0 else None
+        if f_in > 0:
+            out["error"] = float(f"{abs(sum(per.values())) / f_in:.3g}")
+        elif per:                        # open but no air coming in: nothing to judge in pseudo-time
+            out.update(error=None, note="steady with no air flowing in: in = out cannot be judged")
+    if max(float(injected[-1]), float(plan["euler"].get("air_dispersed0_kg") or 0.0), float(np.abs(M).max())) < 1e-20:
+        # no air in play (zero gas fraction in and at the start: the zero-air consistency check): nothing to balance
+        out.update(error=None, applicable=False, note="no air in play: the balance does not apply")
     return out
 
 
@@ -875,8 +888,10 @@ def save_plan(case: Path, plan: dict) -> None:
 def verdict(res: dict, plan: dict) -> list:
     why = []
     bal = res["checks"]["air_mass_balance"]
-    if bal.get("error") is None:
-        why.append("no air mass balance (the monitors were not written)")
+    if bal.get("applicable") is False:
+        pass
+    elif bal.get("error") is None:
+        why.append(f"no air mass balance ({bal.get('note') or 'the monitors were not written'})")
     elif bal["error"] > BALANCE_TOL:
         why.append(f"air mass balance off by {bal['error']:.2%}")
     ref = (res["two_phase"].get("reference") or {})

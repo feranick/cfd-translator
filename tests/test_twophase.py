@@ -226,6 +226,30 @@ def test_air_balance_takes_each_steps_own_flux(tmp_path):
     assert bal["error"] < 1e-9 and bal["error_trapezoid"] > 1e-3 and len(bal["series"]) <= 20
 
 
+def test_no_air_in_play_is_not_unreliable(tmp_path):
+    """MRF hold test (carbonio, 2026-11-20): zero air in and at the start was flagged 'no air mass balance (the
+    monitors were not written)'. The zero-air consistency check of (a) has nothing to balance."""
+    case = tmp_path / "c"
+    case.mkdir()
+    t = np.arange(0.0, 50.0, 10.0)
+    _dat(case, "m", [(x, 0.0) for x in t])
+    _dat(case, "f", [(x, 0.0) for x in t])
+    for steady, pa in ((True, {"out": "f"}), (False, {"out": "f"}), (True, {})):
+        plan = {"euler": {"monitors": {"air_mass": "m", "patch_air": pa}, "steady": steady, "air_dispersed0_kg": 0.0,
+                          "inlet_gas_fraction": 0}}
+        bal = twophase.air_balance(case, plan)
+        assert bal["applicable"] is False and bal["error"] is None
+        res = {"checks": {"air_mass_balance": bal}, "two_phase": {}}
+        assert not any("air mass balance" in w for w in twophase.verdict(res, plan))
+    # steady, open, air at the start but none flowing in: said so, not 'monitors not written'
+    _dat(case, "m", [(x, 1e-6) for x in t])
+    plan = {"euler": {"monitors": {"air_mass": "m", "patch_air": {"out": "f"}}, "steady": True,
+                      "air_dispersed0_kg": 1e-6, "inlet_gas_fraction": 0}}
+    bal = twophase.air_balance(case, plan)
+    w = twophase.verdict({"checks": {"air_mass_balance": bal}, "two_phase": {}}, plan)
+    assert any("no air flowing in" in x for x in w)
+
+
 def test_reprocess_reads_the_monitors_again(tmp_path, monkeypatch):
     from cfd_translator import runner
     req = tmp_path / "req"
@@ -250,3 +274,14 @@ def test_reprocess_reads_the_monitors_again(tmp_path, monkeypatch):
     assert r["reliable"] and r["results"]["two_phase"]["air_mass_balance"]["error"] == 0
     assert not any("air mass balance" in w for w in r["warnings"]) and r["reprocessed"]["from"] == "the monitors"
     assert (folder / "s.json.2026.11.20.3.bak").is_file()
+
+
+def test_gravity_is_required_with_a_free_surface_or_an_opening():
+    st = _pump_study()
+    assert not any("gravity" in x for x in twophase.errors(st))                 # closed pump, no free surface
+    fs = dict(st, two_phase=dict(st["two_phase"], initial={"fill_level_mm": 10}))
+    assert any("gravity: required" in x and "[0, -9.81, 0]" in x for x in twophase.errors(fs))
+    op = dict(st, bcs=st["bcs"] + [{"kind": "opening", "faces": {"nx": 1}}])
+    assert any("gravity: required" in x for x in twophase.errors(op))
+    ok = dict(fs, two_phase=dict(fs["two_phase"], gravity=[0, -9.81, 0]))
+    assert not any("gravity" in x for x in twophase.errors(ok))

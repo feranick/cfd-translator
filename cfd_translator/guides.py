@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.20.3
+Version: 2026.11.20.7
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -164,8 +164,9 @@ GUIDES = {
             "inlet_gas_fraction (VoF, one velocity) cannot show either. MRF only (no sliding zone, no ESI); fluid water; "
             "laminar or kOmegaSST (water kOmegaSSTSato, air kOmegaSST); air a perfect gas.",
             "bubble_size {fixed: mm}: the answers depend on it; run every case at several sizes (0.3, 1, 3 mm) and say "
-            "when a verdict changes with it ({iate} is reserved for a later version). gravity (default [0, 0, -9.81]) "
-            "must match the pump's orientation.",
+            "when a verdict changes with it ({iate} is reserved for a later version). gravity is required with a free "
+            "surface or an opening (default [0, 0, -9.81] otherwise) and must match the pump's orientation: the S50 "
+            "and S45+50 have a horizontal shaft (axis z, y up): [0, -9.81, 0].",
             "mode 'steady' (local time step, iterations) for frozen-rotor points at a fixed inlet gas fraction; "
             "'transient' (end_time, max_co) for air moving in time. inlet {gas_fraction | air_flow_lpm}; initial "
             "{gas_fraction, fill_level_mm (air above), velocity 'rotation'}; regions [{name, cylinder | box}] report "
