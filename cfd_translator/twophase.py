@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.5
+Version: 2026.11.20.6
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -41,7 +41,7 @@ R_AIR = 287.05
 AIR = {"molWeight": 28.96, "Cp": 1007.0, "mu": 1.84e-5, "Pr": 0.7}
 KEYS = {"bubble_size", "drag", "virtual_mass", "turbulent_dispersion", "gravity", "p_ref_Pa", "temperature_C",
         "mode", "iterations", "end_time", "write_interval", "write_every", "max_co", "max_delta_t", "inlet",
-        "initial", "regions", "reference", "relax", "average_from"}
+        "initial", "regions", "reference", "relax", "average_from", "face_momentum"}
 DRAG = ("SchillerNaumann", "IshiiZuber")
 BALANCE_TOL = 0.01                     # air mass balance: |error| / air in play
 REF_TOL = 0.02                         # single-phase consistency at a gas fraction of 0: head and torque
@@ -76,7 +76,8 @@ def settings(study: dict) -> dict:
             "gas_fraction": float(inl.get("gas_fraction", 0.0)), "air_flow_lpm": inl.get("air_flow_lpm"),
             "initial": dict(tp.get("initial") or {}), "regions": list(tp.get("regions") or []),
             "reference": tp.get("reference"), "relax": dict(tp.get("relax") or {}),
-            "average_from": tp.get("average_from"), "turbulent": turb}
+            "average_from": tp.get("average_from"), "turbulent": turb,
+            "face_momentum": bool(tp.get("face_momentum", False))}
 
 
 def errors(st: dict) -> list[str]:
@@ -160,6 +161,8 @@ def errors(st: dict) -> list[str]:
             names.append(r["name"])
     if len(set(names)) != len(names):
         e.append("two_phase.regions: names must be unique")
+    if "face_momentum" in tp and not isinstance(tp["face_momentum"], bool):
+        e.append("two_phase.face_momentum: true | false (multiphaseEuler's face-based momentum; default false)")
     if "reference" in tp and not isinstance(tp["reference"], str):
         e.append("two_phase.reference: '<request>/<study>' of a single-phase run on the same mesh (head and torque "
                  "compared at a gas fraction of 0)")
@@ -538,7 +541,8 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
           f"    \"({fields}).*\"\n    {{\n        solver          PBiCGStab;\n        preconditioner  DILU;\n"
           "        tolerance       1e-7;\n        relTol          0;\n        minIter         1;\n    }\n}\n\n"
           "PIMPLE\n{\n    nOuterCorrectors    1;\n    nCorrectors         3;\n"
-          f"    nNonOrthogonalCorrectors {nonorth};\n\n    correctPhi          yes;\n\n    faceMomentum        no;\n"
+          f"    nNonOrthogonalCorrectors {nonorth};\n\n    correctPhi          yes;\n\n"
+          f"    faceMomentum        {'yes' if cfg['face_momentum'] else 'no'};\n"
           "    VmDdtCorrection     yes;\n    dragCorrection      yes;\n"
           + (f"\n    maxCo               {_fmt(cfg['max_co'])};\n    maxDeltaT           {_fmt(dt_cap)};\n"
              "    rDeltaTSmoothingCoeff 0.02;\n" if steady else "")
@@ -737,18 +741,21 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
         if a is not None:
             rec["gas_fraction"] = float(f"{_mean(a[0], a[1], t0):.5g}")
             rec["gas_fraction_series"] = [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in
-                                          zip(a[0][:: max(1, len(a[0]) // 50)], a[1][:: max(1, len(a[0]) // 50)])]
+                                          zip(a[0][:: max(1, len(a[0]) // 25)], a[1][:: max(1, len(a[0]) // 25)])]
         if ua is not None and uw is not None:
             va, vw = _mean(ua[0], ua[1], t0), _mean(uw[0], uw[1], t0)
             rec["U_air"] = [float(f"{x:.5g}") for x in va]
             rec["U_water"] = [float(f"{x:.5g}") for x in vw]
             rec["slip"] = [float(f"{x:.5g}") for x in (np.asarray(va) - np.asarray(vw))]
+            k = max(1, len(uw[0]) // 25)
+            rec["U_water_series"] = [[float(f"{t_:.5g}")] + [float(f"{x:.4g}") for x in v_]
+                                     for t_, v_ in zip(uw[0][::k], uw[1][::k])]
         regs[rn] = rec
     tp["regions"] = regs
     av = _series(case, mon["air_volume"])
     if av is not None:
         tp["air_volume_series"] = [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in
-                                   zip(av[0][:: max(1, len(av[0]) // 50)], av[1][:: max(1, len(av[0]) // 50)])]
+                                   zip(av[0][:: max(1, len(av[0]) // 25)], av[1][:: max(1, len(av[0]) // 25)])]
     rot = _moment_axis(case, mon, plan, t0)
     if rot:
         res["rotating"] = rot

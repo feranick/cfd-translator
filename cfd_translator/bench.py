@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.20.5
+Version: 2026.11.20.6
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -603,10 +603,13 @@ def _cases() -> dict:
     def _rc_checks(r):
         tp = r["two_phase"]
         slip_r, w_liq = _probe_means(tp)
-        cf = lambda t: _tp().core_fraction(t, R_rc, a_rc, w_rc, 1e-4, rho_w, rho_a, mu_w)
+        # the physics (slip and migration) against the liquid's own measured rotation; the numerics (does the liquid
+        # keep turning with the walls) separately: spark1 / carbonio 2026-11-20, the walls variant's liquid at 7.05
+        # rad/s gave a slip within 0.4 % of the drag law at 7.05
+        cf = lambda t: _tp().core_fraction(t, R_rc, a_rc, w_liq, 1e-4, rho_w, rho_a, mu_w)
         return [("the liquid turns with the walls: rotation rate at r 40 mm (rad/s)", w_rc, w_liq, {"tol": 0.02}),
-                ("radial slip at r 40 mm = drag law (m/s, inward; four probes)",
-                 -_tp().slip_velocity(w_rc ** 2 * 0.04, 1e-4, rho_w, rho_a, mu_w)[0], slip_r, {"tol": 0.1}),
+                ("radial slip at r 40 mm = drag law at the liquid's rotation (m/s, inward; four probes)",
+                 -_tp().slip_velocity(w_liq ** 2 * 0.04, 1e-4, rho_w, rho_a, mu_w)[0], slip_r, {"tol": 0.05}),
                 ("bubble Reynolds number at r 40 mm below 1 (Stokes regime)", 0.0, rho_w * abs(slip_r) * 1e-4 / mu_w,
                  {"abs": 1.0}),
                 ("air within R/3: f(6 s) / f(2 s)", cf(6.0) / cf(2.0), _core_growth(tp, 2.0, 6.0), {"tol": 0.05}),
@@ -631,6 +634,16 @@ def _cases() -> dict:
     C["rotating_cylinder_euler"] = {"study": _rc_study(True), "checks": _rc_checks, "ref": False, "needs": ["gmsh"]}
     C["rotating_cylinder_walls_euler"] = {"study": _rc_study(False), "checks": _rc_checks, "ref": False,
                                           "needs": ["gmsh"]}
+    # diagnostics of the liquid's rotation (by name): face-based momentum, quadrilateral cells, fewer time steps
+    import copy as _copy
+    for nm, mod in (("fm", lambda st: st["two_phase"].update(face_momentum=True)),
+                    ("quads", lambda st: st["mesh"].update(quads=True)),
+                    ("dt5", lambda st: st["two_phase"].update(max_delta_t=0.005, max_co=2.0))):
+        for mrf in (True, False):
+            st_ = _copy.deepcopy(_rc_study(mrf))
+            mod(st_)
+            C[f"rotating_cylinder{'' if mrf else '_walls'}_euler_{nm}"] = {"study": st_, "checks": _rc_checks,
+                                                                           "ref": False, "needs": ["gmsh"], "slow": True}
     return C
 
 
