@@ -251,3 +251,17 @@ def test_reprocess_with_other_averaging_settings(tmp_path, monkeypatch):
     bad = api.reprocess(str(req), average={"window": 2})["studies"]["v"]
     assert bad["ok"] is False and bad["why"] == "invalid average"
 
+
+
+def test_free_flow_inlet_is_not_judged_against_the_held_flow(tmp_path):
+    """free_flow (2026.11.20.2): the inlet holds a total pressure, so a flow off the held one is no warning and no
+    inlet_flow_error (rung 2 g 5 on spark1, job 756: 'flow 0.00564014 m3/s, but the case prescribes 0.00555556')."""
+    st, mesh, plan, fields = _setup(tmp_path)
+    for n, pf in fields["patches"].items():
+        if plan["patches"][n]["kind"] == "inlet":
+            pf["phi"] = pf["phi"] * 1.015
+    _, w = results(st, mesh, plan, fields)
+    assert any("but the case prescribes" in x for x in w)
+    ff = dict(st, solve=dict(st.get("solve") or {}, transient={"end_time": 1.0, "free_flow": True}))
+    res, w = results(ff, mesh, plan, fields)
+    assert not any("but the case prescribes" in x for x in w) and "inlet_flow_error" not in res["checks"]

@@ -463,6 +463,11 @@ OpenFOAM-14 source facts (checked on GitHub, 2026-10-21):
 
 ## State (history, newest first)
 
+**2026.11.20.2**: verified on OpenFOAM (run_20261120_r2_g5_ff_esi, spark1 job 756: rung 2 g = 5, ESI at 1 deg,
+free_flow p0 233620 Pa from t = 0, 3 revolutions): min_f/max_f inside min/max for all probes and revolutions; reprocess
+keeps results.free_flow unchanged. post.results skips the inlet flow check in free_flow runs (it warned 0.00564 against
+0.00556 m3/s there).
+
 **2026.11.20.1**: free_flow probes report `min_f` / `max_f` per revolution, the extremes after [1 2 1]/4 over
 time steps (ends repeated; filtered over the whole series so the switch is not an end): Nicola, for omct's eye
 onset (FL18): the S50 eye probe jitters +-3 kPa from one step to the next, which inflates the raw min/max.
