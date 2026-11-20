@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.20.1
+Version: 2026.11.20.3
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -231,6 +231,22 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
             if use < procs:
                 warns.append(f"ran on {use} MPI rank{'s' if use > 1 else ''} instead of {procs}: {mesh.ncells} cells "
                              f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
+            if plan.get("euler"):                 # water + air with slip (twophase.py): its own monitors and results
+                from .twophase import run_and_results
+                ex = run_and_results(case, study, plan, timeout, use, warns, t_job)
+                info = ex["info"]
+                out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
+                out.update(solve=ex["solve"], results=ex["results"], warnings=warns, reliable=not ex["unreliable_because"],
+                           ok=True)
+                if ex["unreliable_because"]:
+                    out["unreliable_because"] = ex["unreliable_because"]
+                t2 = time.perf_counter()
+                out["files"] = {"case": str(case), "archive": _archive(case, folder / f"{name}_case.tgz"),
+                                "paraview": str(case / "case.foam")}
+                out["seconds"] = {"mesh_case": round(t1 - t0, 3), "solve_and_results": round(t2 - t1, 3)}
+                if watcher is not None:
+                    _cpu_note(watcher.stop(), out)
+                return _save(out, folder, name)
             if transient:
                 info = _solve_transient(case, study, plan, timeout, use, folder, tstate, t_job, warns, mesh)
                 if info.get("continued"):

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.18.9
+Version: 2026.11.20.3
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -159,7 +159,7 @@ STUDY_KEYS = {
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis, motion: mrf | "
-                "sliding, interface_refine: band mm (fine ring+band over the zone's surface)}]: MRF zones (default) or a sliding mesh",
+                "sliding, interface_refine: mm}]: MRF zones (default) or a sliding mesh",
     "images": "true or [{name, slice: {axis, at mm}, field: u|ux|uy|uz|p|cp, streamlines, window: [a0,a1,b0,b1]} "
               "| {name, surface: part|walls|<bc>, field: p|cp|wall_shear, view: [elev, azim], quality: high} | "
               "{name, iso: {field: q|u|cp_total, value|auto}, color: u|p|cp, window: [x0,x1,..,z1], view}], "
@@ -170,6 +170,8 @@ STUDY_KEYS = {
     "queue": "true: always a SLURM job; false: the server's own workers (default: by time estimate)",
     "cavitation": "{npsh: m | [m, ...] (a sweep: NPSH3; chain: each point from the previous), temperature C | p_vapour Pa, model, iterations, "
                   "inlet_gas_fraction (air, no vapour: f | [f per npsh] | {saturated_at: Pa})}: liquid + vapour (VoF); guide('pumps')",
+    "two_phase": "{bubble_size: {fixed: mm}, gravity, mode, inlet, initial, regions, reference}: air with "
+                 "slip; guide('pumps')",
     "run": "{timeout_s, mem ('8G' per node, SLURM's --mem; 'auto'), procs, queue, after, after_mode}: overrides of the machine's defaults, within its caps (status)",
     "run.after": "'<request>/<study>' | '<study>' | list: start when those runs (all jobs) end",
     "run.after_mode": "any (default) | ok: cancelled unless they end ok",
@@ -1058,6 +1060,8 @@ def validate_study(st: dict) -> dict:
     # cavitation (cavitation.py)
     from .cavitation import errors as _cavitation_errors
     errs += _cavitation_errors(st)
+    from .twophase import errors as _twophase_errors      # gas-liquid with slip (twophase.py)
+    errs += _twophase_errors(st)
     from .onset import errors as _onset_errors
     errs += _onset_errors(st)
     from .freeflow import errors as _ff_errors

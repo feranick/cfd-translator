@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.20.1
+Version: 2026.11.20.3
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 GUIDES = {
     "pumps": {
-        "title": "Pumps, fans and mixers: MRF (frozen rotor) or a sliding mesh; cavitation and NPSH curves",
+        "title": "Pumps, fans and mixers: MRF (frozen rotor) or a sliding mesh; cavitation and NPSH curves; air with slip",
         "choose": [
             "MRF (rotating[].motion 'mrf', the default): steady, fast. The rotor is frozen where the geometry puts it, "
             "so head and torque depend on where the blades stand against the cutwater or the stator vanes; the "
@@ -156,6 +156,27 @@ GUIDES = {
             "starts from takes that point's mesh (not meshed again) and its fields are copied, not mapped. Chained "
             "points run one after the other, not side by side: fewer iterations each (cavitation.iterations) is what "
             "pays for it.",
+        ],
+        "air_with_slip": [
+            "two_phase {...} (OpenFOAM 14 multiphaseEuler, two-fluid): air and water each with their own velocity, so "
+            "air slips through the water under gravity and, in an MRF zone, under the rotating frame's pressure "
+            "gradient (what drives air to an impeller's eye and lets it separate in a discharge chamber). cavitation's "
+            "inlet_gas_fraction (VoF, one velocity) cannot show either. MRF only (no sliding zone, no ESI); fluid water; "
+            "laminar or kOmegaSST (water kOmegaSSTSato, air kOmegaSST); air a perfect gas.",
+            "bubble_size {fixed: mm}: the answers depend on it; run every case at several sizes (0.3, 1, 3 mm) and say "
+            "when a verdict changes with it ({iate} is reserved for a later version). gravity (default [0, 0, -9.81]) "
+            "must match the pump's orientation.",
+            "mode 'steady' (local time step, iterations) for frozen-rotor points at a fixed inlet gas fraction; "
+            "'transient' (end_time, max_co) for air moving in time. inlet {gas_fraction | air_flow_lpm}; initial "
+            "{gas_fraction, fill_level_mm (air above), velocity 'rotation'}; regions [{name, cylinder | box}] report "
+            "their gas fraction and the phases' velocities (an eye region for gas locking).",
+            "Results two_phase: air_mass_balance (judged: within 1 %), flows per open patch (water m3/s, air kg/s), "
+            "regions, pump {head_m, torque_Nm, power_W}; with reference '<request>/<study>' (a single-phase run on "
+            "the same mesh) the head and torque ratios, which at a gas fraction of 0 must be within 2 %. Compare "
+            "two-phase heads as ratios to that single-phase head, not as absolute heads.",
+            "Validate first: run_benchmarks bubble_column_euler and rotating_cylinder_euler. Cost: a two-fluid step is "
+            "several times a single-phase one, and the time step follows the fastest flow through the smallest cells "
+            "(clearance jets): estimate before a pump run.",
         ],
         "reporting": [
             "Give pump.head_m, power_W and efficiency as revolution averages with results.averaged (std, drift, "

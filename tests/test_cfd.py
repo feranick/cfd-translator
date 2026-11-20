@@ -141,8 +141,8 @@ def test_validation_messages():
     f = api.study_format()
     # the format itself; 'status' (installed tools and versions) differs by machine: 12,518 on a machine with
     # every tool against 12,334 in a sandbox without them (2026.11.09); 12,653 with sections (2026.11.13.7); run.after
-    # and run.after_mode (2026.11.18.3)
-    assert len(json.dumps({k: v for k, v in f.items() if k != "status"})) < 13000 and api.validate(f["example"])["ok"]
+    # and run.after_mode (2026.11.18.3); two_phase (2026.11.20.3)
+    assert len(json.dumps({k: v for k, v in f.items() if k != "status"})) < 13250 and api.validate(f["example"])["ok"]
     assert len(json.dumps(f["status"])) < 1000
 
 

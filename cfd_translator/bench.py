@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.12.15
+Version: 2026.11.20.3
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -10,6 +10,10 @@ Version: 2026.11.12.15
   couette_2d       plane Couette flow: Q = U H / 2, wall shear mu U / H (exact on any mesh)
   channel_2d       plane Poiseuille: dp/dx = 12 mu U / H^2, wall force = dp H (2D, parabolic inlet)
   cavity_re100     lid-driven cavity, Re 100: centreline velocities vs Ghia, Ghia & Shin (1982)
+  bubble_column_euler   two-fluid (multiphaseEuler): 1 mm bubbles rise through still water at the Schiller-Naumann
+                   terminal velocity; air mass conserved
+  rotating_cylinder_euler   two-fluid, MRF: 0.1 mm bubbles migrate to the axis of a cylinder in solid-body rotation
+                   at the drag law's rate (Stokes regime, Re < 1); air mass conserved (Gmsh)
   duct_air_2pct    water + 2 % air (inlet_gas_fraction, compressibleVoF, LTS) in a duct: air out = air in, its
                    volume expanded by p_in / p_out (isothermal), the liquid flow as asked
   pipe_poiseuille  Hagen-Poiseuille pipe: dp = 8 mu L Q / (pi R^4) (swept disk mesh; Gmsh)
@@ -60,6 +64,8 @@ import re
 import sys
 import time
 from pathlib import Path
+
+import numpy as np
 
 
 from .runner import run_study
@@ -546,7 +552,69 @@ def _cases() -> dict:
         for lev, f, procs in ((1, 1.0, 6), (2, 1 / math.sqrt(2), 10), (3, 0.5, 19)):
             C[f"ahmed{phi}_L{lev}"] = {"study": ahmed_study(phi, f, procs), "checks": _ahmed_checks(cd_exp),
                                        "ref": False, "needs": ["gmsh", "build123d_translator"], "slow": True}
+    # two-fluid (multiphaseEuler, twophase.py) validation, before any pump run:
+    # 1. a 2D bubble column: 1 mm bubbles, 2 % air under a free surface, slip walls; the air's slip over the water in
+    #    mid-column is the Schiller-Naumann terminal velocity (0.112 m/s, Re 112); air conserved
+    rho_w, mu_w, rho_a = 998.2, 1.002e-3, 101325.0 / (287.05 * 293.15)
+    C["bubble_column_euler"] = {
+        "study": {"geometry": {"box": [20, 400, 2]}, "2d": True, "fluid": "water", "model": "laminar",
+                  "bcs": [{"kind": "opening", "name": "top", "faces": {"ny": 1}},
+                          {"kind": "slip", "name": "sides", "faces": {"all": True}}],
+                  "mesh": {"cells": [20, 400, 1]},
+                  "two_phase": {"bubble_size": {"fixed": 1.0}, "gravity": [0, -9.81, 0], "mode": "transient",
+                                "end_time": 1.0, "max_co": 0.5, "max_delta_t": 0.002, "write_every": 1,
+                                "average_from": 0.3, "initial": {"gas_fraction": 0.02, "fill_level_mm": 100},
+                                "regions": [{"name": "mid", "box": [-10, -50, 0, 10, 50, 2]}]}},
+        "checks": lambda r: [
+            ("air slip over water in mid-column = Schiller-Naumann terminal velocity (m/s)",
+             _tp().slip_velocity(9.81, 1e-3, rho_w, rho_a, mu_w)[0], r["two_phase"]["regions"]["mid"]["slip"][1],
+             {"tol": 0.05}),
+            ("air mass balance (share of the air in play)", 0.0, r["two_phase"]["air_mass_balance"]["error"],
+             {"abs": 0.01})],
+        "ref": False, "needs": []}
+    # 2. a closed cylinder (R 50 mm) turning as a solid body at 10 rad/s with the whole fluid an MRF zone: 0.1 mm
+    #    bubbles (0.5 %) migrate to the axis under the pressure gradient, Stokes regime (Re 0.26 at the wall); the
+    #    air within r < R/3 grows by the integrated drag-law trajectories (f(t)/f(0) = 2.35 at 8 s); air conserved
+    w_rc, R_rc, a_rc = 10.0, 0.05, 0.05 / 3
+
+    def _core(r, t):
+        tp = r["two_phase"]
+        a = np.asarray(tp["regions"]["core"]["gas_fraction_series"], float)
+        v = np.asarray(tp["air_volume_series"], float)
+        f = np.interp(a[:, 0], v[:, 0], v[:, 1])
+        frac = a[:, 1] * tp["regions"]["core"]["volume_m3"] / f
+        return float(np.interp(t, a[:, 0], frac) / frac[0])
+
+    def _rc_checks(r):
+        tp = r["two_phase"]
+        slip_x = tp["regions"]["probe"]["slip"][0]
+        re = rho_w * abs(slip_x) * 1e-4 / mu_w
+        exp = lambda t: _tp().core_fraction(t, R_rc, a_rc, w_rc, 1e-4, rho_w, rho_a, mu_w) / (a_rc / R_rc) ** 2
+        return [("air within R/3: f(4 s) / f(0)", exp(4.0), _core(r, 4.0), {"tol": 0.05}),
+                ("air within R/3: f(8 s) / f(0)", exp(8.0), _core(r, 8.0), {"tol": 0.05}),
+                ("radial slip at r 40 mm = drag law (m/s, inward)", -_tp().slip_velocity(w_rc ** 2 * 0.04, 1e-4, rho_w,
+                                                                                         rho_a, mu_w)[0], slip_x, {"tol": 0.1}),
+                ("bubble Reynolds number at r 40 mm below 1 (Stokes regime)", 0.0, re, {"abs": 1.0}),
+                ("air mass balance (share of the air in play)", 0.0, tp["air_mass_balance"]["error"], {"abs": 0.01})]
+    C["rotating_cylinder_euler"] = {
+        "study": {"geometry": {"cylinder": [50, 10]}, "fluid": "water", "model": "laminar",
+                  "rotating": [{"name": "rot", "axis": [0, 0, 1], "center": [0, 0, -1], "rpm": w_rc * 60 / (2 * math.pi),
+                                "radius": 60, "span": [0, 12]}],
+                  "bcs": [{"kind": "wall", "name": "container", "faces": {"all": True}, "rotation": "rot"}],
+                  "mesh": {"size": 2.0, "extrude": 4},
+                  "two_phase": {"bubble_size": {"fixed": 0.1}, "gravity": [0, 0, 0], "mode": "transient",
+                                "end_time": 8.0, "max_co": 0.5, "max_delta_t": 0.01, "write_every": 10,
+                                "average_from": 1.0, "initial": {"gas_fraction": 0.005, "velocity": "rotation"},
+                                "regions": [{"name": "core", "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1],
+                                                                          "radius": 50 / 3, "span": [-1, 11]}},
+                                            {"name": "probe", "box": [37, -3, 0, 43, 3, 10]}]}},
+        "checks": _rc_checks, "ref": False, "needs": ["gmsh"]}
     return C
+
+
+def _tp():
+    from . import twophase
+    return twophase
 
 
 def ahmed_goal(phi: float) -> dict:
@@ -922,7 +990,9 @@ def evaluate(n: str, r: dict, cases: dict | None = None) -> dict:
                        **tol, "passed": bool(ok)})
     return {"ok": True, "passed": all(c_["passed"] for c_ in checks), "checks": checks,
             "solve": solve_summary(r), "reliable": r.get("reliable"), "cells": r["mesh"]["cells"],
-            "invariants": {k: r["results"]["checks"][k].get("error") for k in ("mass_balance", "momentum_balance")},
+            "invariants": {k: (r["results"].get("checks") or {}).get(k, {}).get("error")
+                           for k in ("mass_balance", "momentum_balance", "air_mass_balance")
+                           if k in (r["results"].get("checks") or {})},
             "warnings": r.get("warnings", []), "notes": expected_notes(r.get("warnings", [])),
             "seconds": r.get("seconds")}
 

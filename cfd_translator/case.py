@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.17.9
+Version: 2026.11.20.3
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -586,6 +586,9 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
         Lr = float(study.get("reference", {}).get("length", 0)) * SCALE or mesh.info.get("diag", 1.0) * SCALE * 0.07
         om0 = float(np.sqrt(k0) / (CMU ** 0.25 * Lr))
     plan["U_ref"] = uref
+    if study.get("two_phase"):                  # water + air with slip (twophase.py: multiphaseEuler)
+        from .twophase import write_euler
+        return write_euler(study, mesh, patches, case, plan, zones, g, q)
     if study.get("cavitation"):                 # liquid and vapour (cavitation.py: incompressibleVoF, LTS)
         from .cavitation import write_vof
         return write_vof(study, mesh, patches, case, plan, U, kin, k0, om0, turb, zones, g, q)
