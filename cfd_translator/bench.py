@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.20.3
+Version: 2026.11.20.5
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -13,7 +13,8 @@ Version: 2026.11.20.3
   bubble_column_euler   two-fluid (multiphaseEuler): 1 mm bubbles rise through still water at the Schiller-Naumann
                    terminal velocity; air mass conserved
   rotating_cylinder_euler   two-fluid, MRF: 0.1 mm bubbles migrate to the axis of a cylinder in solid-body rotation
-                   at the drag law's rate (Stokes regime, Re < 1); air mass conserved (Gmsh)
+                   at the drag law's rate (Stokes regime, Re < 1); the liquid turns with the walls; air conserved (Gmsh)
+  rotating_cylinder_walls_euler   the same with the walls turning in the absolute frame (no MRF)
   duct_air_2pct    water + 2 % air (inlet_gas_fraction, compressibleVoF, LTS) in a duct: air out = air in, its
                    volume expanded by p_in / p_out (isothermal), the liquid flow as asked
   pipe_poiseuille  Hagen-Poiseuille pipe: dp = 8 mu L Q / (pi R^4) (swept disk mesh; Gmsh)
@@ -572,43 +573,64 @@ def _cases() -> dict:
             ("air mass balance (share of the air in play)", 0.0, r["two_phase"]["air_mass_balance"]["error"],
              {"abs": 0.01})],
         "ref": False, "needs": []}
-    # 2. a closed cylinder (R 50 mm) turning as a solid body at 10 rad/s with the whole fluid an MRF zone: 0.1 mm
-    #    bubbles (0.5 %) migrate to the axis under the pressure gradient, Stokes regime (Re 0.26 at the wall); the
-    #    air within r < R/3 grows by the integrated drag-law trajectories (f(t)/f(0) = 2.35 at 8 s); air conserved
+    # 2. a closed cylinder (R 50 mm) turning as a solid body at 10 rad/s: 0.1 mm bubbles (0.5 %) migrate to the axis
+    #    under the pressure gradient, Stokes regime (Re 0.2 at r 40 mm). First the liquid must turn with the walls (four
+    #    probe boxes at r 40 mm: its rotation rate within 2 %); then the radial slip there (the four averaged: a whirl
+    #    of the whole fluid cancels) and the growth of the air within R/3 from t 2 s (after the spin-up, Ekman time
+    #    1.6 s) to 6 s against the integrated drag-law trajectories; air conserved. Two variants: the whole fluid an
+    #    MRF zone (the frame the pumps use), and the walls turning in the absolute frame (no MRF): spark1, 2026-11-20,
+    #    the MRF one gave a slip 1.25-1.7 x the drag law's with the liquid at 0.454 m/s for 0.40 at r 40 mm
     w_rc, R_rc, a_rc = 10.0, 0.05, 0.05 / 3
+    probes = {"px": [37, -3, 0, 43, 3, 10], "mx": [-43, -3, 0, -37, 3, 10],
+              "py": [-3, 37, 0, 3, 43, 10], "my": [-3, -43, 0, 3, -37, 10]}
+    radial = {"px": (1, 0), "mx": (-1, 0), "py": (0, 1), "my": (0, -1)}
 
-    def _core(r, t):
-        tp = r["two_phase"]
+    def _probe_means(tp):
+        rad, tan = [], []
+        for k, (ex, ey) in radial.items():
+            r_ = tp["regions"][k]
+            uw, sl = r_["U_water"], r_["slip"]
+            rad.append(sl[0] * ex + sl[1] * ey)                     # outward radial slip
+            tan.append(-uw[0] * ey + uw[1] * ex)                    # the liquid's tangential velocity
+        return float(np.mean(rad)), float(np.mean(tan)) / 0.040
+
+    def _core_growth(tp, t0, t1):
         a = np.asarray(tp["regions"]["core"]["gas_fraction_series"], float)
         v = np.asarray(tp["air_volume_series"], float)
-        f = np.interp(a[:, 0], v[:, 0], v[:, 1])
-        frac = a[:, 1] * tp["regions"]["core"]["volume_m3"] / f
-        return float(np.interp(t, a[:, 0], frac) / frac[0])
+        frac = a[:, 1] * tp["regions"]["core"]["volume_m3"] / np.interp(a[:, 0], v[:, 0], v[:, 1])
+        return float(np.interp(t1, a[:, 0], frac) / np.interp(t0, a[:, 0], frac))
 
     def _rc_checks(r):
         tp = r["two_phase"]
-        slip_x = tp["regions"]["probe"]["slip"][0]
-        re = rho_w * abs(slip_x) * 1e-4 / mu_w
-        exp = lambda t: _tp().core_fraction(t, R_rc, a_rc, w_rc, 1e-4, rho_w, rho_a, mu_w) / (a_rc / R_rc) ** 2
-        return [("air within R/3: f(4 s) / f(0)", exp(4.0), _core(r, 4.0), {"tol": 0.05}),
-                ("air within R/3: f(8 s) / f(0)", exp(8.0), _core(r, 8.0), {"tol": 0.05}),
-                ("radial slip at r 40 mm = drag law (m/s, inward)", -_tp().slip_velocity(w_rc ** 2 * 0.04, 1e-4, rho_w,
-                                                                                         rho_a, mu_w)[0], slip_x, {"tol": 0.1}),
-                ("bubble Reynolds number at r 40 mm below 1 (Stokes regime)", 0.0, re, {"abs": 1.0}),
+        slip_r, w_liq = _probe_means(tp)
+        cf = lambda t: _tp().core_fraction(t, R_rc, a_rc, w_rc, 1e-4, rho_w, rho_a, mu_w)
+        return [("the liquid turns with the walls: rotation rate at r 40 mm (rad/s)", w_rc, w_liq, {"tol": 0.02}),
+                ("radial slip at r 40 mm = drag law (m/s, inward; four probes)",
+                 -_tp().slip_velocity(w_rc ** 2 * 0.04, 1e-4, rho_w, rho_a, mu_w)[0], slip_r, {"tol": 0.1}),
+                ("bubble Reynolds number at r 40 mm below 1 (Stokes regime)", 0.0, rho_w * abs(slip_r) * 1e-4 / mu_w,
+                 {"abs": 1.0}),
+                ("air within R/3: f(6 s) / f(2 s)", cf(6.0) / cf(2.0), _core_growth(tp, 2.0, 6.0), {"tol": 0.05}),
                 ("air mass balance (share of the air in play)", 0.0, tp["air_mass_balance"]["error"], {"abs": 0.01})]
-    C["rotating_cylinder_euler"] = {
-        "study": {"geometry": {"cylinder": [50, 10]}, "fluid": "water", "model": "laminar",
-                  "rotating": [{"name": "rot", "axis": [0, 0, 1], "center": [0, 0, -1], "rpm": w_rc * 60 / (2 * math.pi),
-                                "radius": 60, "span": [0, 12]}],
-                  "bcs": [{"kind": "wall", "name": "container", "faces": {"all": True}, "rotation": "rot"}],
-                  "mesh": {"size": 2.0, "extrude": 4},
-                  "two_phase": {"bubble_size": {"fixed": 0.1}, "gravity": [0, 0, 0], "mode": "transient",
-                                "end_time": 8.0, "max_co": 0.5, "max_delta_t": 0.01, "write_every": 10,
-                                "average_from": 1.0, "initial": {"gas_fraction": 0.005, "velocity": "rotation"},
-                                "regions": [{"name": "core", "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1],
-                                                                          "radius": 50 / 3, "span": [-1, 11]}},
-                                            {"name": "probe", "box": [37, -3, 0, 43, 3, 10]}]}},
-        "checks": _rc_checks, "ref": False, "needs": ["gmsh"]}
+
+    def _rc_study(mrf):
+        tp_ = {"bubble_size": {"fixed": 0.1}, "gravity": [0, 0, 0], "mode": "transient", "end_time": 6.0, "max_co": 0.5,
+               "max_delta_t": 0.01, "write_every": 10, "average_from": 2.0,
+               "initial": {"gas_fraction": 0.005, "velocity": "rotation"},
+               "regions": [{"name": "core", "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 50 / 3,
+                                                         "span": [-1, 11]}}] +
+                          [{"name": k, "box": b} for k, b in probes.items()]}
+        spin = {"axis": [0, 0, 1], "center": [0, 0, 0], "rpm": w_rc * 60 / (2 * math.pi)}
+        st = {"geometry": {"cylinder": [50, 10]}, "fluid": "water", "model": "laminar",
+              "bcs": [{"kind": "wall", "name": "container", "faces": {"all": True},
+                       "rotation": "rot" if mrf else spin}],
+              "mesh": {"size": 2.0, "extrude": 4}, "two_phase": tp_}
+        if mrf:
+            st["rotating"] = [{"name": "rot", "axis": [0, 0, 1], "center": [0, 0, -1], "rpm": spin["rpm"],
+                               "radius": 60, "span": [0, 12]}]
+        return st
+    C["rotating_cylinder_euler"] = {"study": _rc_study(True), "checks": _rc_checks, "ref": False, "needs": ["gmsh"]}
+    C["rotating_cylinder_walls_euler"] = {"study": _rc_study(False), "checks": _rc_checks, "ref": False,
+                                          "needs": ["gmsh"]}
     return C
 
 

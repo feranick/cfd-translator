@@ -223,7 +223,7 @@ def test_air_balance_takes_each_steps_own_flux(tmp_path):
     _dat(case, "m", list(zip(t, M)))
     _dat(case, "f", list(zip(t, F)))
     bal = twophase.air_balance(case, plan)
-    assert bal["error"] < 1e-9 and bal["error_trapezoid"] > 1e-3 and len(bal["series"]) <= 40
+    assert bal["error"] < 1e-9 and bal["error_trapezoid"] > 1e-3 and len(bal["series"]) <= 20
 
 
 def test_reprocess_reads_the_monitors_again(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.4
+Version: 2026.11.20.5
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -136,8 +136,10 @@ def errors(st: dict) -> list[str]:
             e.append("two_phase.initial.fill_level_mm: a height (mm) along -gravity")
         if ini.get("velocity", "rest") not in ("rest", "rotation"):
             e.append("two_phase.initial.velocity: 'rest' or 'rotation'")
-        elif ini.get("velocity") == "rotation" and not st.get("rotating"):
-            e.append("two_phase.initial.velocity 'rotation' needs a rotating zone")
+        elif ini.get("velocity") == "rotation" and not st.get("rotating") and not any(
+                isinstance(b, dict) and isinstance(b.get("rotation"), dict) for b in st.get("bcs") or []):
+            e.append("two_phase.initial.velocity 'rotation' needs a rotating zone or a wall with its own rotation "
+                     "{axis, center, rpm}")
     regs = tp.get("regions") or []
     names = []
     for i, r in enumerate(regs if isinstance(regs, list) else [None]):
@@ -438,12 +440,17 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
     # initial velocity: rest, or solid-body rotation with the (first) rotating zone (a validation's container)
     U0 = _uniform([0, 0, 0])
     if ini.get("velocity") == "rotation":
-        zn = next(iter(plan["zones"]))
-        zp = plan["zones"][zn]
-        ax = np.asarray(zp["axis"], float)
+        # the rotating zone's, else the first wall turning on its own (a container spun without MRF: the same test
+        # in the absolute frame)
+        if plan.get("zones"):
+            zp = plan["zones"][next(iter(plan["zones"]))]
+            ax, om_s, ctr = zp["axis"], float(zp["omega_rad_s"]), zp["center_mm"]
+        else:
+            spec = next(p["bc"]["rotation"] for p in patches if isinstance(p["bc"].get("rotation"), dict))
+            ax, om_s, ctr = spec["axis"], float(spec["rpm"]) * 2 * math.pi / 60, spec.get("center", [0, 0, 0])
+        ax = np.asarray(ax, float)
         ax /= np.linalg.norm(ax)
-        om = float(zp["omega_rad_s"]) * ax
-        U0 = _nonuniform(np.cross(om, (C - np.asarray(zp["center_mm"], float)) * SCALE))
+        U0 = _nonuniform(np.cross(om_s * ax, (C - np.asarray(ctr, float)) * SCALE))
     for ph, af in (("air", alpha), ("water", 1.0 - alpha)):
         uniform_a = np.all(af == af[0])
         (z / f"alpha.{ph}").write_text(_field("volScalarField", f"alpha.{ph}", "[0 0 0 0 0 0 0]",
@@ -664,7 +671,7 @@ def air_balance(case: Path, plan: dict) -> dict | None:
            "error_of_all_air": float(f"{np.abs(err).max() / max(float(M[0]), 1e-30):.3g}"),
            "error_trapezoid": float(f"{np.abs(err_tr).max() / scale:.3g}"),
            "series": [[float(f"{tm[i]:.6g}"), float(f"{M[i] - M[0]:.4g}"), float(f"{-cum[i]:.4g}")]
-                      for i in np.unique(np.linspace(0, len(tm) - 1, 40).astype(int))],
+                      for i in np.unique(np.linspace(0, len(tm) - 1, 20).astype(int))],
            "basis": ("pseudo-time (local time step): the time integral is over iterations of differing local steps, "
                      "so only the late net flow (in = out) is meaningful" if steady else
                      "M(t) - M(0) + time integral of the net air outflow; series: [t, M - M0, net inflow so far] (kg)")}
