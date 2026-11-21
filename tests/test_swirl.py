@@ -109,7 +109,11 @@ def test_reference_comparison_judges_swirl(tmp_path, monkeypatch):
     c = twophase.reference_comparison(str(ref), {"head_m": 10.1, "torque_Nm": 2.02}, sw)
     assert c["head_ratio"] == 1.01 and c["swirl_ratio_by_region"] == {"eye": 1.02, "pocket": 1.05}
     assert c["within_tolerance"] is False and c["swirl_missing_in_reference"] == ["reservoir"]
+    assert c["swirl_gate"]["pocket"]["ok"] is False and c["swirl_gate"]["eye"]["gate"] == "relative 0.03"
     sw["regions"]["pocket"]["u_theta_m_s"] = 2.05
+    # a region the single-phase run lacks cannot be judged: the gate fails until both runs have it
+    assert twophase.reference_comparison(str(ref), {"head_m": 10.1, "torque_Nm": 2.02}, sw)["within_tolerance"] is False
+    sw["regions"].pop("reservoir")
     assert twophase.reference_comparison(str(ref), {"head_m": 10.1, "torque_Nm": 2.02}, sw)["within_tolerance"] is True
     # head and torque alone, as before
     c = twophase.reference_comparison(str(ref), {"head_m": 10.5, "torque_Nm": 2.0})
@@ -146,3 +150,42 @@ def test_two_phase_takes_the_studys_regions():
                                              "regions": [{"name": "ring", "box": [0, 0, 0, 1, 1, 1]}]})
     regs = twophase.settings(st)["regions"]
     assert [r["name"] for r in regs] == ["core", "ring"] and "box" in regs[1]
+
+
+def test_absolute_gate_for_stationary_pockets(tmp_path):
+    """Pump chat, 20 Nov: the pocket and the reservoir are stationary with little swirl; a ratio of tangential
+    velocities is ill-conditioned there, so they are judged by the swirl ratios' difference (0.03 of the solid body)."""
+    ref = tmp_path / "req" / "single"
+    ref.mkdir(parents=True)
+    (ref / "single.json").write_text(json.dumps({"results": {"swirl": {"regions": {
+        "eye": {"u_theta_m_s": 5.0, "swirl_ratio": 0.6},
+        "pocket": {"u_theta_m_s": 0.10, "swirl_ratio": 0.020},
+        "reservoir": {"u_theta_m_s": 0.05, "swirl_ratio": 0.010}}}}}))
+    regs = [{"name": "eye", "cylinder": {"radius": 22}, "gate": "relative"},
+            {"name": "pocket", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "gate": "absolute"},
+            {"name": "reservoir", "box": [0, 0, 0, 1, 1, 1]}]                      # gate chosen: |0.01| < 0.25
+    sw = {"regions": {"eye": {"u_theta_m_s": 5.1, "swirl_ratio": 0.612},
+                      "pocket": {"u_theta_m_s": 0.20, "swirl_ratio": 0.040},      # twice the swirl, 0.02 apart
+                      "reservoir": {"u_theta_m_s": 0.02, "swirl_ratio": 0.004}}}
+    c = twophase.reference_comparison(str(ref), {}, sw, regs)
+    g = c["swirl_gate"]
+    assert g["eye"]["ok"] and g["pocket"]["ok"] and g["reservoir"]["ok"] and c["within_tolerance"] is True
+    assert g["pocket"]["gate"] == "absolute 0.03" and g["reservoir"]["gate"] == "absolute 0.03"
+    sw["regions"]["pocket"]["swirl_ratio"] = 0.06
+    assert twophase.reference_comparison(str(ref), {}, sw, regs)["within_tolerance"] is False
+    regs[1]["gate"] = {"absolute": 0.05}
+    assert twophase.reference_comparison(str(ref), {}, sw, regs)["within_tolerance"] is True
+
+
+def test_box_as_min_max():
+    m = box_mesh()
+    g = m.geometry()
+    a = twophase.region_cells({"box": [0, 0, -6, 6, 6, 6]}, g["C"])
+    b = twophase.region_cells({"box": {"min": [0, 0, -6], "max": [6, 6, 6]}}, g["C"])
+    assert len(a) and list(a) == list(b)
+    assert validate_study(_study(regions=[{"name": "p", "box": {"min": [-35, -66, -33], "max": [35, -38, -20]},
+                                           "gate": "absolute"}]))["ok"]
+    r = validate_study(_study(regions=[{"name": "p", "box": {"min": [1, 0, 0], "max": [0, 1, 1]}}]))
+    assert not r["ok"]
+    r = validate_study(_study(regions=[{"name": "p", "box": [0, 0, 0, 1, 1, 1], "gate": "loose"}]))
+    assert not r["ok"]

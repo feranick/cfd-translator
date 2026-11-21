@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.20.8
+Version: 2026.11.20.9
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -180,8 +180,10 @@ GUIDES = {
             "phase holds it; ESI's reacting Euler solvers lose 6-8 %; mrf_hold, 20 Nov 2026). Before a gas-fraction "
             "sweep give both runs (single phase and two-fluid at zero air, same mesh) the same top-level regions "
             "(eye, chamber pockets, reservoir): results.swirl / two_phase.swirl give each region's mean tangential "
-            "velocity and angular momentum about the zone's axis, and two_phase.reference adds swirl_ratio_by_region, "
-            "judged within 3 % (head and torque 2 %). Run the gate at the sweep's flow and at a low flow (near "
+            "velocity and angular momentum about the zone's axis, and two_phase.reference adds swirl_gate per region: "
+            "gate 'relative' (u_theta ratio within 3 %) or 'absolute' (swirl ratios u_theta / omega r within 0.03: "
+            "stationary pockets and reservoirs with little swirl), or {relative|absolute: tol}; unset, absolute where "
+            "the single-phase swirl ratio is below 0.25 (head and torque 2 %). Boxes as [x0..z1] or {min, max}. Run the gate at the sweep's flow and at a low flow (near "
             "shut-off the water recirculates as in priming); if it fails there, the priming question cannot use it.",
             "Validate first: run_benchmarks bubble_column_euler and rotating_cylinder_euler. Cost: a two-fluid step is "
             "several times a single-phase one, and the time step follows the fastest flow through the smallest cells "

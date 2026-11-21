@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.8
+Version: 2026.11.20.9
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -224,6 +224,29 @@ def _vec_s(v) -> str:
     return "(" + " ".join(_fmt(x) for x in v) + ")"
 
 
+def box6(b) -> list:
+    """A box as [x0, y0, z0, x1, y1, z1]: from that list or from {min: [x, y, z], max: [x, y, z]}."""
+    if isinstance(b, dict):
+        return list(b.get("min", [])) + list(b.get("max", []))
+    return list(b)
+
+
+GATE_TOL = {"relative": 0.03, "absolute": 0.03}
+
+
+def gate_of(r: dict):
+    """A region's swirl gate: ('relative', tol) on u_theta two-fluid / single-phase, or ('absolute', tol) on the
+    difference of the swirl ratios (stationary pockets with little swirl, where a ratio of ratios is ill-conditioned);
+    None: chosen from the reference (absolute where its |swirl_ratio| < 0.25)."""
+    g = r.get("gate") if isinstance(r, dict) else None
+    if isinstance(g, str):
+        return g, GATE_TOL[g]
+    if isinstance(g, dict) and len(g) == 1:
+        k, v = next(iter(g.items()))
+        return k, float(v)
+    return None
+
+
 def region_errors(regs, where: str) -> list:
     """Errors of a regions list: [{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1]}] (mm)."""
     e, names = [], []
@@ -237,15 +260,20 @@ def region_errors(regs, where: str) -> list:
                 and _vec(c.get("center", [0, 0, 0])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1])) \
                 and ("inner_radius" not in c or (_num(c["inner_radius"]) and 0 <= c["inner_radius"] < c["radius"]))
         elif ok and "box" in r:
-            ok = _vec(r["box"], 6) and all(r["box"][k] < r["box"][k + 3] for k in range(3))
+            b = box6(r["box"])
+            ok = _vec(b, 6) and all(b[k] < b[k + 3] for k in range(3))
         else:
             ok = False
         if ok and "zone" in r and not isinstance(r["zone"], str):
             ok = False
+        if ok and "gate" in r:
+            g = r["gate"]
+            ok = (g in GATE_TOL) or (isinstance(g, dict) and len(g) == 1 and next(iter(g)) in GATE_TOL
+                                     and _num(next(iter(g.values()))) and next(iter(g.values())) > 0)
         if not ok:
             e.append(f"{where}[{i}]: {{name (a word), cylinder: {{center, axis, radius, inner_radius, span}} | "
-                     "box: [x0, y0, z0, x1, y1, z1]}} (mm), optional zone (the rotating zone the swirl is taken "
-                     "about; default the first)")
+                     "box: [x0, y0, z0, x1, y1, z1] | {{min, max}}}} (mm), optional zone (the rotating zone the swirl "
+                     "is taken about; default the first), gate: relative | absolute | {{relative|absolute: tol}}")
         else:
             names.append(r["name"])
     if len(set(names)) != len(names):
@@ -264,7 +292,7 @@ def all_regions(study: dict) -> list:
 def region_cells(r: dict, C: np.ndarray) -> np.ndarray:
     """Cell indices of a region (cylinder or box, mm) from the cell centres C (mm)."""
     if "box" in r:
-        b = np.asarray(r["box"], float)
+        b = np.asarray(box6(r["box"]), float)
         return np.nonzero(np.all((C >= b[:3]) & (C <= b[3:]), axis=1))[0]
     c = r["cylinder"]
     a = np.asarray(c.get("axis", [0, 0, 1]), float)
@@ -825,14 +853,14 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
             pass
     ref = cfg["reference"]
     if ref and ("pump" in tp or "swirl" in tp):
-        cmp_ = reference_comparison(ref, tp.get("pump") or {}, tp.get("swirl"))
+        cmp_ = reference_comparison(ref, tp.get("pump") or {}, tp.get("swirl"), cfg["regions"])
         if cmp_:
             tp["reference"] = cmp_
             if e["inlet_gas_fraction"] == 0 and cmp_.get("within_tolerance") is False:
                 warns.append(f"two_phase at a gas fraction of 0 differs from the single-phase run {ref}: head "
-                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')}, swirl "
-                             f"{cmp_.get('swirl_ratio_by_region')} (ratios; head and torque within {REF_TOL:.0%}, "
-                             f"swirl within {SWIRL_TOL:.0%} expected): the two-fluid case is not consistent with it")
+                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')} (ratios, within {REF_TOL:.0%}"
+                             f" expected), swirl gate {[n for n, g_ in (cmp_.get('swirl_gate') or {}).items() if not g_.get('ok')]} "
+                             "failing: the two-fluid case is not consistent with it")
     if bal and bal.get("error") is not None and bal["error"] > BALANCE_TOL:
         warns.append(f"air mass balance off by {bal['error']:.2%} of the air in play (> {BALANCE_TOL:.0%})")
     res["checks"] = {"air_mass_balance": bal or {"error": None}}
@@ -870,7 +898,7 @@ def swirl_of(case: Path, study: dict, plan: dict, t0: float | None) -> dict | No
     return out
 
 
-def reference_comparison(ref: str, pump: dict, sw: dict | None = None) -> dict | None:
+def reference_comparison(ref: str, pump: dict, sw: dict | None = None, regions: list | None = None) -> dict | None:
     """Head, torque and the regions' swirl against a single-phase result ('<request>/<study>' under this machine's
     output root, or a folder): ratios, and whether head and torque are within REF_TOL and each region's mean
     tangential velocity within SWIRL_TOL."""
@@ -898,17 +926,35 @@ def reference_comparison(ref: str, pump: dict, sw: dict | None = None) -> dict |
         ok.append(abs(out["head_ratio"] - 1) <= REF_TOL and abs(out["torque_ratio"] - 1) <= REF_TOL)
     rs = (((r.get("results") or {}).get("swirl") or {}).get("regions") or {})
     if sw and rs:
-        ratios = {}
+        ratios, gates = {}, {}
+        rdefs = {r["name"]: r for r in (regions or []) if isinstance(r, dict) and "name" in r}
         for name, v in (sw.get("regions") or {}).items():
-            u1 = (rs.get(name) or {}).get("u_theta_m_s")
-            u2 = v.get("u_theta_m_s")
+            r1 = rs.get(name) or {}
+            u1, u2 = r1.get("u_theta_m_s"), v.get("u_theta_m_s")
+            s1, s2 = r1.get("swirl_ratio"), v.get("swirl_ratio")
+            g = gate_of(rdefs.get(name, {}))
+            if g is None:
+                g = ("absolute", GATE_TOL["absolute"]) if (s1 is not None and abs(s1) < 0.25) else \
+                    ("relative", SWIRL_TOL)
+            rec = {"gate": f"{g[0]} {g[1]:g}"}
             if u1 and u2 is not None and abs(u1) > 1e-9:
-                ratios[name] = float(f"{u2 / u1:.4g}")
+                ratios[name] = rec["u_theta_ratio"] = float(f"{u2 / u1:.4g}")
+            if s1 is not None and s2 is not None:
+                rec["swirl_ratio_single"], rec["swirl_ratio_two_fluid"] = s1, s2
+                rec["swirl_ratio_diff"] = float(f"{s2 - s1:.4g}")
+            if g[0] == "relative" and "u_theta_ratio" in rec:
+                rec["ok"] = abs(rec["u_theta_ratio"] - 1) <= g[1]
+            elif g[0] == "absolute" and "swirl_ratio_diff" in rec:
+                rec["ok"] = abs(rec["swirl_ratio_diff"]) <= g[1]
+            gates[name] = rec
         if ratios:
             out["swirl_ratio_by_region"] = ratios
-            out["swirl_note"] = ("two-fluid / single-phase mean tangential velocity of the water per region, about "
-                                 "the rotating zone's axis")
-            ok.append(all(abs(x - 1) <= SWIRL_TOL for x in ratios.values()))
+        if gates:
+            out["swirl_gate"] = gates
+            out["swirl_note"] = ("water's mean tangential velocity per region about the rotating zone's axis, two-fluid "
+                                 "against single phase: relative = u_theta ratio within tol; absolute = swirl ratios "
+                                 "(u_theta / omega r) within tol of each other (stationary pockets with little swirl)")
+            ok.append(all(g_.get("ok", False) for g_ in gates.values()))
         missing = sorted(set(sw.get("regions") or {}) - set(rs))
         if missing:
             out["swirl_missing_in_reference"] = missing
@@ -971,7 +1017,7 @@ def verdict(res: dict, plan: dict) -> list:
         why.append(f"air mass balance off by {bal['error']:.2%}")
     ref = (res["two_phase"].get("reference") or {})
     if plan["euler"]["inlet_gas_fraction"] == 0 and ref and ref.get("within_tolerance") is False:
-        why.append("head or torque (2 %) or a region's swirl (3 %) differs from the single-phase reference at a gas "
+        why.append("head or torque (2 %) or a region's swirl gate differs from the single-phase reference at a gas "
                    "fraction of 0")
     return why
 
