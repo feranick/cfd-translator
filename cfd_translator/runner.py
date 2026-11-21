@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.20.4
+Version: 2026.11.21.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -389,6 +389,9 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
         from .post import check_expect, results
         res, w = results(study, mesh, plan, fields)
         warns += w
+        if plan.get("swirl_snap") and not transient:
+            from .swirl import attach_window
+            attach_window(case, study, plan, res)
         if transient:                             # p rms and the time below pressure thresholds (p_below)
             from .transient import pressure_statistics
             ff_block = _free_flow_report(case, study, plan, folder, tstate, warns)
@@ -651,6 +654,9 @@ def reprocess_study(folder: Path, name: str, onset=_KEEP, average=_KEEP, section
             source = f"the saved state (the case could not be read: {exc})"
     upgraded = upgrade_plan(plan, study)
     res, w = results(study, mesh, plan, fields)
+    if from_case and plan.get("swirl_snap") and not transient:
+        from .swirl import attach_window
+        attach_window(case, study, plan, res, cleanup=False)
     if transient:
         from .transient import pressure_statistics
         ps = pressure_statistics(study, mesh, plan, fields)

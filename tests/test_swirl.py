@@ -109,8 +109,8 @@ def test_reference_comparison_judges_swirl(tmp_path, monkeypatch):
     c = twophase.reference_comparison(str(ref), {"head_m": 10.1, "torque_Nm": 2.02}, sw)
     assert c["head_ratio"] == 1.01 and c["swirl_ratio_by_region"] == {"eye": 1.02, "pocket": 1.05}
     assert c["within_tolerance"] is False and c["swirl_missing_in_reference"] == ["reservoir"]
-    assert c["swirl_gate"]["pocket"]["ok"] is False and c["swirl_gate"]["eye"]["gate"] == "relative 0.03"
-    sw["regions"]["pocket"]["u_theta_m_s"] = 2.05
+    assert c["swirl_gate"]["pocket"]["ok"] is False and c["swirl_gate"]["eye"]["rule"] == "relative 0.02 or 2 sigma"
+    sw["regions"]["pocket"]["u_theta_m_s"] = 2.03
     # a region the single-phase run lacks cannot be judged: the gate fails until both runs have it
     assert twophase.reference_comparison(str(ref), {"head_m": 10.1, "torque_Nm": 2.02}, sw)["within_tolerance"] is False
     sw["regions"].pop("reservoir")
@@ -164,13 +164,13 @@ def test_absolute_gate_for_stationary_pockets(tmp_path):
     regs = [{"name": "eye", "cylinder": {"radius": 22}, "gate": "relative"},
             {"name": "pocket", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "gate": "absolute"},
             {"name": "reservoir", "box": [0, 0, 0, 1, 1, 1]}]                      # gate chosen: |0.01| < 0.25
-    sw = {"regions": {"eye": {"u_theta_m_s": 5.1, "swirl_ratio": 0.612},
+    sw = {"regions": {"eye": {"u_theta_m_s": 5.09, "swirl_ratio": 0.612},
                       "pocket": {"u_theta_m_s": 0.20, "swirl_ratio": 0.040},      # twice the swirl, 0.02 apart
                       "reservoir": {"u_theta_m_s": 0.02, "swirl_ratio": 0.004}}}
     c = twophase.reference_comparison(str(ref), {}, sw, regs)
     g = c["swirl_gate"]
     assert g["eye"]["ok"] and g["pocket"]["ok"] and g["reservoir"]["ok"] and c["within_tolerance"] is True
-    assert g["pocket"]["gate"] == "absolute 0.03" and g["reservoir"]["gate"] == "absolute 0.03"
+    assert g["pocket"]["rule"] == "absolute 0.03 or 2 sigma" and g["reservoir"]["rule"] == "absolute 0.03 or 2 sigma"
     sw["regions"]["pocket"]["swirl_ratio"] = 0.06
     assert twophase.reference_comparison(str(ref), {}, sw, regs)["within_tolerance"] is False
     regs[1]["gate"] = {"absolute": 0.05}
@@ -189,3 +189,80 @@ def test_box_as_min_max():
     assert not r["ok"]
     r = validate_study(_study(regions=[{"name": "p", "box": [0, 0, 0, 1, 1, 1], "gate": "loose"}]))
     assert not r["ok"]
+
+
+def test_snapshot_plan_and_function_object():
+    sp = swirl.snapshot_plan(4000, 1000)
+    assert sp == {"start": 3001, "every": 100, "n": 10}
+    fo = swirl.snapshot_fo(["U.water", "alpha.water"], sp["start"], sp["every"])
+    assert "writeObjects" in fo and "objects         (U.water alpha.water)" in fo and "timeStart       3001" in fo
+
+
+def test_snapshots_give_mean_and_stderr_and_are_removed(tmp_path):
+    """Ten snapshots over the window (left in the processors by reconstructPar -latestTime): the mean, a standard
+    error from their scatter, and the snapshot folders removed afterwards (the latest time kept)."""
+    case = tmp_path / "case"
+    m = box_mesh()
+    g = m.geometry()
+    rng = np.random.default_rng(1)
+    ks = 1.0 + 0.01 * rng.standard_normal(10)
+    for p in (0, 1):
+        d = case / f"processor{p}"
+        m.write(d)
+        for i, k in enumerate(ks):
+            write_field(d / str(3100 + 100 * i) / "U", "vector", solid(g["C"], k))
+    m.write(case)
+    write_field(case / "4000" / "U", "vector", solid(g["C"], ks[-1]))           # the reconstructed last time
+    (case / "4000" / "p").write_text("x")
+    s = swirl.from_case(case, REGS, FR, 1000.0, "U", None, t_from=3001, cleanup=True)
+    r = s["regions"]["ring"]
+    assert r["swirl_ratio"] == pytest.approx(ks.mean(), abs=1e-4) and r["snapshots"] == 10
+    assert 0 < r["u_theta_stderr"] < 0.05 and len(r["u_theta_series"]) == 10 and s["window"] == [3100.0, 4000.0]
+    left = sorted(p.name for p in (case / "processor0").iterdir() if p.name[0].isdigit())
+    assert left == ["4000"] and (case / "4000" / "p").exists()
+
+
+def test_gate_compare_tolerance_or_noise():
+    g = swirl.gate_compare(10.0, 10.15, 0.05, 0.05, "relative", 0.02)
+    assert g["ok"] and g["within_tol"] and g["ratio"] == 1.015
+    g = swirl.gate_compare(10.0, 10.5, 0.1, 0.1, "relative", 0.02)           # 5 % off, 2 sigma = 0.28
+    assert not g["ok"] and not g["within_2_sigma"]
+    g = swirl.gate_compare(10.0, 10.5, 0.2, 0.2, "relative", 0.02)           # 2 sigma = 0.57: noise
+    assert g["ok"] and not g["within_tol"] and g["within_2_sigma"]
+    g = swirl.gate_compare(0.15, 0.17, None, None, "absolute", 0.03)
+    assert g["ok"] and "combined_stderr" not in g
+
+
+def test_reference_comparison_uses_both_runs_noise(tmp_path):
+    ref = tmp_path / "req" / "single"
+    ref.mkdir(parents=True)
+    (ref / "single.json").write_text(json.dumps({"reliable": False, "results": {
+        "pump": {"head_m": 19.93, "head_m_stderr": 0.13},
+        "rotating": {"impeller": {"torque_Nm": -6.286}},
+        "averaged": {"quantities": {"torque_Nm.impeller": {"stderr_abs": 0.063}}},
+        "swirl": {"regions": {"eye": {"u_theta_m_s": 1.89, "u_theta_stderr": 0.02, "swirl_ratio": 0.42}}}}}))
+    sw = {"regions": {"eye": {"u_theta_m_s": 1.96, "u_theta_stderr": 0.02, "swirl_ratio": 0.44}}}
+    c = twophase.reference_comparison(str(ref), {"head_m": 20.3, "head_m_stderr": 0.2, "torque_Nm": -6.40,
+                                                 "torque_Nm_stderr": 0.08}, sw, [{"name": "eye", "gate": "relative"}])
+    g = c["gate"]
+    assert g["head_m"]["ok"] and g["head_m"]["within_tol"]                   # 1.9 %, within 2 %
+    assert g["torque_Nm"]["ok"]                                              # 1.8 %
+    assert not g["swirl.eye"]["ok"]                                          # 3.7 %, 2 sigma = 0.057 < 0.07
+    assert c["within_tolerance"] is False and "unreliable" in c["reference_note"]
+
+
+def test_single_phase_steady_case_writes_the_window_snapshots(tmp_path):
+    from cfd_translator.runner import prepare
+    st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
+          "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 30, "radius": 30}],
+          "bcs": [{"kind": "wall", "name": "spin", "faces": {"ny": 1}, "rotation": {"axis": [0, 0, 1], "rpm": 30}}],
+          "mesh": {"cells": [10, 10, 1]}, "solve": {"iterations": 4000},
+          "regions": [{"name": "core", "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 20}}]}
+    assert validate_study(st)["ok"], validate_study(st)
+    mesh, patches, sel, plan, w = prepare(st, tmp_path)
+    cd = (tmp_path / "case" / "system" / "controlDict").read_text()
+    assert plan["swirl_snap"] == {"start": 3001, "every": 100, "n": 10}
+    assert "cfdtSwirlSnap" in cd and "objects         (U)" in cd and "timeStart       3001" in cd
+    st.pop("regions")
+    mesh, patches, sel, plan, w = prepare(st, tmp_path / "b")
+    assert "swirl_snap" not in plan and "cfdtSwirlSnap" not in (tmp_path / "b" / "case" / "system" / "controlDict").read_text()

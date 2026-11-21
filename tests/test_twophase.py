@@ -107,6 +107,11 @@ def test_the_mrf_pump_case(tmp_path):
     cd = (case / "system" / "controlDict").read_text()
     assert "solver          multiphaseEuler;" in cd and "tpM_rotor_water" in cd and "tpM_rotor_air" in cd
     assert "phase           water;" in cd and "cellZone        tp_eye;" in cd and "weightField     rho.air;" in cd
+    # steady with regions: U.water and alpha.water snapshots over the averaging window (the swirl gate's noise)
+    n = twophase.settings(st)["iterations"]
+    sp = plan["euler"]["monitors"]["swirl_snap"]
+    assert "cfdtSwirlSnap" in cd and "objects         (U.water alpha.water)" in cd
+    assert sp["start"] == n // 2 + 1 and sp["n"] >= 9
     fs = (case / "system" / "fvSchemes").read_text()
     assert "localEuler" in fs                                                  # steady by default (LTS)
     fv = (case / "system" / "fvSolution").read_text()

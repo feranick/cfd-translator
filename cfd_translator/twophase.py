@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.9
+Version: 2026.11.21.1
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -45,7 +45,7 @@ KEYS = {"bubble_size", "drag", "virtual_mass", "turbulent_dispersion", "gravity"
 DRAG = ("SchillerNaumann", "IshiiZuber")
 BALANCE_TOL = 0.01                     # air mass balance: |error| / air in play
 REF_TOL = 0.02                         # single-phase consistency at a gas fraction of 0: head and torque
-SWIRL_TOL = 0.03                       # and each region's mean tangential velocity (pump chat, 20 Nov 2026)
+SWIRL_TOL = 0.02                       # and each region's mean tangential velocity (pump chat, 21 Nov 2026)
 
 
 def _num(x) -> bool:
@@ -231,7 +231,7 @@ def box6(b) -> list:
     return list(b)
 
 
-GATE_TOL = {"relative": 0.03, "absolute": 0.03}
+GATE_TOL = {"relative": 0.02, "absolute": 0.03}   # pump chat: 2 % on the eye (21 Nov), 0.03 of the solid body
 
 
 def gate_of(r: dict):
@@ -669,6 +669,14 @@ def monitor_functions(study: dict, plan: dict, patches: list, cfg: dict) -> tupl
                                  f"phase           {ph};\nrho             rhoInf;\nrhoInf          1;\n"
                                  f"CofR            {_vec_s(o)};"))
             mon["moment"].setdefault(zn, {})[ph] = fo
+    if cfg["steady"] and cfg["regions"] and plan.get("zones"):
+        # the water's velocity and fraction over the averaging window: the regions' swirl with its standard error
+        from .swirl import snapshot_fo, snapshot_plan
+        n = int(cfg["iterations"])
+        t0 = int(cfg["average_from"]) if cfg["average_from"] is not None else n // 2 + 1
+        sp = snapshot_plan(n, n - max(1, min(t0, n)) + 1)
+        funcs.append(snapshot_fo(["U.water", "alpha.water"], sp["start"], sp["every"]))
+        mon["swirl_snap"] = sp
     return funcs, mon
 
 
@@ -763,6 +771,11 @@ def _moment_axis(case: Path, mon: dict, plan: dict, t0):
         w = float(plan["zones"][zn]["omega_rad_s"])
         out[zn] = {"torque_Nm": float(f"{tot:.5g}"), "power_W": float(f"{abs(tot * w):.5g}"),
                    "omega_rad_s": w}
+        if ser is not None and t0 is not None:
+            from .average import mean_stderr
+            sel = ser[0] >= t0
+            if sel.sum() >= 4:
+                out[zn]["torque_Nm_stderr"] = float(f"{mean_stderr(np.asarray(ser[1])[sel])[0]:.3g}")
     return out
 
 
@@ -830,6 +843,12 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
         try:
             si, so = _series(case, mon["patch_p"][ins[0]]), _series(case, mon["patch_p"][outs[0]])
             pin, pout = _mean(si[0], si[1], t0), _mean(so[0], so[1], t0)
+            from .average import mean_stderr
+            sel = si[0] >= t0
+            dp_se = None
+            if sel.sum() >= 4:
+                dp = np.interp(si[0][sel], so[0], so[1]) - si[1][sel]
+                dp_se = mean_stderr(dp)[0]
             gv = np.asarray(e["gravity"], float)
             gm = float(np.linalg.norm(gv))
             dz = 0.0
@@ -841,7 +860,9 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
             rl = e["rho_l"]
             ui = float(plan["inlets"][ins[0]].get("U_mean", 0.0))
             head = (pout - pin) / (rl * G0) + dz - ui ** 2 / (2 * G0)
-            tp["pump"] = {"head_m": float(f"{head:.5g}"), "p_inlet_Pa": float(f"{pin:.6g}"),
+            tp["pump"] = {"head_m": float(f"{head:.5g}"),
+                          **({"head_m_stderr": float(f"{dp_se / (rl * G0):.3g}")} if dp_se is not None else {}),
+                          "p_inlet_Pa": float(f"{pin:.6g}"),
                           "p_outlet_Pa": float(f"{pout:.6g}"), "dz_m": float(f"{dz:.4g}"),
                           "note": "head from the static pressures on the inlet and outlet (absolute, Pa) with the liquid's "
                                   "density, the height between them and the inlet's dynamic head; compare ratios with "
@@ -849,6 +870,8 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
             if rot:
                 zn = next(iter(rot))
                 tp["pump"].update(torque_Nm=rot[zn]["torque_Nm"], power_W=rot[zn]["power_W"])
+                if rot[zn].get("torque_Nm_stderr") is not None:
+                    tp["pump"]["torque_Nm_stderr"] = rot[zn]["torque_Nm_stderr"]
         except (TypeError, KeyError, IndexError):
             pass
     ref = cfg["reference"]
@@ -858,9 +881,10 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
             tp["reference"] = cmp_
             if e["inlet_gas_fraction"] == 0 and cmp_.get("within_tolerance") is False:
                 warns.append(f"two_phase at a gas fraction of 0 differs from the single-phase run {ref}: head "
-                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')} (ratios, within {REF_TOL:.0%}"
-                             f" expected), swirl gate {[n for n, g_ in (cmp_.get('swirl_gate') or {}).items() if not g_.get('ok')]} "
-                             "failing: the two-fluid case is not consistent with it")
+                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')} (ratios); failing: "
+                             f"{[n for n, g_ in (cmp_.get('gate') or {}).items() if not g_.get('ok')]} (within the "
+                             "tolerance or twice the combined standard error expected): the two-fluid case is not "
+                             "consistent with it")
     if bal and bal.get("error") is not None and bal["error"] > BALANCE_TOL:
         warns.append(f"air mass balance off by {bal['error']:.2%} of the air in play (> {BALANCE_TOL:.0%})")
     res["checks"] = {"air_mass_balance": bal or {"error": None}}
@@ -884,9 +908,14 @@ def swirl_of(case: Path, study: dict, plan: dict, t0: float | None) -> dict | No
         fr = swirl.frame_of(plan, zone)
         if fr is None:
             continue
+        snap = (plan["euler"].get("monitors") or {}).get("swirl_snap")
         try:
-            s = swirl.from_case(case, rs, fr, rho, "U.water", "alpha.water", t_from=None if steady else t0,
-                                latest_only=steady)
+            if steady and snap:
+                s = swirl.from_case(case, rs, fr, rho, "U.water", "alpha.water", t_from=snap["start"],
+                                    cleanup=True)
+            else:
+                s = swirl.from_case(case, rs, fr, rho, "U.water", "alpha.water", t_from=None if steady else t0,
+                                    latest_only=steady)
         except (OSError, ValueError, KeyError, IndexError):
             s = None
         if s is None:
@@ -900,10 +929,12 @@ def swirl_of(case: Path, study: dict, plan: dict, t0: float | None) -> dict | No
 
 def reference_comparison(ref: str, pump: dict, sw: dict | None = None, regions: list | None = None) -> dict | None:
     """Head, torque and the regions' swirl against a single-phase result ('<request>/<study>' under this machine's
-    output root, or a folder): ratios, and whether head and torque are within REF_TOL and each region's mean
-    tangential velocity within SWIRL_TOL."""
+    output root, or a folder). Each is judged by swirl.gate_compare: within its tolerance (head and torque 2 %; a
+    region's gate: relative 2 % on u_theta, or absolute 0.03 on the swirl ratio) or within twice the two runs' combined
+    standard error over their averaging windows (pump chat, 21 Nov 2026)."""
     import json
     from .api import out_root
+    from .swirl import gate_compare
     p = Path(ref).expanduser()
     if not p.is_absolute():
         p = out_root() / p
@@ -912,22 +943,28 @@ def reference_comparison(ref: str, pump: dict, sw: dict | None = None, regions: 
         r = json.loads(f.read_text())
     except (OSError, ValueError):
         return {"error": f"no result {f}"}
-    rp = ((r.get("results") or {}).get("pump") or {})
-    rr = (r.get("results") or {}).get("rotating") or {}
+    res1 = r.get("results") or {}
+    rp = res1.get("pump") or {}
+    rr = res1.get("rotating") or {}
+    zn1 = next(iter(rr), None)
     h1 = rp.get("head_m")
-    t1 = next((z.get("torque_Nm") for z in rr.values()), None)
-    out = {"study": str(p), "head_m": h1, "torque_Nm": t1}
+    t1 = (rr.get(zn1) or {}).get("torque_Nm") if zn1 else None
+    q = ((res1.get("averaged") or {}).get("quantities") or {})
+    t1_se = (q.get(f"torque_Nm.{zn1}") or {}).get("stderr_abs") if zn1 else None
+    out = {"study": str(p), "head_m": h1, "torque_Nm": t1, "reliable": r.get("reliable")}
+    gate = {}
     if h1 and pump.get("head_m") is not None:
         out["head_ratio"] = float(f"{pump['head_m'] / h1:.4g}")
+        gate["head_m"] = gate_compare(h1, pump["head_m"], rp.get("head_m_stderr"), pump.get("head_m_stderr"),
+                                      "relative", REF_TOL)
     if t1 and pump.get("torque_Nm") is not None:
         out["torque_ratio"] = float(f"{pump['torque_Nm'] / t1:.4g}")
-    ok = []
-    if "head_ratio" in out and "torque_ratio" in out:
-        ok.append(abs(out["head_ratio"] - 1) <= REF_TOL and abs(out["torque_ratio"] - 1) <= REF_TOL)
-    rs = (((r.get("results") or {}).get("swirl") or {}).get("regions") or {})
+        gate["torque_Nm"] = gate_compare(t1, pump["torque_Nm"], t1_se, pump.get("torque_Nm_stderr"),
+                                         "relative", REF_TOL)
+    rs = ((res1.get("swirl") or {}).get("regions") or {})
     if sw and rs:
         ratios, gates = {}, {}
-        rdefs = {r["name"]: r for r in (regions or []) if isinstance(r, dict) and "name" in r}
+        rdefs = {x["name"]: x for x in (regions or []) if isinstance(x, dict) and "name" in x}
         for name, v in (sw.get("regions") or {}).items():
             r1 = rs.get(name) or {}
             u1, u2 = r1.get("u_theta_m_s"), v.get("u_theta_m_s")
@@ -935,31 +972,37 @@ def reference_comparison(ref: str, pump: dict, sw: dict | None = None, regions: 
             g = gate_of(rdefs.get(name, {}))
             if g is None:
                 g = ("absolute", GATE_TOL["absolute"]) if (s1 is not None and abs(s1) < 0.25) else \
-                    ("relative", SWIRL_TOL)
-            rec = {"gate": f"{g[0]} {g[1]:g}"}
+                    ("relative", GATE_TOL["relative"])
             if u1 and u2 is not None and abs(u1) > 1e-9:
-                ratios[name] = rec["u_theta_ratio"] = float(f"{u2 / u1:.4g}")
-            if s1 is not None and s2 is not None:
-                rec["swirl_ratio_single"], rec["swirl_ratio_two_fluid"] = s1, s2
-                rec["swirl_ratio_diff"] = float(f"{s2 - s1:.4g}")
-            if g[0] == "relative" and "u_theta_ratio" in rec:
-                rec["ok"] = abs(rec["u_theta_ratio"] - 1) <= g[1]
-            elif g[0] == "absolute" and "swirl_ratio_diff" in rec:
-                rec["ok"] = abs(rec["swirl_ratio_diff"]) <= g[1]
+                ratios[name] = float(f"{u2 / u1:.4g}")
+            if g[0] == "relative" and u1 is not None and u2 is not None:
+                rec = gate_compare(u1, u2, r1.get("u_theta_stderr"), v.get("u_theta_stderr"), "relative", g[1])
+                rec["quantity"] = "u_theta_m_s"
+            elif g[0] == "absolute" and s1 is not None and s2 is not None:
+                rec = gate_compare(s1, s2, r1.get("swirl_ratio_stderr"), v.get("swirl_ratio_stderr"), "absolute", g[1])
+                rec["quantity"] = "swirl_ratio"
+            else:
+                rec = {"ok": False, "why": "missing in one of the runs"}
+            if "u_theta_stderr" not in r1 or "u_theta_stderr" not in v:
+                rec["note"] = "no standard error in one run (no snapshots over its window): judged by the tolerance only"
             gates[name] = rec
         if ratios:
             out["swirl_ratio_by_region"] = ratios
         if gates:
             out["swirl_gate"] = gates
             out["swirl_note"] = ("water's mean tangential velocity per region about the rotating zone's axis, two-fluid "
-                                 "against single phase: relative = u_theta ratio within tol; absolute = swirl ratios "
-                                 "(u_theta / omega r) within tol of each other (stationary pockets with little swirl)")
-            ok.append(all(g_.get("ok", False) for g_ in gates.values()))
+                                 "against single phase: relative = u_theta within tol of the reference's; absolute = "
+                                 "swirl ratios (u_theta / omega r) within tol of each other; or either within twice the "
+                                 "combined standard error over the averaging windows")
+            gate.update({f"swirl.{k}": v for k, v in gates.items()})
         missing = sorted(set(sw.get("regions") or {}) - set(rs))
         if missing:
             out["swirl_missing_in_reference"] = missing
-    if ok:
-        out["within_tolerance"] = bool(all(ok))
+    if gate:
+        out["gate"] = gate
+        out["within_tolerance"] = bool(all(g_.get("ok", False) for g_ in gate.values()))
+    if r.get("reliable") is False:
+        out["reference_note"] = "the single-phase reference is itself unreliable (see its unreliable_because)"
     return out
 
 
