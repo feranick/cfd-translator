@@ -1,5 +1,5 @@
 """post.py — results and invariant checks from the final fields (OpenFOAM's or the reference solver's).
-Version: 2026.11.20.2
+Version: 2026.11.20.8
 
     results(study, mesh, plan, fields) -> dict
 
@@ -503,6 +503,25 @@ def results(study: dict, mesh, plan: dict, fields: dict) -> tuple[dict, list]:
             out["probes"][p["name"]] = res
             if far > 5 * h:
                 warns.append(f"probe {p['name']!r}: {far:.3g} mm from the nearest cell centre (outside the fluid?)")
+    if study.get("regions") and plan.get("zones"):
+        # swirl about the rotating zone's axis per region (the two-fluid zero-air gate compares it)
+        from . import swirl
+        sw = None
+        groups = {}
+        for r in study["regions"]:
+            groups.setdefault(r.get("zone"), []).append(r)
+        for zone, rs in groups.items():
+            fr = swirl.frame_of(plan, zone)
+            if fr is None:
+                warns.append(f"regions: no rotating zone {zone!r} to take the swirl about")
+                continue
+            s = swirl.from_fields(mesh, Uc, rs, fr, rho, "U (time-averaged)" if plan.get("transient") else "U")
+            if sw is None:
+                sw = s
+            else:
+                sw["regions"].update(s["regions"])
+        if sw:
+            out["swirl"] = sw
     if yplus:
         out["y_plus"] = yplus
         part = {n: v for n, v in yplus.items() if v.get("part")}

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.20.3
+Version: 2026.11.20.8
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -157,6 +157,8 @@ STUDY_KEYS = {
              "backend: esi (sliding: cyclicAMI, guide('pumps'))",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
+    "regions": "[{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1], zone}] mm: swirl "
+               "about the zone's axis",
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis, motion: mrf | "
                 "sliding, interface_refine: mm}]: MRF zones (default) or a sliding mesh",
@@ -1060,8 +1062,14 @@ def validate_study(st: dict) -> dict:
     # cavitation (cavitation.py)
     from .cavitation import errors as _cavitation_errors
     errs += _cavitation_errors(st)
-    from .twophase import errors as _twophase_errors      # gas-liquid with slip (twophase.py)
-    errs += _twophase_errors(st)
+    from .twophase import errors as _twophase_errors, region_errors as _region_errors
+    errs += _twophase_errors(st)                          # gas-liquid with slip (twophase.py)
+    errs += _region_errors(st.get("regions"), "regions")
+    if st.get("regions") and not znames and not st.get("two_phase"):
+        errs.append("regions: the swirl is taken about a rotating zone's axis; define one in 'rotating'")
+    for i, r in enumerate(st.get("regions") or [] if isinstance(st.get("regions"), list) else []):
+        if isinstance(r, dict) and r.get("zone") is not None and r["zone"] not in znames:
+            errs.append(f"regions[{i}].zone: {r['zone']!r} is not a rotating zone ({znames or 'none defined'})")
     from .onset import errors as _onset_errors
     errs += _onset_errors(st)
     from .freeflow import errors as _ff_errors

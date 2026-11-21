@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.20.7
+Version: 2026.11.20.8
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -169,12 +169,20 @@ GUIDES = {
             "and S45+50 have a horizontal shaft (axis z, y up): [0, -9.81, 0].",
             "mode 'steady' (local time step, iterations) for frozen-rotor points at a fixed inlet gas fraction; "
             "'transient' (end_time, max_co) for air moving in time. inlet {gas_fraction | air_flow_lpm}; initial "
-            "{gas_fraction, fill_level_mm (air above), velocity 'rotation'}; regions [{name, cylinder | box}] report "
+            "{gas_fraction, fill_level_mm (air above), velocity 'rotation'}; regions [{name, cylinder | box}] (or the study's) report "
             "their gas fraction and the phases' velocities (an eye region for gas locking).",
             "Results two_phase: air_mass_balance (judged: within 1 %), flows per open patch (water m3/s, air kg/s), "
             "regions, pump {head_m, torque_Nm, power_W}; with reference '<request>/<study>' (a single-phase run on "
             "the same mesh) the head and torque ratios, which at a gas fraction of 0 must be within 2 %. Compare "
             "two-phase heads as ratios to that single-phase head, not as absolute heads.",
+            "Swirl gate: OpenFOAM 14's multiphaseEuler adds angular momentum to a rotating flow (a closed cylinder in "
+            "solid-body rotation gains about 5 % in 1 s at 10 rad/s, with or without MRF, water alone too; single "
+            "phase holds it; ESI's reacting Euler solvers lose 6-8 %; mrf_hold, 20 Nov 2026). Before a gas-fraction "
+            "sweep give both runs (single phase and two-fluid at zero air, same mesh) the same top-level regions "
+            "(eye, chamber pockets, reservoir): results.swirl / two_phase.swirl give each region's mean tangential "
+            "velocity and angular momentum about the zone's axis, and two_phase.reference adds swirl_ratio_by_region, "
+            "judged within 3 % (head and torque 2 %). Run the gate at the sweep's flow and at a low flow (near "
+            "shut-off the water recirculates as in priming); if it fails there, the priming question cannot use it.",
             "Validate first: run_benchmarks bubble_column_euler and rotating_cylinder_euler. Cost: a two-fluid step is "
             "several times a single-phase one, and the time step follows the fastest flow through the smallest cells "
             "(clearance jets): estimate before a pump run.",

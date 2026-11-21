@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.20.7
+Version: 2026.11.20.8
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -45,6 +45,7 @@ KEYS = {"bubble_size", "drag", "virtual_mass", "turbulent_dispersion", "gravity"
 DRAG = ("SchillerNaumann", "IshiiZuber")
 BALANCE_TOL = 0.01                     # air mass balance: |error| / air in play
 REF_TOL = 0.02                         # single-phase consistency at a gas fraction of 0: head and torque
+SWIRL_TOL = 0.03                       # and each region's mean tangential velocity (pump chat, 20 Nov 2026)
 
 
 def _num(x) -> bool:
@@ -74,7 +75,7 @@ def settings(study: dict) -> dict:
             "write_every": int(tp.get("write_every", 1 if not steady else 5)),
             "max_co": float(tp.get("max_co", 1.0 if steady else 0.5)), "max_delta_t": tp.get("max_delta_t"),
             "gas_fraction": float(inl.get("gas_fraction", 0.0)), "air_flow_lpm": inl.get("air_flow_lpm"),
-            "initial": dict(tp.get("initial") or {}), "regions": list(tp.get("regions") or []),
+            "initial": dict(tp.get("initial") or {}), "regions": all_regions(study),
             "reference": tp.get("reference"), "relax": dict(tp.get("relax") or {}),
             "average_from": tp.get("average_from"), "turbulent": turb,
             "face_momentum": bool(tp.get("face_momentum", False))}
@@ -148,26 +149,7 @@ def errors(st: dict) -> list[str]:
                 isinstance(b, dict) and isinstance(b.get("rotation"), dict) for b in st.get("bcs") or []):
             e.append("two_phase.initial.velocity 'rotation' needs a rotating zone or a wall with its own rotation "
                      "{axis, center, rpm}")
-    regs = tp.get("regions") or []
-    names = []
-    for i, r in enumerate(regs if isinstance(regs, list) else [None]):
-        ok = isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"].isidentifier()
-        if ok and "cylinder" in r:
-            c = r["cylinder"]
-            ok = isinstance(c, dict) and _num(c.get("radius")) and c["radius"] > 0 and _vec(c.get("axis", [0, 0, 1])) \
-                and _vec(c.get("center", [0, 0, 0])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1])) \
-                and ("inner_radius" not in c or (_num(c["inner_radius"]) and 0 <= c["inner_radius"] < c["radius"]))
-        elif ok and "box" in r:
-            ok = _vec(r["box"], 6) and all(r["box"][k] < r["box"][k + 3] for k in range(3))
-        else:
-            ok = False
-        if not ok:
-            e.append(f"two_phase.regions[{i}]: {{name (a word), cylinder: {{center, axis, radius, inner_radius, span}} | "
-                     "box: [x0, y0, z0, x1, y1, z1]}} (mm): gas fraction, air mass and the phases' velocities there")
-        else:
-            names.append(r["name"])
-    if len(set(names)) != len(names):
-        e.append("two_phase.regions: names must be unique")
+    e += region_errors(tp.get("regions"), "two_phase.regions")
     if "face_momentum" in tp and not isinstance(tp["face_momentum"], bool):
         e.append("two_phase.face_momentum: true | false (multiphaseEuler's face-based momentum; default false)")
     if "reference" in tp and not isinstance(tp["reference"], str):
@@ -240,6 +222,43 @@ def _fmt(x) -> str:
 
 def _vec_s(v) -> str:
     return "(" + " ".join(_fmt(x) for x in v) + ")"
+
+
+def region_errors(regs, where: str) -> list:
+    """Errors of a regions list: [{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1]}] (mm)."""
+    e, names = [], []
+    if regs is None:
+        return e
+    for i, r in enumerate(regs if isinstance(regs, list) else [None]):
+        ok = isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"].isidentifier()
+        if ok and "cylinder" in r:
+            c = r["cylinder"]
+            ok = isinstance(c, dict) and _num(c.get("radius")) and c["radius"] > 0 and _vec(c.get("axis", [0, 0, 1])) \
+                and _vec(c.get("center", [0, 0, 0])) and ("span" not in c or (_vec(c["span"], 2) and c["span"][0] < c["span"][1])) \
+                and ("inner_radius" not in c or (_num(c["inner_radius"]) and 0 <= c["inner_radius"] < c["radius"]))
+        elif ok and "box" in r:
+            ok = _vec(r["box"], 6) and all(r["box"][k] < r["box"][k + 3] for k in range(3))
+        else:
+            ok = False
+        if ok and "zone" in r and not isinstance(r["zone"], str):
+            ok = False
+        if not ok:
+            e.append(f"{where}[{i}]: {{name (a word), cylinder: {{center, axis, radius, inner_radius, span}} | "
+                     "box: [x0, y0, z0, x1, y1, z1]}} (mm), optional zone (the rotating zone the swirl is taken "
+                     "about; default the first)")
+        else:
+            names.append(r["name"])
+    if len(set(names)) != len(names):
+        e.append(f"{where}: names must be unique")
+    return e
+
+
+def all_regions(study: dict) -> list:
+    """The study's regions and two_phase.regions, by name (two_phase's win)."""
+    out = {r["name"]: r for r in (study.get("regions") or []) if isinstance(r, dict) and "name" in r}
+    out.update({r["name"]: r for r in ((study.get("two_phase") or {}).get("regions") or [])
+                if isinstance(r, dict) and "name" in r})
+    return list(out.values())
 
 
 def region_cells(r: dict, C: np.ndarray) -> np.ndarray:
@@ -765,6 +784,10 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
                                      for t_, v_ in zip(uw[0][::k], uw[1][::k])]
         regs[rn] = rec
     tp["regions"] = regs
+    # swirl about the rotating zone's axis in every region, from the written fields (the gate against single phase)
+    sw = swirl_of(case, study, plan, t0)
+    if sw:
+        tp["swirl"] = sw
     av = _series(case, mon["air_volume"])
     if av is not None:
         tp["air_volume_series"] = [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in
@@ -801,23 +824,56 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
         except (TypeError, KeyError, IndexError):
             pass
     ref = cfg["reference"]
-    if ref and "pump" in tp:
-        cmp_ = reference_comparison(ref, tp["pump"])
+    if ref and ("pump" in tp or "swirl" in tp):
+        cmp_ = reference_comparison(ref, tp.get("pump") or {}, tp.get("swirl"))
         if cmp_:
             tp["reference"] = cmp_
-            if e["inlet_gas_fraction"] == 0 and not cmp_.get("within_tolerance"):
+            if e["inlet_gas_fraction"] == 0 and cmp_.get("within_tolerance") is False:
                 warns.append(f"two_phase at a gas fraction of 0 differs from the single-phase run {ref}: head "
-                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')} (ratios; within "
-                             f"{REF_TOL:.0%} expected): the two-fluid case is not consistent with it yet")
+                             f"{cmp_.get('head_ratio')}, torque {cmp_.get('torque_ratio')}, swirl "
+                             f"{cmp_.get('swirl_ratio_by_region')} (ratios; head and torque within {REF_TOL:.0%}, "
+                             f"swirl within {SWIRL_TOL:.0%} expected): the two-fluid case is not consistent with it")
     if bal and bal.get("error") is not None and bal["error"] > BALANCE_TOL:
         warns.append(f"air mass balance off by {bal['error']:.2%} of the air in play (> {BALANCE_TOL:.0%})")
     res["checks"] = {"air_mass_balance": bal or {"error": None}}
     return res, warns
 
 
-def reference_comparison(ref: str, pump: dict) -> dict | None:
-    """Head and torque against a single-phase result ('<request>/<study>' under this machine's output root, or a
-    folder): ratios and whether both are within REF_TOL."""
+def swirl_of(case: Path, study: dict, plan: dict, t0: float | None) -> dict | None:
+    """The water's swirl per region about the (region's, else first) rotating zone's axis, from the written fields:
+    the last write of a steady run, the mean of the written times from t0 of a transient one."""
+    from . import swirl
+    regs = settings(study)["regions"]
+    if not regs or not plan.get("zones"):
+        return None
+    steady = plan["euler"]["steady"]
+    rho = plan["euler"]["rho_l"]
+    out = None
+    groups = {}
+    for r in regs:
+        groups.setdefault(r.get("zone"), []).append(r)
+    for zone, rs in groups.items():
+        fr = swirl.frame_of(plan, zone)
+        if fr is None:
+            continue
+        try:
+            s = swirl.from_case(case, rs, fr, rho, "U.water", "alpha.water", t_from=None if steady else t0,
+                                latest_only=steady)
+        except (OSError, ValueError, KeyError, IndexError):
+            s = None
+        if s is None:
+            continue
+        if out is None:
+            out = s
+        else:
+            out["regions"].update(s["regions"])
+    return out
+
+
+def reference_comparison(ref: str, pump: dict, sw: dict | None = None) -> dict | None:
+    """Head, torque and the regions' swirl against a single-phase result ('<request>/<study>' under this machine's
+    output root, or a folder): ratios, and whether head and torque are within REF_TOL and each region's mean
+    tangential velocity within SWIRL_TOL."""
     import json
     from .api import out_root
     p = Path(ref).expanduser()
@@ -837,8 +893,27 @@ def reference_comparison(ref: str, pump: dict) -> dict | None:
         out["head_ratio"] = float(f"{pump['head_m'] / h1:.4g}")
     if t1 and pump.get("torque_Nm") is not None:
         out["torque_ratio"] = float(f"{pump['torque_Nm'] / t1:.4g}")
+    ok = []
     if "head_ratio" in out and "torque_ratio" in out:
-        out["within_tolerance"] = bool(abs(out["head_ratio"] - 1) <= REF_TOL and abs(out["torque_ratio"] - 1) <= REF_TOL)
+        ok.append(abs(out["head_ratio"] - 1) <= REF_TOL and abs(out["torque_ratio"] - 1) <= REF_TOL)
+    rs = (((r.get("results") or {}).get("swirl") or {}).get("regions") or {})
+    if sw and rs:
+        ratios = {}
+        for name, v in (sw.get("regions") or {}).items():
+            u1 = (rs.get(name) or {}).get("u_theta_m_s")
+            u2 = v.get("u_theta_m_s")
+            if u1 and u2 is not None and abs(u1) > 1e-9:
+                ratios[name] = float(f"{u2 / u1:.4g}")
+        if ratios:
+            out["swirl_ratio_by_region"] = ratios
+            out["swirl_note"] = ("two-fluid / single-phase mean tangential velocity of the water per region, about "
+                                 "the rotating zone's axis")
+            ok.append(all(abs(x - 1) <= SWIRL_TOL for x in ratios.values()))
+        missing = sorted(set(sw.get("regions") or {}) - set(rs))
+        if missing:
+            out["swirl_missing_in_reference"] = missing
+    if ok:
+        out["within_tolerance"] = bool(all(ok))
     return out
 
 
@@ -896,7 +971,8 @@ def verdict(res: dict, plan: dict) -> list:
         why.append(f"air mass balance off by {bal['error']:.2%}")
     ref = (res["two_phase"].get("reference") or {})
     if plan["euler"]["inlet_gas_fraction"] == 0 and ref and ref.get("within_tolerance") is False:
-        why.append("head or torque differs from the single-phase reference by more than 2 % at a gas fraction of 0")
+        why.append("head or torque (2 %) or a region's swirl (3 %) differs from the single-phase reference at a gas "
+                   "fraction of 0")
     return why
 
 
