@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.21.1
+Version: 2026.11.22.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -185,6 +185,10 @@ GUIDES = {
             "stationary pockets and reservoirs with little swirl), or {relative|absolute: tol}; unset, absolute where "
             "the single-phase swirl ratio is below 0.25 (head and torque 2 %); or, for any of them, within twice the two runs' combined standard error (steady runs with regions write U snapshots over their averaging window for it: give both the same window length). Boxes as [x0..z1] or {min, max}. Run the gate at the sweep's flow and at a low flow (near "
             "shut-off the water recirculates as in priming); if it fails there, the priming question cannot use it.",
+            "Pressure level: the two-fluid case is absolute (air a perfect gas), its outlet at two_phase.p_ref_Pa "
+            "(default 101325). A pump with a flow-rate inlet and a pressure outlet needs the inlet at outlet minus the "
+            "pump's rise: set p_ref_Pa to about 101325 + rho g H so the inlet stays near atmospheric (S50: 300000). "
+            "Otherwise limitPressure clips the inlet at its floor and the head is wrong (checks.pressure_limited, judged).",
             "Validate first: run_benchmarks bubble_column_euler and rotating_cylinder_euler. Cost: a two-fluid step is "
             "several times a single-phase one, and the time step follows the fastest flow through the smallest cells "
             "(clearance jets): estimate before a pump run.",

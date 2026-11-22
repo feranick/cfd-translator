@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.21.1
+Version: 2026.11.22.1
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -888,7 +888,44 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
     if bal and bal.get("error") is not None and bal["error"] > BALANCE_TOL:
         warns.append(f"air mass balance off by {bal['error']:.2%} of the air in play (> {BALANCE_TOL:.0%})")
     res["checks"] = {"air_mass_balance": bal or {"error": None}}
+    lim = pressure_limited(case)
+    if lim:
+        res["checks"]["pressure_limited"] = lim
+        if lim["late_steps"]:
+            warns.append(f"the pressure hit limitPressure's floor ({lim['floor_Pa']:g} Pa absolute) in {lim['late_steps']} "
+                         "of the last third of the steps: the solution cannot reach the pump's pressure rise there. Raise "
+                         "two_phase.p_ref_Pa (the outlet's absolute pressure) by the pump's rise, e.g. 101325 + rho g H, "
+                         "so the inlet stays near atmospheric")
     return res, warns
+
+
+def pressure_limited(case: Path) -> dict | None:
+    """Steps of log.foamRun in which limitPressure clipped p at its floor, and how many in the last third (S50 780,
+    22 Nov 2026: outlet at 1 atm, inlet clamped at 2026.5 Pa for the whole run, head 0.52 of single phase)."""
+    import re
+    log = Path(case) / "log.foamRun"
+    try:
+        text = log.read_text(errors="replace")
+    except OSError:
+        return None
+    steps = [m.start() for m in re.finditer(r"^Time = ", text, re.M)]
+    hits = [m.start() for m in re.finditer(r"^limitPressure", text, re.M)]
+    if not hits:
+        return None
+    n = len(steps)
+    first_late = steps[int(n * 2 / 3)] if n >= 3 else 0
+    from bisect import bisect_right
+    idx = {bisect_right(steps, h) for h in hits}
+    late = {bisect_right(steps, h) for h in hits if h >= first_late}
+    floor = None
+    try:
+        cd = (Path(case) / "system" / "fvConstraints").read_text()
+        m = re.search(r"min\s+([-+0-9.eE]+);", cd)
+        floor = float(m.group(1)) if m else None
+    except OSError:
+        pass
+    return {"steps": len(idx), "late_steps": len(late),
+            "of_steps": n, "floor_Pa": floor}
 
 
 def swirl_of(case: Path, study: dict, plan: dict, t0: float | None) -> dict | None:
@@ -1058,6 +1095,10 @@ def verdict(res: dict, plan: dict) -> list:
         why.append(f"no air mass balance ({bal.get('note') or 'the monitors were not written'})")
     elif bal["error"] > BALANCE_TOL:
         why.append(f"air mass balance off by {bal['error']:.2%}")
+    lim = res["checks"].get("pressure_limited") or {}
+    if lim.get("late_steps"):
+        why.append(f"the pressure was clipped at limitPressure's floor in {lim['late_steps']} late steps (an outlet "
+                   "pressure too low for the pump's rise: raise two_phase.p_ref_Pa)")
     ref = (res["two_phase"].get("reference") or {})
     if plan["euler"]["inlet_gas_fraction"] == 0 and ref and ref.get("within_tolerance") is False:
         why.append("head or torque (2 %) or a region's swirl gate differs from the single-phase reference at a gas "

@@ -290,3 +290,24 @@ def test_gravity_is_required_with_a_free_surface_or_an_opening():
     assert any("gravity: required" in x for x in twophase.errors(op))
     ok = dict(fs, two_phase=dict(fs["two_phase"], gravity=[0, -9.81, 0]))
     assert not any("gravity" in x for x in twophase.errors(ok))
+
+
+def test_pressure_clipped_at_the_floor_is_unreliable(tmp_path):
+    """S50 780 (22 Nov 2026): outlet at 1 atm, the inlet would need -92 kPa absolute; limitPressure held it at 2026.5 Pa
+    all run and the head came out at 0.52 of single phase. Now said, and judged."""
+    case = tmp_path / "c"
+    (case / "system").mkdir(parents=True)
+    (case / "system" / "fvConstraints").write_text("limitp\n{\n    type       limitPressure;\n\n    min        2026.5;\n}\n")
+    lines = []
+    for i in range(1, 31):
+        lines.append(f"Time = {i}s\n\nGAMG:  Solving for p_rgh\n")
+        if i in (3, 25, 29):
+            lines.append("limitPressure: min 2026.5\n")
+    (case / "log.foamRun").write_text("".join(lines))
+    lim = twophase.pressure_limited(case)
+    assert lim == {"steps": 3, "late_steps": 2, "of_steps": 30, "floor_Pa": 2026.5}
+    res = {"checks": {"air_mass_balance": {"applicable": False}, "pressure_limited": lim}, "two_phase": {}}
+    plan = {"euler": {"inlet_gas_fraction": 0}}
+    assert any("p_ref_Pa" in w for w in twophase.verdict(res, plan))
+    (case / "log.foamRun").write_text("Time = 1s\n")
+    assert twophase.pressure_limited(case) is None
