@@ -360,6 +360,8 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
     rho_l, mu_l = float(plan["rho"]), float(plan["mu"])
     turb = cfg["turbulent"]
     p0, T = cfg["p_ref"], cfg["T_K"]
+    from . import esi_euler
+    legacy = esi_euler.is_legacy(study)          # solve.backend 'esi': ESI v2506's legacy multiphaseEulerFoam
     gvec = np.asarray(cfg["gravity"], float)
     gmag = float(np.linalg.norm(gvec))
     up = -gvec / gmag if gmag > 0 else np.array([0.0, 0.0, 1.0])
@@ -489,6 +491,9 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
         for ph in phases:
             NU[ph].setdefault(nm, {"type": "calculated", "value": _uniform(0)})
             AT[ph].setdefault(nm, {"type": "calculated", "value": _uniform(0)})
+    if legacy:
+        U = esi_euler.fields(U, gas, inlets)
+        pr = esi_euler.pressure(pr)
     z = case / "0"
     for f in z.iterdir() if z.is_dir() else []:
         if f.is_file():
@@ -521,6 +526,8 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
             (z / f"alphat.{ph}").write_text(_field("volScalarField", f"alphat.{ph}", "[1 -1 -1 0 0 0 0]", _uniform(0), AT[ph]))
     (z / "p").write_text(_field("volScalarField", "p", "[1 -1 -2 0 0 0 0]", _uniform(p0), pp))
     (z / "p_rgh").write_text(_field("volScalarField", "p_rgh", "[1 -1 -2 0 0 0 0]", _uniform(p0), pr))
+    if legacy and turb:
+        esi_euler.k_omega_mixture(z)
     # constant
     c = case / "constant"
     for f in ("physicalProperties", "momentumTransport", "phaseProperties", "fvModels"):
@@ -543,6 +550,10 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
                          f"value           {_vec_s(gvec)};\n")
     write_mrf(case, zones, plan)
     mesh.write(case)
+    if legacy:
+        esi_euler.write_constant(case, plan, cfg, rho_l, mu_l, rho_g0, float(AIR["mu"]), turb)
+        plan["backend"] = "esi"
+        plan_e.update(solver=esi_euler.LABEL, air_scale=rho_g0, notes=esi_euler.notes(study))
     # system
     lap, sn, nonorth, _rf = nonortho_schemes(q)
     if q["max_non_orthogonality"] <= 5.0:
@@ -550,7 +561,10 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
     steady = cfg["steady"]
     w_max = max((abs(zp["omega_rad_s"]) for zp in plan["zones"].values()), default=0.0)
     dt_cap = cfg["max_delta_t"] or (min(1.0, 0.2 / w_max) if w_max > 0 else (1.0 if steady else 0.01))
-    funcs, mon = monitor_functions(study, plan, patches, cfg)
+    if legacy:
+        funcs, mon = esi_euler.monitor_functions(plan, patches, cfg, rho_l, p0)
+    else:
+        funcs, mon = monitor_functions(study, plan, patches, cfg)
     plan_e["monitors"] = mon
     if steady:
         n = cfg["iterations"]
@@ -567,6 +581,17 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
           "timeFormat      general;\n\ntimePrecision   8;\n\nrunTimeModifiable true;\n\n"
           "functions\n{\n" + "\n".join(funcs) + "\n}")
     sy = case / "system"
+    if legacy:
+        closed_ = not any(p["kind"] in ("inlet", "outlet", "opening") for p in patches)
+        (sy / "controlDict").write_text(esi_euler.control_dict(cfg, dt_cap, funcs))
+        (sy / "fvSchemes").write_text(esi_euler.fv_schemes(turb, lap, sn))
+        (sy / "fvSolution").write_text(esi_euler.fv_solution(nonorth, closed_, p0))
+        (sy / "fvConstraints").unlink(missing_ok=True)
+        plan.update({"iterations": 0, "residual": 1e-5, "relax": {"U": 1.0, "other": 1.0},
+                     "schemes": "unstructured" if q["max_non_orthogonality"] > 5 else "orthogonal",
+                     "laplacian": lap, "sngrad": sn, "nonorth": nonorth, "functions": funcs})
+        (case / "case.foam").write_text("")
+        return plan
     (sy / "controlDict").write_text(_dict("controlDict", "system", cd))
     turb_div = ("    div(alphaRhoPhi,k)          Gauss limitedLinear 1;\n    div(alphaRhoPhi,omega)      Gauss limitedLinear 1;\n"
                 if turb else "")
@@ -709,6 +734,8 @@ def air_balance(case: Path, plan: dict) -> dict | None:
     if m is None:
         return None
     tm, M = m
+    sc = float(plan["euler"].get("air_scale", 1.0))      # legacy ESI: volumes and volume flows of a constant-density air
+    M = M * sc
     net = np.zeros_like(tm)
     inj = np.zeros_like(tm)
     per = {}
@@ -716,7 +743,7 @@ def air_balance(case: Path, plan: dict) -> dict | None:
         s = _series(case, fo)
         if s is None:
             continue
-        f = np.interp(tm, s[0], s[1])
+        f = np.interp(tm, s[0], s[1]) * sc
         net += f
         inj += np.minimum(f, 0.0)
         per[nm] = float(f"{np.mean(f[tm >= tm[len(tm) // 2]]):.4g}")
@@ -804,7 +831,7 @@ def results(case: Path, study: dict, plan: dict) -> tuple[dict, list]:
     for nm, fo in mon["patch_air"].items():
         s = _series(case, fo)
         if s is not None:
-            flows.setdefault(nm, {})["air_kg_s"] = float(f"{_mean(s[0], s[1], t0):.5g}")
+            flows.setdefault(nm, {})["air_kg_s"] = float(f"{_mean(s[0], s[1], t0) * float(e.get('air_scale', 1.0)):.5g}")
     tp["flows"] = flows
     regs = {}
     for rn, ent in mon["regions"].items():
