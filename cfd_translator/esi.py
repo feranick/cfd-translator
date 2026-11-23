@@ -1,6 +1,6 @@
 """esi.py — the ESI OpenFOAM (openfoam.com v2506) backend for sliding meshes: cyclicAMI instead of OpenFOAM 14's
 non-conformal coupling, for gap-dominated pumps where NCC needs far smaller steps (other/esi_v2506_backend.md).
-Version: 2026.11.17.3
+Version: 2026.11.23.1
 
 Selected explicitly with solve.backend 'esi' (never silently), only for a transient study with a sliding zone. The
 mesh, its checks and the steady MRF start are cfdt's OpenFOAM 14 path, unchanged (mesh once; the start runs on the
@@ -64,6 +64,9 @@ def errors(st: dict) -> list[str]:
         return [f"solve.backend: one of {list(BACKENDS)} (default 'openfoam.org': OpenFOAM 14)"]
     if b != "esi":
         return []
+    if st.get("two_phase"):                      # the legacy two-fluid solver (esi_euler.py), MRF transient
+        from .esi_euler import errors as legacy_errors
+        return legacy_errors(st)
     out = []
     tr = s.get("transient")
     if not isinstance(tr, dict):

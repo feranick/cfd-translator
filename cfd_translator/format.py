@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.20.8
+Version: 2026.11.23.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -154,7 +154,7 @@ STUDY_KEYS = {
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
              "p_below_regions, free_flow (pumps: flow held, then the inlet's total pressure), locator (sliding: where it fails)}; "
-             "backend: esi (sliding: cyclicAMI, guide('pumps'))",
+             "backend: esi (sliding: cyclicAMI, guide('pumps'); two_phase transient: legacy multiphaseEulerFoam)",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
     "regions": "[{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1], zone}] mm: swirl "

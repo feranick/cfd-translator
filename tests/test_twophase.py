@@ -311,3 +311,71 @@ def test_pressure_clipped_at_the_floor_is_unreliable(tmp_path):
     assert any("p_ref_Pa" in w for w in twophase.verdict(res, plan))
     (case / "log.foamRun").write_text("Time = 1s\n")
     assert twophase.pressure_limited(case) is None
+
+
+def test_the_legacy_esi_case(tmp_path):
+    """solve.backend 'esi' with two_phase: ESI v2506's legacy multiphaseEulerFoam case (esi_euler.py)."""
+    from cfd_translator import bench, esi_euler
+    from cfd_translator.runner import prepare
+    cs = bench._cases()
+    assert validate_study(cs["rotating_cylinder_euler_esi"]["study"])["ok"]
+    # an MRF pump, k-omega SST, transient
+    st = _pump_study(mode="transient", end_time=0.01)
+    st["solve"] = {"backend": "esi"}
+    assert validate_study(st)["ok"], validate_study(st)
+    bad = {**st, "two_phase": {**st["two_phase"], "mode": "steady"}}
+    assert any("local time step" in e for e in validate_study(bad)["errors"])
+    m = pump_mesh(vane=None)
+    m.info["snapped_zones"] = {"rotor": zone_of(m, 11.5)}
+    pts = patches_for(m, hub_rot="rotor")
+    for p in pts:
+        if p["kind"] == "inlet":
+            p["bc"] = {"kind": "inlet", "name": "inlet", "velocity": 1.0}
+    case = tmp_path / "case"
+    plan = write_case(st, m, pts, case)
+    c, z, sy = case / "constant", case / "0", case / "system"
+    assert plan["backend"] == "esi" and plan["euler"]["solver"] == esi_euler.LABEL
+    tp = (c / "transportProperties").read_text()
+    assert "SchillerNaumann" in tp and "virtualMass" in tp
+    assert "active" in (c / "MRFProperties").read_text()
+    for f in ("phaseProperties", "momentumTransfer", "physicalProperties.air", "fvModels"):
+        assert not (c / f).exists(), f
+    assert not (sy / "fvConstraints").exists()
+    assert "kOmegaSST" in (c / "turbulenceProperties").read_text()
+    cd = (sy / "controlDict").read_text()
+    assert "multiphaseEulerFoam" in cd and "tpAirVolume" in cd and "tpM_rotor_mix" in cd
+    assert "pRefCell" not in (sy / "fvSolution").read_text()                 # open: inlet and outlet
+    Uw = foamio.read_foam((z / "U.water").read_text())["boundaryField"]
+    Ua = foamio.read_foam((z / "U.air").read_text())["boundaryField"]
+    assert Uw["blade"]["type"] != "MRFnoSlip" and Ua["blade"]["type"] == "slip"
+    assert (z / "k").is_file() and (z / "omega").is_file() and (z / "nut").is_file()
+    assert not (z / "k.water").exists() and not (z / "k.air").exists()
+    # the bubble column (laminar, an opening)
+    prepare(cs["bubble_column_euler_esi"]["study"], tmp_path / "bc")
+    assert "multiphaseEulerFoam" in (tmp_path / "bc" / "case" / "system" / "controlDict").read_text()
+
+
+def test_the_runner_runs_the_legacy_solver(tmp_path, monkeypatch):
+    from cfd_translator import bench, foam, runner
+    st = bench._cases()["bubble_column_euler_esi"]["study"]
+    seen = {}
+
+    def fake_run(case, timeout, procs, resume=False, deadline=None, **k):
+        seen.update(k)
+        t = np.linspace(0, 1.0, 51)
+        _dat(case, "tpAirVolume", [(x, 2.5e-7 / RHO_A * RHO_A) for x in t])
+        _dat(case, "tpAirFlow_top", [(x, 0.0) for x in t])
+        _dat(case, "tpWaterFlow_top", [(x, 0.0) for x in t])
+        _dat(case, "tpP_top", [(x, 101325.0) for x in t])
+        _dat(case, "tpR_mid_alpha", [(x, 0.02) for x in t])
+        _dat(case, "tpR_mid_U_air", [(x, (0.0, 0.112, 0.0)) for x in t])
+        _dat(case, "tpR_mid_U_water", [(x, (0.0, -0.0023, 0.0)) for x in t])
+        return {"log": {"iterations": 400, "residuals": {}, "converged": True}, "checkMesh": {"ok": True},
+                "openfoam": "v2506", "procs": procs, "time": 1.0, "reached_end": True, "backend": "esi"}
+    monkeypatch.setattr(foam, "run", fake_run)
+    monkeypatch.setattr(foam, "find_foam", lambda: {"version": "14"})
+    r = runner.run_study("bc", st, tmp_path / "bc", "foam", 600)
+    assert seen == {"backend": "esi", "solver": "multiphaseEulerFoam"}
+    assert r["ok"] and r["solve"]["backend"] == "esi" and "multiphaseEulerFoam" in r["solve"]["solver"], r
+    tp = r.get("two_phase") or r["results"]["two_phase"]
+    assert tp["regions"]["mid"]["slip"][1] == pytest.approx(0.1143, rel=1e-3)

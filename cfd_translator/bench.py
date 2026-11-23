@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.20.6
+Version: 2026.11.23.1
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -15,6 +15,7 @@ Version: 2026.11.20.6
   rotating_cylinder_euler   two-fluid, MRF: 0.1 mm bubbles migrate to the axis of a cylinder in solid-body rotation
                    at the drag law's rate (Stokes regime, Re < 1); the liquid turns with the walls; air conserved (Gmsh)
   rotating_cylinder_walls_euler   the same with the walls turning in the absolute frame (no MRF)
+  *_euler_esi      the three above on ESI v2506's legacy multiphaseEulerFoam (solve.backend 'esi'; by name, ESI)
   duct_air_2pct    water + 2 % air (inlet_gas_fraction, compressibleVoF, LTS) in a duct: air out = air in, its
                    volume expanded by p_in / p_out (isothermal), the liquid flow as asked
   pipe_poiseuille  Hagen-Poiseuille pipe: dp = 8 mu L Q / (pi R^4) (swept disk mesh; Gmsh)
@@ -644,6 +645,12 @@ def _cases() -> dict:
             mod(st_)
             C[f"rotating_cylinder{'' if mrf else '_walls'}_euler_{nm}"] = {"study": st_, "checks": _rc_checks,
                                                                            "ref": False, "needs": ["gmsh"], "slow": True}
+    # the same three on ESI v2506's legacy multiphaseEulerFoam (solve.backend 'esi'; esi_euler.py): by name, on a
+    # machine with ESI OpenFOAM (carbonio)
+    for nm in ("bubble_column_euler", "rotating_cylinder_euler", "rotating_cylinder_walls_euler"):
+        st_ = _copy.deepcopy(C[nm]["study"])
+        st_.setdefault("solve", {})["backend"] = "esi"
+        C[nm + "_esi"] = {**C[nm], "study": st_, "slow": True}
     return C
 
 

@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.18.6
+Version: 2026.11.23.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -448,7 +448,7 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
     try:
         rc = _bash(foam, f"{cmd} > {logname} 2>&1", case, timeout=timeout,
                    cancel_file=Path(case).parent / "cancel", deadline=deadline, on_deadline=on_deadline,
-                   watch_log=Path(case) / logname if ("foamRun" in cmd or "pimpleFoam" in cmd) else None,
+                   watch_log=Path(case) / logname if any(x in cmd for x in ("foamRun", "pimpleFoam", "multiphaseEulerFoam")) else None,
                    mem_log=Path(case) / logname if "snappyHexMesh" in cmd else None).returncode
     except subprocess.TimeoutExpired as exc:
         raise FoamError(f"{cmd.split()[0]} took more than {timeout:.0f} s (CFDT_TIMEOUT)") from exc
@@ -472,7 +472,7 @@ def _step(foam: dict, cmd: str, logname: str, case: Path, timeout: float, raise_
 
 
 def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: bool = False,
-        deadline: float | None = None, backend: str = "openfoam.org") -> dict:
+        deadline: float | None = None, backend: str = "openfoam.org", solver: str | None = None) -> dict:
     """checkMesh, then the solver. Returns the parsed logs; raises FoamError on failure.
     resume (transient runs): continue from the latest time (no cleaning, no checkMesh; the decomposition is
     kept when it has as many ranks). deadline (epoch seconds): ask the run to write and stop then
@@ -487,7 +487,7 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
         foam = find_foam()
     if not foam or "error" in (foam or {}):
         raise FoamError((foam or {}).get("error", "OpenFOAM not found (install openfoam.org >= 11, or set CFDT_FOAM)"))
-    solver = "pimpleFoam" if esi else "foamRun"
+    solver = solver or ("pimpleFoam" if esi else "foamRun")       # ESI two-fluid: multiphaseEulerFoam
     case = Path(case)
     out = {"openfoam": foam.get("version"), **({"backend": "esi"} if esi else {})}
     if not resume:

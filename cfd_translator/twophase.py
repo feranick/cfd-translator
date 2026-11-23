@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.22.1
+Version: 2026.11.23.1
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -158,7 +158,7 @@ def errors(st: dict) -> list[str]:
     s = st.get("solve") or {}
     for what, bad_ in (("cavitation", st.get("cavitation")), ("energy", st.get("energy")),
                        ("solve.transient (use two_phase.mode 'transient')", s.get("transient")),
-                       ("solve.backend esi", s.get("backend") == "esi"), ("porous zones", st.get("porous")),
+                       ("porous zones", st.get("porous")),
                        ("scalars", st.get("scalars")),
                        ("a sliding zone (MRF only)", any(isinstance(z, dict) and z.get("motion") == "sliding"
                                                          for z in st.get("rotating") or [])),
@@ -1078,10 +1078,13 @@ def run_and_results(case: Path, study: dict, plan: dict, timeout: float, procs: 
     from . import foam
     steady = plan["euler"]["steady"]
     margin = min(900.0, max(60.0, 0.1 * timeout))
+    esi = plan.get("backend") == "esi"           # ESI v2506's legacy multiphaseEulerFoam (esi_euler.py)
     info = foam.run(case, max(timeout - (time.time() - t_job), 120.0), procs,
-                    deadline=None if steady else t_job + timeout - margin)
+                    deadline=None if steady else t_job + timeout - margin,
+                    **({"backend": "esi", "solver": "multiphaseEulerFoam"} if esi else {}))
     lg = info["log"]
-    solve = {"openfoam": info.get("openfoam"), "solver": "multiphaseEuler", "procs": info.get("procs"),
+    solve = {"openfoam": info.get("openfoam"), "solver": plan["euler"].get("solver", "multiphaseEuler"),
+             "procs": info.get("procs"), **({"backend": "esi"} if esi else {}),
              "iterations": lg["iterations"], "residuals": lg["residuals"], "checkMesh": info["checkMesh"],
              "mode": "steady (local time step)" if steady else "transient"}
     if not steady:
