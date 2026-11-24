@@ -353,6 +353,9 @@ def test_the_legacy_esi_case(tmp_path):
     # the bubble column (laminar, an opening)
     prepare(cs["bubble_column_euler_esi"]["study"], tmp_path / "bc")
     assert "multiphaseEulerFoam" in (tmp_path / "bc" / "case" / "system" / "controlDict").read_text()
+    fs = (sy / "fvSchemes").read_text()                 # full correction: 'limited' loses the rotation (6093/6094)
+    assert "Gauss linear corrected;" in fs and "limited corrected" not in fs
+    assert esi_euler.mesh_errors({"max_non_orthogonality": 75.0}) and not esi_euler.mesh_errors({"max_non_orthogonality": 56.0})
 
 
 def test_the_runner_runs_the_legacy_solver(tmp_path, monkeypatch):
@@ -379,3 +382,23 @@ def test_the_runner_runs_the_legacy_solver(tmp_path, monkeypatch):
     assert r["ok"] and r["solve"]["backend"] == "esi" and "multiphaseEulerFoam" in r["solve"]["solver"], r
     tp = r.get("two_phase") or r["results"]["two_phase"]
     assert tp["regions"]["mid"]["slip"][1] == pytest.approx(0.1143, rel=1e-3)
+
+
+def test_esi_decomposition_uses_method(tmp_path, monkeypatch):
+    """ESI's decomposePar needs 'method' (OpenFOAM 14: 'decomposer'): rc_esi_fine, carbonio 2026-11-23."""
+    from cfd_translator import foam
+    case = tmp_path / "c"
+    (case / "system").mkdir(parents=True)
+    seen = {}
+
+    def step(f, cmd, log, c, t, **k):
+        if cmd.startswith("decomposePar"):
+            seen["dict"] = (case / "system" / "decomposeParDict").read_text()
+            raise foam.FoamError("stop here")
+        return 0
+    monkeypatch.setattr(foam, "_step", step)
+    import cfd_translator.esi as esi
+    monkeypatch.setattr(esi, "require", lambda: {"version": "v2506"})
+    with pytest.raises(foam.FoamError):
+        foam.run(case, 60, 2, backend="esi", solver="multiphaseEulerFoam")
+    assert "method          scotch;" in seen["dict"] and "decomposer" not in seen["dict"]

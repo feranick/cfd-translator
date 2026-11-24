@@ -1,5 +1,5 @@
 """esi_euler.py — two_phase on the ESI backend: OpenFOAM v2506's legacy multiphaseEulerFoam.
-Version: 2026.11.23.1
+Version: 2026.11.24.1
 
 Why: OpenFOAM 14's multiphaseEuler adds angular momentum to a solid-body rotation (+5 % in 1 s, water alone too), ESI's
 reacting family loses 6-8 % (MRF unstable); ESI's legacy multiphaseEulerFoam (the 2013 code: constant-density phases,
@@ -124,7 +124,24 @@ def mrf_properties(plan: dict) -> str | None:
     return _d("MRFProperties", "constant", "\n\n".join(parts))
 
 
-def fv_schemes(turb: bool, lap: str, sn: str) -> str:
+# Full non-orthogonal correction always: with 'limited corrected 0.5' (cfdt's choice on skewed meshes) the legacy
+# solver loses a solid-body rotation from the first steps, on cfdt's quad cylinder and on a blockMesh O-grid alike
+# (carbonio jobs 6093/6094, 2026-11-24: angular momentum +13 % in 1 s, the vortex centre wandering at 0.12 m/s; with
+# 'corrected' -2.3 %, centred). Meshes above 70 degrees are refused (esi_euler.mesh_errors).
+LAPLACIAN, SNGRAD = "Gauss linear corrected", "corrected"
+MAX_NONORTH = 70.0
+
+
+def mesh_errors(q: dict) -> list[str]:
+    m = float(q.get("max_non_orthogonality", 0.0))
+    if m > MAX_NONORTH:
+        return [f"the ESI legacy multiphaseEulerFoam needs full non-orthogonal correction ('corrected'), which is unsafe "
+                f"above {MAX_NONORTH:g} degrees: this mesh reaches {m:.1f} (refine or improve the mesh)"]
+    return []
+
+
+def fv_schemes(turb: bool, lap: str = LAPLACIAN, sn: str = SNGRAD) -> str:
+    lap, sn = LAPLACIAN, SNGRAD                  # not cfdt's limited schemes (see above)
     fs = ("ddtSchemes\n{\n    default         Euler;\n}\n\n"
           "gradSchemes\n{\n    default         Gauss linear;\n}\n\n"
           "divSchemes\n{\n    default         Gauss limitedLinear 1;\n\n"

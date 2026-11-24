@@ -1,5 +1,5 @@
 """foam.py — the only module that runs OpenFOAM: find it, run checkMesh and foamRun, read the fields.
-Version: 2026.11.23.1
+Version: 2026.11.24.1
 
 OpenFOAM (openfoam.org, version 11 or later: foamRun + incompressibleFluid) is found as:
 CFDT_FOAM=/path/to/etc/bashrc, or any script that sets OpenFOAM up (a cluster's env script with its modules),
@@ -519,7 +519,7 @@ def run(case: Path, timeout: float = 3600, procs: int | None = None, resume: boo
                 _step(foam, "reconstructPar -latestTime", "log.reconstructPar", case, timeout)
             (case / "system" / "decomposeParDict").write_text(
                 "FoamFile\n{\n    format      ascii;\n    class       dictionary;\n    object      decomposeParDict;\n}\n\n"
-                f"numberOfSubdomains {procs};\n\ndecomposer      scotch;\n")
+                f"numberOfSubdomains {procs};\n\n" + ("method          scotch;\n" if esi else "decomposer      scotch;\n"))
             _step(foam, "decomposePar -force" + (" -latestTime" if resume else ""), "log.decomposePar", case, timeout)
         lp = launch(procs)
         out["launch"] = lp

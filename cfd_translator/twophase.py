@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.23.1
+Version: 2026.11.24.1
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -582,6 +582,10 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
           "functions\n{\n" + "\n".join(funcs) + "\n}")
     sy = case / "system"
     if legacy:
+        bad = esi_euler.mesh_errors(q)
+        if bad:
+            from .polymesh import MeshError
+            raise MeshError(bad[0])
         closed_ = not any(p["kind"] in ("inlet", "outlet", "opening") for p in patches)
         (sy / "controlDict").write_text(esi_euler.control_dict(cfg, dt_cap, funcs))
         (sy / "fvSchemes").write_text(esi_euler.fv_schemes(turb, lap, sn))
@@ -589,7 +593,8 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
         (sy / "fvConstraints").unlink(missing_ok=True)
         plan.update({"iterations": 0, "residual": 1e-5, "relax": {"U": 1.0, "other": 1.0},
                      "schemes": "unstructured" if q["max_non_orthogonality"] > 5 else "orthogonal",
-                     "laplacian": lap, "sngrad": sn, "nonorth": nonorth, "functions": funcs})
+                     "laplacian": esi_euler.LAPLACIAN, "sngrad": esi_euler.SNGRAD, "nonorth": nonorth,
+                     "functions": funcs})
         (case / "case.foam").write_text("")
         return plan
     (sy / "controlDict").write_text(_dict("controlDict", "system", cd))
