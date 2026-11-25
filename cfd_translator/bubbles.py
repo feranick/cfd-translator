@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.25.2
+Version: 2026.11.25.3
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -102,7 +102,8 @@ def errors(st: dict) -> list[str]:
     if "regions" in st:
         from .twophase import region_errors
         e += region_errors(st["regions"], "regions")
-    other = sorted(k for k in st if k not in ("bubbles", "regions", "run", "images", "name"))
+    # solve: the SLURM job adds solve.procs to every study (executor.run_study_job); nothing else of it is read
+    other = sorted(k for k in st if k not in ("bubbles", "regions", "run", "images", "name", "solve"))
     if other:
         e.append(f"a bubbles study takes only bubbles, regions, run and images (not {other}): the flow is the source's")
     return e

@@ -87,6 +87,7 @@ def test_validation():
                                                    "span": [0, 23]}}],
           "run": {"host": "spark1"}}
     assert validate_study(ok)["ok"], validate_study(ok)
+    assert validate_study(dict(ok, solve={"procs": 1}))["ok"]          # the SLURM job adds solve.procs
     bad = {"bubbles": {"releases": [{"name": "a"}], "diameters_mm": [50]}, "geometry": {"box": [1, 1, 1]}}
     e = validate_study(bad)["errors"]
     assert any("source" in x for x in e) and any("diameters" in x for x in e) and any("only bubbles" in x for x in e)
