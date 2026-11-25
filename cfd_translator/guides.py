@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.22.1
+Version: 2026.11.25.2
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -156,6 +156,22 @@ GUIDES = {
             "starts from takes that point's mesh (not meshed again) and its fields are copied, not mapped. Chained "
             "points run one after the other, not side by side: fewer iterations each (cavitation.iterations) is what "
             "pays for it.",
+        ],
+        "bubble_tracking": [
+            "A study {bubbles: {...}, regions: [...], run: {host}} with no geometry moves bubbles one way through a "
+            "finished single-phase run's latest U and p (frozen rotor; no solve): bubbles.source '<request>/<study>' "
+            "(same machine: run.host), releases [{name, box {min, max} | cylinder | points [[x, y, z]], n}] (mm; "
+            "random fluid cells inside), diameters_mm [0.1, 0.3, 1, 2], gravity (S50: [0, -9.81, 0]; default "
+            "[0, 0, -9.81]), revolutions (20) or t_max_s, target (a region or a name in regions; default 'eye'), keep "
+            "(trajectories drawn per release and size, 30), added_mass 0.5, dt_max_s.",
+            "Physics: massless bubbles with Schiller-Naumann drag, the liquid's acceleration (-grad p: pressure "
+            "gradient and buoyancy) and added mass; in the MRF zone in the rotating frame, outside in the absolute "
+            "frame. One-way (the air does not change the flow), no turbulent dispersion, no coalescence: valid at low "
+            "air fractions. The field is one frozen-rotor position: say so with the results.",
+            "Results bubbles.releases.<name>.<d mm>: reached_target, in_target_at_end, impeller_exit (left the zone "
+            "through its outer radius), outlet, inlet, stuck_at_wall, still_in_flow (shares), time_to_target_s, "
+            "residence_in_target_s and _rev; images per release and size (plan and meridional views, red = reached "
+            "the target, blue = left by the outlet).",
         ],
         "air_with_slip": [
             "two_phase {...} (OpenFOAM 14 multiphaseEuler, two-fluid): air and water each with their own velocity, so "

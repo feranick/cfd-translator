@@ -228,7 +228,8 @@ plugged; CFD of air in the pump is tool development, off the critical path. Pump
 Rule for every route: the closed-cylinder hold test first (zero air, 10 rad/s, started in solid-body rotation: angular
 momentum within 1 % of the solid body, as single phase does), then the S50.
 
-Now (cheap, in order):
+Now: item 1 only. Items 2-4 are planned, not started (25 Nov: the user deferred them; the tooling for 3 and 4 is
+in 2026.11.25.1, item 2 waits for OpenFOAM 12/13 to be installed on carbonio).
 1. **One-way bubble tracking** in a settled single-phase frozen-rotor field (a cfdt post-processor): bubbles released
    at the slots, the bottom opening and the reservoir bottom (plugged: the rim gap), 0.1-2 mm; drag (Schiller-Naumann),
    pressure-gradient and added-mass forces, buoyancy; rotating frame with centrifugal and Coriolis terms inside the MRF
@@ -236,15 +237,28 @@ Now (cheap, in order):
    leaving through the impeller exit, residence in the eye in revolutions, trajectory images; as built against plugged;
    sensitivity to the field (last write against window mean). Validation first: still-column terminal velocity, radial
    migration in solid-body rotation against the drag law, a bubble at r = 0 staying there.
-2. **Version check**: the hold test on OpenFOAM 13 and 12 (`mrfhold.sbatch` with `FOAM_BASHRC`, `TAG`). If an older
+   Done in 2026.11.25.2 (`bubbles.py`, study key `bubbles`, guide('pumps') bubble_tracking); the three checks pass on
+   analytic fields (terminal velocity 2 %, migration 0.1 % in both frames: an exponential drag integrator was needed,
+   implicit Euler drifted 3 % in the absolute frame). Next: a smoke run on 795 (spark1, 1 rank, about 16 GB), then the
+   pump chat's release boxes (slot faces, 20 x 12 mm bottom opening, reservoir bottom; plugged: rim gap) in mm.
+   The 1p gate runs delete their window snapshots (swirl.attach_window cleanup), so the "window mean" sensitivity
+   needs a run that keeps them (or two different converged runs).
+2. **Version check** (blocked: no OpenFOAM 12/13 on any machine yet): the hold test on OpenFOAM 13 and 12
+   (`mrfhold.sbatch` with `FOAM_BASHRC`, `TAG`; command in its header). If an older
    version holds, it is a regression: tell the pump chat before the bug report is filed, and let `two_phase` pin a
    version (a per-backend `FOAM_BASHRC`, as for ESI).
 3. **Limiter check**: OpenFOAM 14 multiphaseEuler on cfdt's non-orthogonal cylinder, limited against full correction
    (`two_phase.full_correction`, 2026.11.25.1). The 20 Nov hand-run E_tr (cfdt's mesh, limited) showed the same
    asymmetric whirl (px 0.86, mx 1.60 at 1 s) that the limiter caused in the ESI legacy solver, beside the +4.5 %
    symmetric gain on the O-grid: the limiter may add to the OpenFOAM defect on the S50 (56 degrees).
+   How: run_studies on carbonio, the bench cylinder geometry at zero air, 1 s, MRF and walls turning, with and without
+   `two_phase.full_correction` (or bench `rotating_cylinder[_walls]_euler_fc` by name against the plain ones).
 4. **Settled retest of the S50 gate**: two-fluid at zero air from the single-phase run's fields (`solve.init_from`,
-   2026.11.25.1), equal windows, a drift test beside the snapshot standard error.
+   2026.11.25.1), equal windows, a drift test beside the snapshot standard error. How: spark1 after 811, the as-built
+   2 m3/h two-fluid study with `solve.init_from: run_20261121_s50_gate_spark1/gate_asbuilt_q2_1p` (795), 2,500
+   iterations, window 1501-2500, judged on the gate and on the drift from 795's values; resubmit 812 with
+   `init_from` 811. Also 795's head over 1501-2500: reprocess with `average: {window: 0.4, until: 2500}`, then
+   reprocess back to `{window: 0.1}` (its eye u_theta there is not recoverable: snapshots only over 9001-10000).
 
 Routes (after the above):
 - **A. Drift-flux mixture with centrifugal slip.** One mixture momentum equation, so it should keep the single-phase

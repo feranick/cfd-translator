@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.25.1
+Version: 2026.11.25.2
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -160,6 +160,20 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
     out["execution"] = record(procs_req)
     if (folder / "cancel").exists():
         out.update(ok=False, state="cancelled", why="cancelled before it started")
+        return _save(out, folder, name)
+    if study.get("bubbles") is not None:      # bubble tracking through another run's fields (bubbles.py): no solve
+        from . import bubbles
+        fm = _foam.find_foam()
+
+        def run_foam(c, cmd, log):
+            return _foam._step(fm, cmd, log, c, timeout)
+        try:
+            r = bubbles.run(name, study, folder, run_foam if fm and "error" not in fm else None)
+        except Exception as exc:  # noqa: BLE001
+            r = {"ok": False, "why": f"bubble tracking failed: {type(exc).__name__}: {exc}"}
+        out.update(r)
+        out["warnings"] = warns + list(r.get("warnings", []))
+        out["execution"] = record(procs_req)
         return _save(out, folder, name)
     transient = solver != "ref" and bool((study.get("solve") or {}).get("transient"))
     t_job = time.time()

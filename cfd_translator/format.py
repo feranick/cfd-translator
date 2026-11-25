@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.25.1
+Version: 2026.11.25.2
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -135,6 +135,7 @@ EXAMPLE = {"pipe_laminar": {
     "expect": [{"quantity": "pressure_drop", "value": 6.80, "tol": 0.03}]}}
 
 STUDY_KEYS = {
+    "bubbles": "bubble tracking: guide('pumps')",
     "geometry": "{'goal': b3dt goal} | {'step': path} | {'box': [lx, ly, lz]} | {'cylinder': [r, h]} | {'annulus': "
                 "[r_in, r_out, h]} | {'stl': path, 'scale', 'groups'} | "
                 "{'ref': name (add_geometry) or '<request>/<study>'}",
@@ -154,11 +155,10 @@ STUDY_KEYS = {
              "('<request>/<study>' or '<study>' of this request, run first: its fields are the start, steady or "
              "transient), init_fields (last | mean), p_below: [Pa abs] (time below each, per cell), "
              "p_below_regions, free_flow (pumps: flow held, then the inlet's total pressure), locator (sliding: where it fails)}; "
-             "backend: esi (sliding: cyclicAMI, guide('pumps'); two_phase transient: legacy multiphaseEulerFoam)",
+             "backend: esi (sliding, or two_phase transient; guide('pumps'))",
     "reference": "{velocity (m/s), area (mm2), length (mm), cofr [x, y, z] mm, drag_dir, lift_dir, p (Pa, gauge zero)}",
     "probes": "[{name, at: [x, y, z]} | {name, line: {from, to, n}}]",
-    "regions": "[{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1], zone}] mm: swirl "
-               "about the zone's axis",
+    "regions": "[{name, cylinder: {center, axis, radius, inner_radius, span} | box: [x0..z1], zone}] mm: swirl",
     "expect": "[{quantity, value, tol | abs}]",
     "rotating": "[{name, axis, center (mm), rpm, radius (mm), span: [s0, s1] mm along the axis, motion: mrf | "
                 "sliding, interface_refine: mm}]: MRF zones (default) or a sliding mesh",
@@ -568,6 +568,10 @@ def validate_study(st: dict) -> dict:
     errs, warns = [], []
     if not isinstance(st, dict):
         return {"ok": False, "errors": ["a study is a dict"], "warnings": []}
+    if "bubbles" in st:                        # bubble tracking through another run's fields: its own block
+        from .bubbles import errors as bubble_errors
+        e = bubble_errors(st)
+        return {"ok": not e, "errors": e, "warnings": []}
     for k in st:
         if k not in STUDY_KEYS:
             errs.append(f"unknown key {k!r} (keys: {sorted(STUDY_KEYS)})")
