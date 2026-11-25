@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.25.3
+Version: 2026.11.25.4
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -292,8 +292,21 @@ class Field:
         p = coef[:, 0, 0]
         U = coef[:, 0, 1:4]
         gp = coef[:, 1:4, 0]
-        outside = d[:, 0] > h
+        # in the fluid when within some nearby cell's reach (0.87 of its size: a cube's half diagonal); judging by the
+        # nearest centre alone puts a point in a large cell next to small ones outside
+        outside = ~np.any(d <= 0.87 * self.h[idx], axis=1)
         return U, p, gp, near, outside, h
+
+    def wall_normal(self, X):
+        """An outward wall normal estimate at points next to a wall: away from the centroid of the nearest centres
+        (a wall's cells all lie on one side)."""
+        X = np.atleast_2d(np.asarray(X, float))
+        k = int(min(40, len(self.C)))                 # wide enough to see a sloping wall through stair-stepped cells
+        _, idx = self.tree.query(X, k=k)
+        if k == 1:
+            idx = idx[:, None]
+        n = X - self.C[idx].mean(axis=1)
+        return n / np.maximum(np.linalg.norm(n, axis=1), 1e-30)[:, None]
 
     def exit_patch(self, X, h):
         """The open patch a point outside the fluid is next to (within a cell), else ''."""
@@ -365,6 +378,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
     t_in = np.zeros(nb)
     exited = np.zeros(nb, bool)
     rejects = np.zeros(nb, np.int32)
+    touched = np.zeros(nb, bool)
     tr_keep = list(range(min(keep, nb))) if isinstance(keep, int) else [int(i) for i in keep]
     paths = {i: [X[i].copy()] for i in tr_keep}
     in_t = region_mask(target, X) if target else np.zeros(nb, bool)
@@ -446,9 +460,20 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                     fate[a[j]] = "outlet" if "out" in nm else ("inlet" if "in" in nm else str(nm))
                     alive[a[j]] = False
             stay = bad[ex == ""]
-            Xn[stay] = Xa[stay]
-            vn[stay] = u_f[stay]
-            rejects[a[stay]] += 1
+            if len(stay):
+                # at a wall: slide (the move less its part into the wall), else ride with the liquid, else wait
+                nrm = field.wall_normal(Xa[stay])
+                vt = vn[stay] - np.maximum((vn[stay] * nrm).sum(axis=1), 0.0)[:, None] * nrm
+                Xt = Xa[stay] + dt[stay, None] * vt - 0.1 * h[stay, None] * nrm   # a little off the wall
+                o1 = field.at(Xt)[4]
+                Xl = Xa[stay] + dt[stay, None] * u_f[stay]
+                o2 = field.at(Xl)[4]
+                Xn[stay] = np.where(~o1[:, None], Xt, np.where(~o2[:, None], Xl, Xa[stay]))
+                vn[stay] = np.where(~o1[:, None], vt, u_f[stay])
+                touched[a[stay]] = True
+                blocked = stay[o1 & o2]
+                rejects[a[blocked]] += 1
+                rejects[a[stay[~(o1 & o2)]]] = 0
         rejects[a[ok]] = 0
         X[a], v[a] = Xn, vn
         t_old = t[a].copy()
@@ -470,7 +495,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                 paths[i].append(X[i].copy())
                 last_rec[i] = t[i]
     return {"fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in, "in_at_end": in_t & (fate == "flow"),
-            "exited": exited, "t": t, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
+            "exited": exited, "touched_wall": touched, "t": t, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
 def summarize(r: dict, omega: float | None) -> dict:
@@ -483,7 +508,8 @@ def summarize(r: dict, omega: float | None) -> dict:
         return round(float(np.count_nonzero(m)) / n, 4) if n else None
     out = {"n": n, "reached_target": fr(r["reached"]), "in_target_at_end": fr(r["in_at_end"]),
            "impeller_exit": fr(r["exited"]), "outlet": fr(r["fate"] == "outlet"), "inlet": fr(r["fate"] == "inlet"),
-           "stuck_at_wall": fr(r["fate"] == "wall"), "still_in_flow": fr(r["fate"] == "flow")}
+           "stuck_at_wall": fr(r["fate"] == "wall"), "still_in_flow": fr(r["fate"] == "flow"),
+           **({"touched_wall": fr(r["touched_wall"])} if "touched_wall" in r else {})}
     if len(tf):
         out["time_to_target_s"] = {"median": float(f"{np.median(tf):.4g}"), "min": float(f"{tf.min():.4g}")}
     if len(tin):
@@ -567,7 +593,7 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     paths_all = {}
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
-               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "t")}
+               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t")}
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
         loc = {int(j): r["paths"][int(i)] for j, i in enumerate(ix[:keep]) if int(i) in r["paths"]}
         paths_all[(rn, dmm)] = (loc, sub["fate"], sub["reached"])
@@ -594,7 +620,9 @@ def draw(paths_all: dict, field: Field, data: dict, target, folder: Path) -> dic
     import matplotlib.pyplot as plt
     z = data["mrf"][0] if data["mrf"] else {"origin": np.zeros(3), "axis": np.array([0, 0, 1.0])}
     ax_ = z["axis"]
-    e1 = np.cross(ax_, [1, 0, 0] if abs(ax_[0]) < 0.9 else [0, 1, 0])
+    # plan view in the frame's own x and y when the axis is z (the S50: y up), else any two perpendiculars
+    e1 = np.array([1.0, 0, 0]) if abs(ax_[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = e1 - (e1 @ ax_) * ax_
     e1 /= np.linalg.norm(e1)
     e2 = np.cross(ax_, e1)
     out = {}
@@ -618,7 +646,9 @@ def draw(paths_all: dict, field: Field, data: dict, target, folder: Path) -> dic
             axs[1].plot(r, s, lw=0.6, c=c)
             axs[0].plot(x[:1], y[:1], "k.", ms=2)
         axs[0].set_aspect("equal")
-        axs[0].set_title(f"{rn}, {d:g} mm: plan view (mm)")
+        axs[0].set_title(f"{rn}, {d:g} mm: view along the axis (mm)")
+        axs[0].set_xlabel("x" if abs(e1[0]) > 0.9 else "e1")
+        axs[0].set_ylabel("y" if abs(e2[1]) > 0.9 else "e2")
         axs[1].set_title("meridional view: r against axial (mm)")
         axs[1].set_aspect("equal")
         p = folder / f"bubbles_{rn}_{d:g}mm.png"

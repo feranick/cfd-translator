@@ -161,3 +161,25 @@ def test_study_end_to_end(tmp_path):
     ut = twophase.slip_velocity(9.81, 1e-3, RHO, 0.0, MU)[0]
     assert b["residence_in_target_s"]["median"] == pytest.approx(0.01 / ut, rel=0.1)
     assert (tmp_path / "out" / "trk" / "bubbles_bottom_1mm.png").is_file()
+
+
+def test_bubble_slides_up_an_inclined_ceiling():
+    """At a wall the bubble keeps the part of its move along the wall (a sloping ceiling: it slides up the slope)
+    instead of stopping (the first S50 run: 80-90 % of the pocket's bubbles 'stuck')."""
+    C, V = _grid((0, 0.06), (0, 0.006), (0, 0.06), 0.001)
+    keep = C[:, 2] < 0.02 + 0.3 * C[:, 0]                      # a ceiling rising along +x
+    C, V = C[keep], V[keep]
+    f = bubbles.Field(C, V, np.zeros_like(C), np.zeros(len(C)))
+    r = bubbles.track(f, [[0.01, 0.003, 0.015]], 1e-3, NU, 1.0, g=(0, 0, -9.80665), dt_max=1e-3)
+    assert r["fate"][0] == "flow" and r["touched_wall"][0]
+    assert r["X"][0, 0] > 0.03                                   # it moved up the slope
+
+
+def test_outside_is_judged_against_the_larger_neighbour():
+    """A point inside a large cell next to small ones is in the fluid (nearest to a small cell's centre)."""
+    big, Vb = _grid((0, 0.01), (0, 0.01), (0, 0.01), 0.002)
+    small, Vs = _grid((0.01, 0.014), (0, 0.01), (0, 0.01), 0.0005)
+    f = bubbles.Field(np.vstack([big, small]), np.concatenate([Vb, Vs]), np.zeros((len(big) + len(small), 3)),
+                      np.zeros(len(big) + len(small)))
+    out = f.at([[0.0097, 0.005, 0.005], [0.0200, 0.005, 0.005]])[4]
+    assert not out[0] and out[1]
