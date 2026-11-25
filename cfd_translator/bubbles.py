@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.25.4
+Version: 2026.11.25.5
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -38,6 +38,8 @@ KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "ta
         "dt_max_s", "seed", "keep", "max_steps"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
+MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
+HELD_S = 0.1                                  # within a cell of one place this long (s), having met a wall: held there
 
 
 # ---- validation ------------------------------------------------------------------------------------------------
@@ -350,7 +352,7 @@ def release_points(field: Field, rel: dict, n: int, rng) -> np.ndarray:
 
 # ---- tracking --------------------------------------------------------------------------------------------------
 def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: float = 0.5,
-          dt_max: float = 1e-3, target=None, keep=0, max_steps: int = 2_000_000, zone_r=None) -> dict:
+          dt_max: float = 1e-3, target=None, keep=0, max_steps: int = MAX_STEPS, zone_r=None) -> dict:
     """Moves bubbles of diameter d_m (m; one value or one per bubble) from X0 (m) for t_max seconds, all in one loop
     (each with its own step). keep: how many (the first) or which bubbles' paths to record. target: a region dict
     (mm) or None. zone_r: per
@@ -379,13 +381,15 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
     exited = np.zeros(nb, bool)
     rejects = np.zeros(nb, np.int32)
     touched = np.zeros(nb, bool)
+    anchor, anchor_h, anchor_t = X.copy(), h.copy(), np.zeros(nb)
+    wall_seen = np.zeros(nb, bool)
     tr_keep = list(range(min(keep, nb))) if isinstance(keep, int) else [int(i) for i in keep]
     paths = {i: [X[i].copy()] for i in tr_keep}
     in_t = region_mask(target, X) if target else np.zeros(nb, bool)
     reached |= in_t
     t_first[in_t] = 0.0
     steps = 0
-    rec_every = max(dt_max, t_max / 400.0)
+    rec_every = min(dt_max, t_max / 2000.0)        # path points (a rotating-frame path turns fast)
     last_rec = np.zeros(nb)
     while alive.any() and steps < max_steps:
         steps += 1
@@ -429,7 +433,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             return F_, Kc_, u_f_
         F1, K1, u_f = forcing(Xa, U, gp, va)
         speed = np.maximum(np.linalg.norm(va, axis=1), np.linalg.norm(u_f, axis=1)) + 1e-9
-        dt = np.minimum.reduce([0.25 * h / speed, np.full(len(a), dt_max), t_max - t[a] + 1e-12,
+        dt = np.minimum.reduce([0.4 * h / speed, np.full(len(a), dt_max), t_max - t[a] + 1e-12,
                                 np.where(np.linalg.norm(om_new, axis=1) > 0,
                                          0.05 / np.maximum(np.linalg.norm(om_new, axis=1), 1e-30), np.inf)])
         # Heun (second order; explicit Euler spirals outward on curved paths), drag implicit in both stages
@@ -471,10 +475,11 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                 Xn[stay] = np.where(~o1[:, None], Xt, np.where(~o2[:, None], Xl, Xa[stay]))
                 vn[stay] = np.where(~o1[:, None], vt, u_f[stay])
                 touched[a[stay]] = True
-                blocked = stay[o1 & o2]
-                rejects[a[blocked]] += 1
-                rejects[a[stay[~(o1 & o2)]]] = 0
-        rejects[a[ok]] = 0
+                wall_seen[a[stay]] = True
+        # held: within a cell of where it was HELD_S ago, having met a wall meanwhile (a ceiling in slow liquid)
+        far = np.linalg.norm(Xn - anchor[a], axis=1) > anchor_h[a]
+        ra = a[far]
+        anchor[ra], anchor_h[ra], anchor_t[ra], wall_seen[ra] = Xn[far], h[far], t[ra] + dt[far], False
         X[a], v[a] = Xn, vn
         t_old = t[a].copy()
         t[a] = t[a] + dt
@@ -485,7 +490,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             t_first[a[new]] = t_old[new] + dt[new]
             reached[a] |= inside
             in_t[a] = inside
-        stuck = rejects[a] > 2000
+        stuck = wall_seen[a] & (t[a] - anchor_t[a] > HELD_S)
         fate[a[stuck]] = "wall"
         alive[a[stuck]] = False
         alive[a[t[a] >= t_max - 1e-12]] = False
@@ -495,7 +500,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                 paths[i].append(X[i].copy())
                 last_rec[i] = t[i]
     return {"fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in, "in_at_end": in_t & (fate == "flow"),
-            "exited": exited, "touched_wall": touched, "t": t, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
+            "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
 def summarize(r: dict, omega: float | None) -> dict:
@@ -510,6 +515,16 @@ def summarize(r: dict, omega: float | None) -> dict:
            "impeller_exit": fr(r["exited"]), "outlet": fr(r["fate"] == "outlet"), "inlet": fr(r["fate"] == "inlet"),
            "stuck_at_wall": fr(r["fate"] == "wall"), "still_in_flow": fr(r["fate"] == "flow"),
            **({"touched_wall": fr(r["touched_wall"])} if "touched_wall" in r else {})}
+    if "t_max" in r:
+        done = (r["t"] >= r["t_max"] - 1e-9) | (r["fate"] != "flow")
+        out["finished"] = fr(done)
+        if (~done).any():
+            out["unfinished_reached_s"] = {"min": float(f"{r['t'][~done].min():.4g}"),
+                                           "median": float(f"{np.median(r['t'][~done]):.4g}")}
+    if "X" in r and (r["fate"] == "wall").any():
+        P = np.asarray(r["X"])[r["fate"] == "wall"] / SCALE
+        out["held_at_mm"] = {"centroid": [round(float(v), 1) for v in P.mean(axis=0)],
+                             "points": [[round(float(v), 1) for v in q] for q in P[:12]]}
     if len(tf):
         out["time_to_target_s"] = {"median": float(f"{np.median(tf):.4g}"), "min": float(f"{tf.min():.4g}")}
     if len(tin):
@@ -586,14 +601,15 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     X0, dd = np.vstack(X0), np.concatenate(dd)
     kidx = [int(i) for _, _, ix in groups for i in ix[:keep]]
     r = track(field, X0, dd, nu, T, g, float(b.get("added_mass", 0.5)), float(b.get("dt_max_s", 1e-3)), target,
-              kidx, int(b.get("max_steps", 2_000_000)), zone_r)
+              kidx, int(b.get("max_steps", MAX_STEPS)), zone_r)
     res["steps"] = int(r["steps"])
-    if r["steps"] >= int(b.get("max_steps", 2_000_000)):
+    if r["steps"] >= int(b.get("max_steps", MAX_STEPS)):
         warns.append("bubbles: stopped at max_steps before every bubble reached t_max (raise bubbles.max_steps)")
     paths_all = {}
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
-               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t")}
+               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X")}
+        sub["t_max"] = T
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
         loc = {int(j): r["paths"][int(i)] for j, i in enumerate(ix[:keep]) if int(i) in r["paths"]}
         paths_all[(rn, dmm)] = (loc, sub["fate"], sub["reached"])

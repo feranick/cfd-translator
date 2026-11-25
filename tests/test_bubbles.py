@@ -24,12 +24,9 @@ def test_still_column_terminal_velocity():
     for d in (0.1e-3, 1e-3):
         ut, _ = twophase.slip_velocity(9.80665, d, RHO, 0.0, MU)
         T = min(0.3, 0.05 / ut)
-        r = bubbles.track(f, [[0.005, 0.005, 0.01]], d, NU, T, g=(0, 0, -9.80665), dt_max=1e-4, keep=1)
-        P = r["paths"][0]
-        z = P[:, 2]
-        # velocity over the last third of the path (the bubble reaches its terminal speed in a few response times)
-        k = len(z) * 2 // 3
-        v = (z[-1] - z[k]) / (T * (len(z) - 1 - k) / (len(z) - 1))
+        z = [bubbles.track(f, [[0.005, 0.005, 0.01]], d, NU, tt, g=(0, 0, -9.80665), dt_max=1e-4)["X"][0, 2]
+             for tt in (T / 2, T)]
+        v = (z[1] - z[0]) / (T / 2)                 # the second half: at terminal speed after a few response times
         assert v == pytest.approx(ut, rel=0.02), (d, v, ut)
 
 
@@ -183,3 +180,12 @@ def test_outside_is_judged_against_the_larger_neighbour():
                       np.zeros(len(big) + len(small)))
     out = f.at([[0.0097, 0.005, 0.005], [0.0200, 0.005, 0.005]])[4]
     assert not out[0] and out[1]
+
+
+def test_held_under_a_flat_ceiling_is_reported_with_its_place():
+    C, V = _grid((0, 0.01), (0, 0.01), (0, 0.02), 0.001)
+    f = bubbles.Field(C, V, np.zeros_like(C), np.zeros(len(C)))
+    r = bubbles.track(f, [[0.005, 0.005, 0.005]], 1e-3, NU, 1.0, g=(0, 0, -9.80665), dt_max=1e-3)
+    assert r["fate"][0] == "wall" and r["X"][0, 2] > 0.018
+    s = bubbles.summarize(r, None)
+    assert s["stuck_at_wall"] == 1.0 and s["held_at_mm"]["centroid"][2] > 18 and s["finished"] == 1.0
