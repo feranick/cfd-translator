@@ -158,6 +158,22 @@ def test_study_end_to_end(tmp_path):
     ut = twophase.slip_velocity(9.81, 1e-3, RHO, 0.0, MU)[0]
     assert b["residence_in_target_s"]["median"] == pytest.approx(0.01 / ut, rel=0.1)
     assert (tmp_path / "out" / "trk" / "bubbles_bottom_1mm.png").is_file()
+    # two targets side by side, and a dry run that counts each region's cells
+    st2 = {"bubbles": dict(st["bubbles"], targets=["mid", "top"]),
+           "regions": [st["bubbles"]["target"], {"name": "top", "box": {"min": [0, 0, 30], "max": [10, 10, 40]}}]}
+    del st2["bubbles"]["target"]
+    r2 = run_study("trk2", st2, tmp_path / "out" / "trk2")
+    t2 = r2["results"]["bubbles"]["releases"]["bottom"]["1"]["targets"]
+    assert t2["mid"]["reached"] == 1.0 and t2["top"]["reached"] == 1.0
+    assert t2["top"]["time_to_s_median"] > t2["mid"]["time_to_s_median"]
+    st3 = {"bubbles": dict(st2["bubbles"], dry_run=True,
+                           releases=st["bubbles"]["releases"] + [{"name": "nowhere", "box": {"min": [50, 50, 50],
+                                                                                              "max": [60, 60, 60]}}]),
+           "regions": st2["regions"]}
+    r3 = run_study("dry", st3, tmp_path / "out" / "dry")
+    d = r3["results"]["bubbles"]["dry_run"]
+    assert d["bottom"]["cells"] == 6 * 6 * 3 and d["nowhere"]["cells"] == 0 and d["target:top"]["cells"] > 0
+    assert any("nowhere" in w for w in r3["warnings"])
 
 
 def test_bubble_slides_up_an_inclined_ceiling():

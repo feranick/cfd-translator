@@ -601,6 +601,9 @@ def _average_errors(av) -> list[str]:
     for k in ("drift", "scatter", "stderr"):
         if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
             errs.append(f"average.{k}: relative tolerance between 0 and 1")
+    if "keep_snapshots" in av and not isinstance(av["keep_snapshots"], bool):
+        errs.append("average.keep_snapshots: true keeps the window's U snapshots in the case (a later field "
+                    "sensitivity, e.g. bubble tracking against the window mean)")
     if "until" in av and (not _num(av["until"]) or av["until"] <= 0):
         errs.append("average.until: the iteration the window ends at (a run's earlier stretch, e.g. to compare with a "
                     "shorter run: window is then a fraction of the iterations up to it)")

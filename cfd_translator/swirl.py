@@ -1,6 +1,6 @@
 """Swirl in named regions: the mean tangential velocity and the angular momentum about a rotating zone's axis.
 
-Version: 2026.11.21.1
+Version: 2026.11.25.6
 
 The S50 zero-air gate (pump chat, 20 Nov 2026) compares the swirl of a two-fluid run at zero air with a single-phase
 run on the same mesh, in the eye, the pocket in front of the wear plate and the reservoir: a spurious swirl gain drives
@@ -259,6 +259,9 @@ def gate_compare(q1: float, q2: float, se1: float | None, se2: float | None, kin
 def attach_window(case: Path, study: dict, plan: dict, res: dict, cleanup: bool = True) -> None:
     """A steady single-phase run with snapshots over its averaging window (plan swirl_snap): results.swirl from their
     mean, with each region's standard error, in place of the last iteration's."""
+    if ((study.get("solve") or {}).get("average") or {}).get("keep_snapshots") if isinstance(
+            (study.get("solve") or {}).get("average"), dict) else False:
+        cleanup = False                        # solve.average.keep_snapshots: kept for later analyses (bubbles)
     snap = plan.get("swirl_snap")
     if not snap or not study.get("regions") or not plan.get("zones"):
         return

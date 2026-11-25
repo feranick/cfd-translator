@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.25.5
+Version: 2026.11.25.6
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -34,8 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "gravity", "added_mass",
-        "dt_max_s", "seed", "keep", "max_steps"}
+KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
+        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -93,6 +93,16 @@ def errors(st: dict) -> list[str]:
     if "gravity" in b and not (isinstance(b["gravity"], list) and len(b["gravity"]) == 3 and
                                all(_num(v) for v in b["gravity"])):
         e.append("bubbles.gravity: [gx, gy, gz] (m/s2)")
+    for i, t in enumerate(b.get("targets") or []):
+        if isinstance(t, dict):
+            e += _region_errors(t, f"bubbles.targets[{i}]")
+        elif not isinstance(t, str):
+            e.append(f"bubbles.targets[{i}]: a region {{name, cylinder | box}} or the name of one in regions")
+    if "targets" in b and not isinstance(b["targets"], list):
+        e.append("bubbles.targets: a list of regions or region names (several targets reported side by side)")
+    if "dry_run" in b and not isinstance(b["dry_run"], bool):
+        e.append("bubbles.dry_run: true reads the source and counts the fluid cells in every release and target, "
+                 "without tracking")
     if "target" in b:
         t = b["target"]
         if not (isinstance(t, str) or isinstance(t, dict)):
@@ -385,9 +395,14 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
     wall_seen = np.zeros(nb, bool)
     tr_keep = list(range(min(keep, nb))) if isinstance(keep, int) else [int(i) for i in keep]
     paths = {i: [X[i].copy()] for i in tr_keep}
-    in_t = region_mask(target, X) if target else np.zeros(nb, bool)
-    reached |= in_t
-    t_first[in_t] = 0.0
+    tg = [] if target is None else (list(target) if isinstance(target, (list, tuple)) else [target])
+    nt = len(tg)
+    reached_k = np.zeros((nt, nb), bool)
+    t_first_k = np.full((nt, nb), np.nan)
+    t_in_k = np.zeros((nt, nb))
+    in_k = np.array([region_mask(r_, X) for r_ in tg]) if nt else np.zeros((0, nb), bool)
+    reached_k |= in_k
+    t_first_k[in_k] = 0.0
     steps = 0
     rec_every = min(dt_max, t_max / 2000.0)        # path points (a rotating-frame path turns fast)
     last_rec = np.zeros(nb)
@@ -483,13 +498,14 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         X[a], v[a] = Xn, vn
         t_old = t[a].copy()
         t[a] = t[a] + dt
-        if target is not None:
-            inside = region_mask(target, Xn)
-            t_in[a] += np.where(inside & in_t[a], dt, np.where(inside | in_t[a], 0.5 * dt, 0.0))
-            new = inside & ~reached[a]
-            t_first[a[new]] = t_old[new] + dt[new]
-            reached[a] |= inside
-            in_t[a] = inside
+        for j, r_ in enumerate(tg):
+            inside = region_mask(r_, Xn)
+            was = in_k[j, a]
+            t_in_k[j, a] += np.where(inside & was, dt, np.where(inside | was, 0.5 * dt, 0.0))
+            new = inside & ~reached_k[j, a]
+            t_first_k[j, a[new]] = t_old[new] + dt[new]
+            reached_k[j, a] |= inside
+            in_k[j, a] = inside
         stuck = wall_seen[a] & (t[a] - anchor_t[a] > HELD_S)
         fate[a[stuck]] = "wall"
         alive[a[stuck]] = False
@@ -499,7 +515,13 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             if i in aset and (t[i] - last_rec[i] >= rec_every or not alive[i]):
                 paths[i].append(X[i].copy())
                 last_rec[i] = t[i]
-    return {"fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in, "in_at_end": in_t & (fate == "flow"),
+    if nt:
+        reached, t_first, t_in = reached_k[0], t_first_k[0], t_in_k[0]
+    in_t = in_k[0] if nt else np.zeros(nb, bool)
+    per = {(r_.get("name") or f"target{j}"): {"reached": reached_k[j], "t_first": t_first_k[j], "t_in": t_in_k[j],
+                                              "in_at_end": in_k[j] & (fate == "flow")} for j, r_ in enumerate(tg)}
+    return {"targets": per, "fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in,
+            "in_at_end": in_t & (fate == "flow"),
             "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
@@ -532,6 +554,18 @@ def summarize(r: dict, omega: float | None) -> dict:
                                         "max": float(f"{tin.max():.4g}")}
         if omega:
             out["residence_in_target_rev"] = {k: float(f"{rev(v):.4g}") for k, v in out["residence_in_target_s"].items()}
+    if len(r.get("targets") or {}) > 1:          # every target side by side
+        out["targets"] = {}
+        for nm, q in r["targets"].items():
+            d = {"reached": fr(q["reached"]), "in_at_end": fr(q["in_at_end"])}
+            tf_, tin_ = q["t_first"][np.isfinite(q["t_first"])], q["t_in"][q["reached"]]
+            if len(tf_):
+                d["time_to_s_median"] = float(f"{np.median(tf_):.4g}")
+            if len(tin_):
+                d["residence_s"] = {"median": float(f"{np.median(tin_):.4g}"), "max": float(f"{tin_.max():.4g}")}
+                if omega:
+                    d["residence_rev"] = {k: float(f"{rev(v):.4g}") for k, v in d["residence_s"].items()}
+            out["targets"][nm] = d
     return out
 
 
@@ -581,14 +615,42 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     T = float(b["t_max_s"]) if "t_max_s" in b else (float(b.get("revolutions", 20)) * 2 * math.pi / omega
                                                     if omega else 1.0)
     g = b.get("gravity") or src_study.get("gravity") or list(G_DEFAULT)
-    target = _target(study, b)
-    if target is None:
-        warns.append(f"bubbles.target {b.get('target', 'eye')!r}: no such region: residence not counted")
+    targets = []
+    for t_ in (b.get("targets") or [b.get("target", "eye")]):
+        r_ = _target(study, {"target": t_})
+        if r_ is None:
+            warns.append(f"bubbles target {t_!r}: no such region: not counted")
+        else:
+            targets.append(r_)
+    target = targets[0] if targets else None
+    if b.get("dry_run"):                         # the cells each release and target holds, nothing tracked
+        cnt = {}
+        for rel in b["releases"]:
+            if "points" in rel:
+                P = np.asarray(rel["points"], float) * SCALE
+                cnt[rel["name"]] = {"points": len(P), "in_fluid": int(np.count_nonzero(~field.at(P)[4]))}
+            else:
+                m = region_mask({k: rel[k] for k in ("box", "cylinder") if k in rel}, field.C)
+                cnt[rel["name"]] = {"cells": int(np.count_nonzero(m))}
+                if m.any():
+                    c = field.C[m] / SCALE
+                    cnt[rel["name"]].update(centroid_mm=[round(float(v), 2) for v in c.mean(axis=0)],
+                                            cell_size_mm=round(float(np.median(field.h[m])) / SCALE, 3))
+        for t_ in targets:
+            m = region_mask(t_, field.C)
+            cnt[f"target:{t_.get('name')}"] = {"cells": int(np.count_nonzero(m))}
+        bad = [k for k, v in cnt.items() if not v.get("cells", v.get("in_fluid", 0))]
+        if bad:
+            warns.append(f"bubbles: no fluid cells in {bad}: move those regions")
+        return {"name": name, "ok": True, "results": {"bubbles": {"source": str(src), "source_time": data["time"],
+                "cells": int(len(field.C)), "dry_run": cnt}}, "warnings": warns, "notes": notes, "reliable": True,
+                "seconds": {"read": round(time.perf_counter() - t0, 3)}}
     rng = np.random.default_rng(int(b.get("seed", 1)))
     keep = int(b.get("keep", 30))
     res = {"source": str(src), "source_time": data["time"], "cells": int(len(field.C)), "t_max_s": T,
            "revolutions": round(T * omega / (2 * math.pi), 3) if omega else None, "gravity": g,
-           "added_mass": float(b.get("added_mass", 0.5)), "target": target, "releases": {}}
+           "added_mass": float(b.get("added_mass", 0.5)), "target": target,
+           **({"targets": [t_.get("name") for t_ in targets]} if len(targets) > 1 else {}), "releases": {}}
     X0, dd, groups = [], [], []
     for rel in b["releases"]:
         n = int(rel.get("n", b.get("n", 100)))
@@ -600,7 +662,7 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
             groups.append((rel["name"], float(dmm), np.arange(i0, i0 + n)))
     X0, dd = np.vstack(X0), np.concatenate(dd)
     kidx = [int(i) for _, _, ix in groups for i in ix[:keep]]
-    r = track(field, X0, dd, nu, T, g, float(b.get("added_mass", 0.5)), float(b.get("dt_max_s", 1e-3)), target,
+    r = track(field, X0, dd, nu, T, g, float(b.get("added_mass", 0.5)), float(b.get("dt_max_s", 1e-3)), targets,
               kidx, int(b.get("max_steps", MAX_STEPS)), zone_r)
     res["steps"] = int(r["steps"])
     if r["steps"] >= int(b.get("max_steps", MAX_STEPS)):
@@ -609,6 +671,7 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
                for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X")}
+        sub["targets"] = {nm: {k: v[ix] for k, v in q.items()} for nm, q in r["targets"].items()}
         sub["t_max"] = T
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
         loc = {int(j): r["paths"][int(i)] for j, i in enumerate(ix[:keep]) if int(i) in r["paths"]}
