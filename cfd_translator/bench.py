@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with known answers (closed form or published reference data).
-Version: 2026.11.23.1
+Version: 2026.11.25.1
 
     run(solver, names, folder) -> {case: {passed, checks, ...}}
         With CFDT_EXECUTOR=slurm the cases run as SLURM jobs (one request) and run() waits for them and collects
@@ -639,7 +639,10 @@ def _cases() -> dict:
     import copy as _copy
     for nm, mod in (("fm", lambda st: st["two_phase"].update(face_momentum=True)),
                     ("quads", lambda st: st["mesh"].update(quads=True)),
-                    ("dt5", lambda st: st["two_phase"].update(max_delta_t=0.005, max_co=2.0))):
+                    ("dt5", lambda st: st["two_phase"].update(max_delta_t=0.005, max_co=2.0)),
+                    # full non-orthogonal correction (cfdt limits it above 5 degrees; the bench mesh reaches 53):
+                    # the limiter broke the ESI legacy solver's rotation (2026.11.24.1); does it touch OpenFOAM 14's?
+                    ("fc", lambda st: st["two_phase"].update(full_correction=True))):
         for mrf in (True, False):
             st_ = _copy.deepcopy(_rc_study(mrf))
             mod(st_)

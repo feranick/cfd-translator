@@ -217,6 +217,66 @@ Not full parity. One narrow backend, used only where v2506 is clearly better.
 - Tests: a small ESI test set (a rotor-in-cylinder case like rung 2 at g = 5, plus the S50 coarse case) and the same
   results-format tests as v14, so both paths report identically.
 
+### Priority 3 (2026.11.25): air in the pump (S50 self-priming)
+
+Why: the S50 stops priming against a 2 m column; the working explanation is that the wear-plate slots return bubbly
+reservoir water into the impeller at 84 % of the tip radius and the air gas-locks the eye (the S45+50, without such
+ports, primes against 9 m). The answer to the customer rests on the lumped omct models and a rig test with the slots
+plugged; CFD of air in the pump is tool development, off the critical path. Pump chat's brief:
+`~/b3d_parts/s50/priming/prompt_for_cfdt_air_routes_20261125.md`.
+
+Rule for every route: the closed-cylinder hold test first (zero air, 10 rad/s, started in solid-body rotation: angular
+momentum within 1 % of the solid body, as single phase does), then the S50.
+
+Now (cheap, in order):
+1. **One-way bubble tracking** in a settled single-phase frozen-rotor field (a cfdt post-processor): bubbles released
+   at the slots, the bottom opening and the reservoir bottom (plugged: the rim gap), 0.1-2 mm; drag (Schiller-Naumann),
+   pressure-gradient and added-mass forces, buoyancy; rotating frame with centrifugal and Coriolis terms inside the MRF
+   zone, absolute outside, transformed at the zone's edge. Results: share reaching the eye (the gate's cylinder), share
+   leaving through the impeller exit, residence in the eye in revolutions, trajectory images; as built against plugged;
+   sensitivity to the field (last write against window mean). Validation first: still-column terminal velocity, radial
+   migration in solid-body rotation against the drag law, a bubble at r = 0 staying there.
+2. **Version check**: the hold test on OpenFOAM 13 and 12 (`mrfhold.sbatch` with `FOAM_BASHRC`, `TAG`). If an older
+   version holds, it is a regression: tell the pump chat before the bug report is filed, and let `two_phase` pin a
+   version (a per-backend `FOAM_BASHRC`, as for ESI).
+3. **Limiter check**: OpenFOAM 14 multiphaseEuler on cfdt's non-orthogonal cylinder, limited against full correction
+   (`two_phase.full_correction`, 2026.11.25.1). The 20 Nov hand-run E_tr (cfdt's mesh, limited) showed the same
+   asymmetric whirl (px 0.86, mx 1.60 at 1 s) that the limiter caused in the ESI legacy solver, beside the +4.5 %
+   symmetric gain on the O-grid: the limiter may add to the OpenFOAM defect on the S50 (56 degrees).
+4. **Settled retest of the S50 gate**: two-fluid at zero air from the single-phase run's fields (`solve.init_from`,
+   2026.11.25.1), equal windows, a drift test beside the snapshot standard error.
+
+Routes (after the above):
+- **A. Drift-flux mixture with centrifugal slip.** One mixture momentum equation, so it should keep the single-phase
+  swirl; the slip from an algebraic law. OpenFOAM 14 `incompressibleDriftFlux` (both phases constant density: fine near
+  atmospheric). Its relative-velocity models (`simple`, `general`) take gravity only; the pump needs slip driven by the
+  local acceleration (in an MRF zone omega^2 r and Coriolis; first cut g + omega^2 r e_r in MRF zones), a fixed-size drag
+  law, hindered settling (Richardson-Zaki). Probably a compiled relativeVelocityModel (wmake on x86 and arm64: a first
+  for cfdt); check first for a coded route or a model taking a user acceleration field. To check: MRF with
+  incompressibleDriftFlux in v14, steady LTS or transient only. Validation: hold test, migration to the axis
+  (`rotating_cylinder_euler` criteria), bubble-column terminal velocity, the settled S50 zero-air gate, aerated
+  points (air held at the eye against inlet fraction, as built against plugged). About a week. Limits: one bubble
+  size, no phase momentum, no coalescence.
+- **B. Free-surface VoF** for pockets, the reservoir surface and the flooded chamber. cfdt already runs
+  `compressibleVoF` water + perfect-gas air with MRF and LTS (cavitation.inlet_gas_fraction). New: an initial air
+  region (eye pocket) and fill level; the discharge column in the domain (vertical pipe, `opening` at the top, set
+  water height); transient across SLURM jobs; priming results (air in the eye and pocket over time, air up the column,
+  air back through the slots). Validation: hold test, Hysing et al. 2009 rising bubble (case 1), a pocket moving to
+  the axis in a rotating cylinder, then the S50 with an eye pocket (cleared or held; as built against plugged; column
+  0 against 2 m; optionally a valve instead of the column). Cost estimate on a coarse S50 (about 3 M cells) first.
+- **C. Make the two-fluid route trustworthy.** Version and limiter checks; the settled gate protocol as the default
+  (init_from, equal windows, drift test); the S50 impeller mesh (343 faces with skewness above 4, worst 216, cells
+  0.03 mm thick against the impeller; checkMesh fails): does the two-fluid run tolerate it; ESI legacy: find the MRF
+  bubble-slip error (-59 %; -10 % with the walls turning, so the frame's treatment of the dispersed phase is the
+  suspect), build the ESI single-phase MRF reference (pimpleFoam + MRF), only then an S50 point; the bug report
+  upstream with the version check.
+
+Decision: a settled S50 pass from C keeps air-in-pump CFD on OpenFOAM 14 steady (`two_phase`); otherwise A and B carry
+it. Commercial codes are out of scope (a cross-check if a licence turns up). Order: items 1-3 now, 4 when spark1
+frees, then A (if the tracking supports the slot explanation and the onset with air fraction is needed), then B, with
+C alongside. No S50 legacy-ESI machine-days until its MRF bubble slip and reference are done and OpenFOAM 14 has failed
+a settled gate.
+
 ### Where things are (2026.11.15)
 
 - Hand-built cases (user's folder `~/b3d_parts/s50/nersc`): `s50_sliding_v14` (the v14 port: `tools/ogrid.py`

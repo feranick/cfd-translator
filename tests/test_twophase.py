@@ -402,3 +402,47 @@ def test_esi_decomposition_uses_method(tmp_path, monkeypatch):
     with pytest.raises(foam.FoamError):
         foam.run(case, 60, 2, backend="esi", solver="multiphaseEulerFoam")
     assert "method          scotch;" in seen["dict"] and "decomposer" not in seen["dict"]
+
+
+def test_two_fluid_starts_from_a_single_phase_run(tmp_path):
+    """solve.init_from on a two-fluid run: the single-phase U, k, omega, nut become both phases' start (pump chat,
+    25 Nov 2026: the zero-air gate as a hold test from the single-phase solution)."""
+    import re as _re
+    import shutil
+    m, st, plan, case = _mrf_case(tmp_path)
+    src = tmp_path / "req" / "p1"
+    (src / "case" / "constant").mkdir(parents=True)
+    shutil.copytree(case / "constant" / "polyMesh", src / "case" / "constant" / "polyMesh")
+    t = src / "case" / "10000"
+    t.mkdir()
+    for f, val in (("U", "(1 2 3)"), ("k", "0.5"), ("omega", "77"), ("nut", "0.001"), ("p", "123")):
+        w = case / "0" / (f + ".water" if f != "p" else "p")
+        txt = w.read_text()
+        txt = _re.sub(r"(object\s+)[\w.]+\s*;", r"\g<1>" + f + ";", txt, count=1)
+        txt = _re.sub(r"internalField\s+[^;]*;", f"internalField   uniform {val};", txt, count=1)
+        (t / f).write_text(txt)
+    p_before = (case / "0" / "p").read_text()
+    notes, info = twophase.init_from_single(case, src, "last", lambda c, l: pytest.fail("same mesh: no mapFields"))
+    z = case / "0"
+    for ph in ("U.water", "U.air"):
+        assert "internalField   uniform (1 2 3);" in (z / ph).read_text(), ph
+    for ph in ("k.water", "k.air"):
+        assert "uniform 0.5;" in (z / ph).read_text()
+    assert "uniform 77;" in (z / "omega.water").read_text()
+    assert (z / "p").read_text() == p_before                      # pressure not carried (kinematic vs absolute)
+    for f in ("U", "k", "omega", "nut"):
+        assert not (z / f).exists()                                 # the stand-ins are gone
+    assert set(info["fields"]) >= {"U.water", "U.air", "k.water", "k.air"} and info["same_mesh"]
+    assert "as both phases" in notes[0]
+
+
+def test_full_correction_and_average_until(tmp_path):
+    m, st, plan, case = _mrf_case(tmp_path, full_correction=True)
+    fs = (case / "system" / "fvSchemes").read_text()
+    assert "limited" not in fs.split("laplacianSchemes")[1].split("}")[0]
+    assert validate_study(_pump_study(full_correction=1))["errors"]
+    from cfd_translator import average
+    its = np.arange(1, 10001)
+    v = np.where(its <= 2500, 1.0, 2.0)
+    st_ = average.window_stats(its, v, {"window": 0.4, "min_iterations": 100, "until": 2500})
+    assert st_["window"] == [1501, 2500] and st_["mean"] == 1.0

@@ -1,5 +1,5 @@
 """average.py — per-iteration monitors, window averages and the 'settled' criterion.
-Version: 2026.11.13.5
+Version: 2026.11.25.1
 
 Steady RANS of a machine with a rotating zone (MRF, frozen rotor) rarely reaches the residual target: the
 blade-volute interaction keeps the residuals at 1e-3..1e-2 while the integral quantities only wobble around a
@@ -71,6 +71,8 @@ def settings(study: dict, plan: dict | None = None) -> dict | None:
     cfg = dict(DEFAULTS)
     if isinstance(a, dict):
         cfg.update({k: a[k] for k in DEFAULTS if k in a})
+        if a.get("until") is not None:
+            cfg["until"] = float(a["until"])
     return cfg
 
 
@@ -333,6 +335,9 @@ def _pressure_columns(header: list, ncol: int) -> tuple[int | None, int | None]:
 def window_stats(its: np.ndarray, v: np.ndarray, cfg: dict, scale: float | None = None) -> dict | None:
     """Mean, scatter and drift of the last part of a series; None when too short. scale: what drift and
     scatter are relative to (default |mean|; a lift coefficient near zero is judged against the drag's)."""
+    if cfg.get("until") is not None:            # a window ending at that iteration (compare runs of other lengths)
+        keep = np.asarray(its) <= float(cfg["until"])
+        its, v = np.asarray(its)[keep], np.asarray(v)[keep]
     n = len(v)
     m = int(cfg.get("min_iterations", DEFAULTS["min_iterations"]))
     w = max(int(round(float(cfg.get("window", DEFAULTS["window"])) * n)), m)

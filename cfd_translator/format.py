@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.23.1
+Version: 2026.11.25.1
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -196,7 +196,7 @@ MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers",
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
               "transient", "init_from", "init_fields", "backend"}
-AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr"}
+AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr", "until"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 

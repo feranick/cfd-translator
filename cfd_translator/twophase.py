@@ -1,5 +1,5 @@
 """twophase.py — gas-liquid flow with slip: OpenFOAM 14 multiphaseEuler (two-fluid, Euler-Euler), water + air.
-Version: 2026.11.24.1
+Version: 2026.11.25.1
 
 A study with "two_phase": {...} solves water and air as two interpenetrating phases, each with its own velocity:
 the air slips through the water under the local pressure gradient (gravity, and in an MRF zone the centrifugal and
@@ -31,6 +31,7 @@ runs, compressibleVoF, were flagged for air not conserved).
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +42,7 @@ R_AIR = 287.05
 AIR = {"molWeight": 28.96, "Cp": 1007.0, "mu": 1.84e-5, "Pr": 0.7}
 KEYS = {"bubble_size", "drag", "virtual_mass", "turbulent_dispersion", "gravity", "p_ref_Pa", "temperature_C",
         "mode", "iterations", "end_time", "write_interval", "write_every", "max_co", "max_delta_t", "inlet",
-        "initial", "regions", "reference", "relax", "average_from", "face_momentum"}
+        "initial", "regions", "reference", "relax", "average_from", "face_momentum", "full_correction"}
 DRAG = ("SchillerNaumann", "IshiiZuber")
 BALANCE_TOL = 0.01                     # air mass balance: |error| / air in play
 REF_TOL = 0.02                         # single-phase consistency at a gas fraction of 0: head and torque
@@ -78,7 +79,8 @@ def settings(study: dict) -> dict:
             "initial": dict(tp.get("initial") or {}), "regions": all_regions(study),
             "reference": tp.get("reference"), "relax": dict(tp.get("relax") or {}),
             "average_from": tp.get("average_from"), "turbulent": turb,
-            "face_momentum": bool(tp.get("face_momentum", False))}
+            "face_momentum": bool(tp.get("face_momentum", False)),
+            "full_correction": bool(tp.get("full_correction", False))}
 
 
 def errors(st: dict) -> list[str]:
@@ -150,6 +152,9 @@ def errors(st: dict) -> list[str]:
             e.append("two_phase.initial.velocity 'rotation' needs a rotating zone or a wall with its own rotation "
                      "{axis, center, rpm}")
     e += region_errors(tp.get("regions"), "two_phase.regions")
+    if "full_correction" in tp and not isinstance(tp["full_correction"], bool):
+        e.append("two_phase.full_correction: true | false (Laplacian and snGrad 'corrected' instead of cfdt's limited "
+                 "schemes on non-orthogonal meshes; default false)")
     if "face_momentum" in tp and not isinstance(tp["face_momentum"], bool):
         e.append("two_phase.face_momentum: true | false (multiphaseEuler's face-based momentum; default false)")
     if "reference" in tp and not isinstance(tp["reference"], str):
@@ -556,8 +561,8 @@ def write_euler(study, mesh, patches, case, plan, zones, g, q) -> dict:
         plan_e.update(solver=esi_euler.LABEL, air_scale=rho_g0, notes=esi_euler.notes(study))
     # system
     lap, sn, nonorth, _rf = nonortho_schemes(q)
-    if q["max_non_orthogonality"] <= 5.0:
-        lap, sn = "Gauss linear corrected", "corrected"
+    if q["max_non_orthogonality"] <= 5.0 or cfg["full_correction"]:
+        lap, sn = "Gauss linear corrected", "corrected"           # full_correction: the limiter check (pump chat)
     steady = cfg["steady"]
     w_max = max((abs(zp["omega_rad_s"]) for zp in plan["zones"].values()), default=0.0)
     dt_cap = cfg["max_delta_t"] or (min(1.0, 0.2 / w_max) if w_max > 0 else (1.0 if steady else 0.01))
@@ -1155,3 +1160,40 @@ def reprocess(folder: Path, study: dict, old: dict) -> dict:
     out["warnings"] = [x for x in old.get("warnings", []) if not x.startswith("air mass balance")] + \
         [x for x in w if x not in old.get("warnings", [])]
     return out
+
+
+# ---- start from a single-phase run (solve.init_from) ---------------------------------------------------------------
+PHASE_FIELDS = {"U": ("U.water", "U.air"), "k": ("k.water", "k.air"), "omega": ("omega.water", "omega.air"),
+                "nut": ("nut.water", "nut.air")}
+
+
+def init_from_single(case: Path, src, which: str, run_step) -> tuple[list[str], dict]:
+    """solve.init_from on a two-fluid run: a single-phase run's U, k, omega and nut become both phases' (water and air
+    move together at zero air), copied on the same mesh or mapped (transient.map_from). Pressure is not carried over
+    (single phase keeps it kinematic, the two-fluid case absolute with gravity): it settles within a few iterations.
+    The phase fraction keeps this case's own start."""
+    from .transient import _splice_internal, map_from
+    z = Path(case) / "0"
+    made = []
+    for f, (w, _a) in PHASE_FIELDS.items():
+        if (z / w).is_file() and not (z / f).exists():      # a single-phase-named stand-in for map_from to fill
+            t = (z / w).read_text(errors="replace")
+            (z / f).write_text(re.sub(r"(object\s+)" + re.escape(w) + r"\s*;", r"\g<1>" + f + ";", t, count=1))
+            made.append(f)
+    try:
+        notes, info = map_from(case, src, which, run_step)
+        took = []
+        for f in made:
+            if f not in info.get("fields", []):
+                continue
+            filled = (z / f).read_text(errors="replace")
+            for ph in PHASE_FIELDS[f]:
+                if (z / ph).is_file():
+                    (z / ph).write_text(_splice_internal(filled, (z / ph).read_text(errors="replace")))
+                    took.append(ph)
+        info = dict(info, fields=took)
+        notes = [n.replace(" from ", " (as both phases: " + ", ".join(took) + ") from ", 1) for n in notes]
+        return notes, info
+    finally:
+        for f in made:
+            (z / f).unlink(missing_ok=True)

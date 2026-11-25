@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.21.1
+Version: 2026.11.25.1
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -233,6 +233,8 @@ def run_study(name: str, study: dict, folder: Path, solver: str = "foam", timeou
                              f"(at least {per} per rank, CFDT_CELLS_PER_RANK)")
             if plan.get("euler"):                 # water + air with slip (twophase.py): its own monitors and results
                 from .twophase import run_and_results
+                if init_src is not None:
+                    out["init_from"] = _init_euler(case, study, init_src, folder, t_job, timeout, warns)
                 ex = run_and_results(case, study, plan, timeout, use, warns, t_job)
                 info = ex["info"]
                 out["execution"] = record(procs_req, use, info.get("launch"), info.get("binding", "default"))
@@ -538,6 +540,27 @@ def _init_steady(case: Path, study: dict, plan: dict, src: Path, folder: Path, t
     return {"from": str(src), "used": True, **info}
 
 
+def _init_euler(case: Path, study: dict, src: Path, folder: Path, t_job: float, timeout: float,
+                warns: list) -> dict:
+    """solve.init_from on a two-fluid run: the source's (single-phase) velocity and turbulence as both phases' start
+    (twophase.init_from_single)."""
+    from . import foam
+    from .transient import init_ref, map_timeout
+    from .twophase import init_from_single
+    if not _source_ready(src, folder, t_job, timeout, warns):
+        return {"from": str(src), "used": False}
+    fm = foam.find_foam()
+    try:
+        notes, info = init_from_single(case, src, init_ref(study)[1],
+                                       lambda cmd, log: foam._step(fm, cmd, log, case, map_timeout()))
+    except Exception as exc:  # noqa: BLE001
+        warns.append(f"init_from: could not take the fields of {src} ({type(exc).__name__}: {exc}): this run starts "
+                     "from the uniform fields")
+        return {"from": str(src), "used": False}
+    warns += notes
+    return {"from": str(src), "used": True, **info}
+
+
 def _cpu_note(summary: dict | None, out: dict) -> None:
     """Other processes on this job's CPUs: execution.cpu_sharing and a warning."""
     if not summary:
@@ -564,6 +587,9 @@ def _average_errors(av) -> list[str]:
     for k in ("drift", "scatter", "stderr"):
         if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
             errs.append(f"average.{k}: relative tolerance between 0 and 1")
+    if "until" in av and (not _num(av["until"]) or av["until"] <= 0):
+        errs.append("average.until: the iteration the window ends at (a run's earlier stretch, e.g. to compare with a "
+                    "shorter run: window is then a fraction of the iterations up to it)")
     return errs
 
 
