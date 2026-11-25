@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.25.6
+Version: 2026.11.26.1
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
-        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run"}
+        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -100,6 +100,14 @@ def errors(st: dict) -> list[str]:
             e.append(f"bubbles.targets[{i}]: a region {{name, cylinder | box}} or the name of one in regions")
     if "targets" in b and not isinstance(b["targets"], list):
         e.append("bubbles.targets: a list of regions or region names (several targets reported side by side)")
+    if "tracer" in b and b["tracer"] not in ("forward", "backward"):
+        e.append("bubbles.tracer: 'backward' (massless liquid tracers moving against the liquid: where the liquid "
+                 "reaching the releases comes from) or 'forward' (where it goes); diameters are then ignored")
+    for i, r_ in enumerate(b.get("bins") or []):
+        if isinstance(r_, dict):
+            e += _region_errors(r_, f"bubbles.bins[{i}]")
+        elif not isinstance(r_, str):
+            e.append(f"bubbles.bins[{i}]: a region or the name of one in regions (where the paths end, counted)")
     if "dry_run" in b and not isinstance(b["dry_run"], bool):
         e.append("bubbles.dry_run: true reads the source and counts the fluid cells in every release and target, "
                  "without tracking")
@@ -282,6 +290,13 @@ class Field:
                 fk += [name] * len(a)
         self.open_tree = cKDTree(np.vstack(fc)) if fc else None
         self.open_names = np.asarray(fk)
+        wc, wk = [], []                               # every other patch's face centres: which wall a point is at
+        for name, a in (faces or {}).items():
+            if name not in open_patches:
+                wc.append(a)
+                wk += [name] * len(a)
+        self.wall_tree = cKDTree(np.vstack(wc)) if wc else None
+        self.wall_names = np.asarray(wk)
 
     def at(self, X):
         """(U (n,3), p (n,), grad p (n,3), nearest cell (n,), outside (n,) bool, h (n,))."""
@@ -320,6 +335,13 @@ class Field:
         n = X - self.C[idx].mean(axis=1)
         return n / np.maximum(np.linalg.norm(n, axis=1), 1e-30)[:, None]
 
+    def nearest_wall(self, X):
+        """(the nearest wall patch's name, its distance in m) at points."""
+        if self.wall_tree is None:
+            return np.full(len(X), "", dtype=object), np.full(len(X), np.inf)
+        d, i = self.wall_tree.query(np.atleast_2d(X))
+        return self.wall_names[i].astype(object), d
+
     def exit_patch(self, X, h):
         """The open patch a point outside the fluid is next to (within a cell), else ''."""
         if self.open_tree is None:
@@ -342,7 +364,7 @@ def region_mask(r: dict, X_m: np.ndarray) -> np.ndarray:
         s = rel @ a
         rad = np.linalg.norm(rel - s[:, None] * a, axis=1)
         lo, hi = c.get("span", [-1e30, 1e30])
-        return (rad <= float(c["radius"])) & (s >= lo) & (s <= hi)
+        return (rad <= float(c["radius"])) & (rad >= float(c.get("inner_radius", 0.0))) & (s >= lo) & (s <= hi)
     b = box6(r["box"])
     return np.all((X >= np.asarray(b[:3])) & (X <= np.asarray(b[3:])), axis=1)
 
@@ -362,13 +384,15 @@ def release_points(field: Field, rel: dict, n: int, rng) -> np.ndarray:
 
 # ---- tracking --------------------------------------------------------------------------------------------------
 def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: float = 0.5,
-          dt_max: float = 1e-3, target=None, keep=0, max_steps: int = MAX_STEPS, zone_r=None) -> dict:
+          dt_max: float = 1e-3, target=None, keep=0, max_steps: int = MAX_STEPS, zone_r=None,
+          tracer: int = 0) -> dict:
     """Moves bubbles of diameter d_m (m; one value or one per bubble) from X0 (m) for t_max seconds, all in one loop
     (each with its own step). keep: how many (the first) or which bubbles' paths to record. target: a region dict
     (mm) or None. zone_r: per
     MRF zone, (outer radius m, span lo m, span hi m) for the impeller-exit count, or None. Returns per bubble: fate
     ('flow' | 'outlet' | 'inlet' | 'wall'), reached (target), t_first, t_in (seconds in the target), in_at_end,
-    exited (left a zone through its outer radius), and kept trajectories."""
+    exited (left a zone through its outer radius), and kept trajectories. tracer +1 / -1: massless liquid tracers
+    moving with (+1) or against (-1, backwards in time) the liquid's velocity in their frame; no forces."""
     X = np.array(X0, float)
     nb = len(X)
     dall = np.broadcast_to(np.asarray(d_m, float), (nb,)).copy()
@@ -447,12 +471,14 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                 np.cross(om_new, np.cross(om_new, r_rel))
             return F_, Kc_, u_f_
         F1, K1, u_f = forcing(Xa, U, gp, va)
+        if tracer:
+            va = tracer * u_f
         speed = np.maximum(np.linalg.norm(va, axis=1), np.linalg.norm(u_f, axis=1)) + 1e-9
         dt = np.minimum.reduce([0.4 * h / speed, np.full(len(a), dt_max), t_max - t[a] + 1e-12,
                                 np.where(np.linalg.norm(om_new, axis=1) > 0,
                                          0.05 / np.maximum(np.linalg.norm(om_new, axis=1), 1e-30), np.inf)])
         # Heun (second order; explicit Euler spirals outward on curved paths), drag implicit in both stages
-        v1 = (va + dt[:, None] * (F1 + K1[:, None] * u_f)) / (1.0 + dt * K1)[:, None]
+        v1 = (va + dt[:, None] * (F1 + K1[:, None] * u_f)) / (1.0 + dt * K1)[:, None] if not tracer else va
         X1 = Xa + dt[:, None] * v1
         U2, _, gp2, _, _, _ = field.at(X1)
         F2, K2, u_f2 = forcing(X1, U2, gp2, v1)
@@ -465,7 +491,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         phi2 = np.where(x > 1e-6, (1.0 - (-np.expm1(-x)) / np.maximum(x, 1e-300)) / Km, 0.5 * dt)
         G0 = F1 + Km[:, None] * u_f
         G1 = F2 + Km[:, None] * u_f2
-        vn = ex[:, None] * va + phi1[:, None] * G0 + phi2[:, None] * (G1 - G0)
+        vn = ex[:, None] * va + phi1[:, None] * G0 + phi2[:, None] * (G1 - G0) if not tracer else tracer * u_f2
         Xn = Xa + 0.5 * dt[:, None] * (va + vn)
         _, _, _, near_n, out_n, h_n = field.at(Xn)
         ok = ~out_n
@@ -515,13 +541,18 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             if i in aset and (t[i] - last_rec[i] >= rec_every or not alive[i]):
                 paths[i].append(X[i].copy())
                 last_rec[i] = t[i]
+    # a bubble held at a wall inside a target stays there: it counts as in the target at the end, its residence
+    # running to t_max (it was not moved after being held)
+    held = fate == "wall"
+    stay = (fate == "flow") | held
+    t_in_k = t_in_k + np.where(in_k & held[None, :], np.maximum(t_max - t, 0.0)[None, :], 0.0)
     if nt:
         reached, t_first, t_in = reached_k[0], t_first_k[0], t_in_k[0]
     in_t = in_k[0] if nt else np.zeros(nb, bool)
     per = {(r_.get("name") or f"target{j}"): {"reached": reached_k[j], "t_first": t_first_k[j], "t_in": t_in_k[j],
-                                              "in_at_end": in_k[j] & (fate == "flow")} for j, r_ in enumerate(tg)}
+                                              "in_at_end": in_k[j] & stay} for j, r_ in enumerate(tg)}
     return {"targets": per, "fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in,
-            "in_at_end": in_t & (fate == "flow"),
+            "in_at_end": in_t & stay,
             "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
@@ -651,11 +682,24 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
            "revolutions": round(T * omega / (2 * math.pi), 3) if omega else None, "gravity": g,
            "added_mass": float(b.get("added_mass", 0.5)), "target": target,
            **({"targets": [t_.get("name") for t_ in targets]} if len(targets) > 1 else {}), "releases": {}}
+    tracer = {"backward": -1, "forward": 1}.get(b.get("tracer"), 0)
+    if tracer:
+        res["tracer"] = b["tracer"]
+        notes.append(f"massless liquid tracers moving {'against' if tracer < 0 else 'with'} the liquid's velocity "
+                     f"({'where the liquid reaching the releases comes from' if tracer < 0 else 'where it goes'}); "
+                     "the diameter is not used")
+    bins = []
+    for b_ in b.get("bins") or []:
+        r_ = _target(study, {"target": b_})
+        if r_ is None:
+            warns.append(f"bubbles.bins {b_!r}: no such region")
+        else:
+            bins.append(r_)
     X0, dd, groups = [], [], []
     for rel in b["releases"]:
         n = int(rel.get("n", b.get("n", 100)))
         P = release_points(field, rel, n, rng)
-        for dmm in b.get("diameters_mm", [1.0]):
+        for dmm in ([0.1] if tracer else b.get("diameters_mm", [1.0])):
             i0 = sum(len(x) for x in X0)
             X0.append(P)
             dd.append(np.full(n, float(dmm) * SCALE))
@@ -663,17 +707,24 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     X0, dd = np.vstack(X0), np.concatenate(dd)
     kidx = [int(i) for _, _, ix in groups for i in ix[:keep]]
     r = track(field, X0, dd, nu, T, g, float(b.get("added_mass", 0.5)), float(b.get("dt_max_s", 1e-3)), targets,
-              kidx, int(b.get("max_steps", MAX_STEPS)), zone_r)
+              kidx, int(b.get("max_steps", MAX_STEPS)), zone_r, tracer)
     res["steps"] = int(r["steps"])
     if r["steps"] >= int(b.get("max_steps", MAX_STEPS)):
         warns.append("bubbles: stopped at max_steps before every bubble reached t_max (raise bubbles.max_steps)")
-    paths_all = {}
+    paths_all, stay_all = {}, {}
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
                for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X")}
         sub["targets"] = {nm: {k: v[ix] for k, v in q.items()} for nm, q in r["targets"].items()}
         sub["t_max"] = T
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
+        if bins or tracer:
+            res["releases"][rn][f"{dmm:g}"]["ends"] = ends(sub, bins, field, data)
+        if targets and not tracer:
+            st_ = stayers(field, data, sub, targets)
+            if st_:
+                res["releases"][rn][f"{dmm:g}"]["stayers"] = st_
+                stay_all.setdefault(rn, {})[dmm] = st_
         loc = {int(j): r["paths"][int(i)] for j, i in enumerate(ix[:keep]) if int(i) in r["paths"]}
         paths_all[(rn, dmm)] = (loc, sub["fate"], sub["reached"])
     traj = folder / "trajectories.npz"
@@ -682,6 +733,8 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     res["trajectories"] = str(traj)
     try:
         res["images"] = draw(paths_all, field, data, target, folder)
+        if stay_all:
+            res["images"].update(draw_stayers(stay_all, field, data, targets, folder))
     except Exception as exc:  # noqa: BLE001 (pictures never fail a run)
         warns.append(f"bubbles: no pictures ({type(exc).__name__}: {exc})")
     notes.append("one-way: the bubbles do not change the flow; liquid acceleration from -grad p (viscous stress "
@@ -689,6 +742,108 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
                  "at one position")
     return {"name": name, "ok": True, "results": {"bubbles": res}, "warnings": warns, "notes": notes,
             "reliable": True, "seconds": {"track": round(time.perf_counter() - t0, 3)}}
+
+
+def _cyl(data: dict, X):
+    """(r mm, axial mm from the first zone's origin, angle deg) about the first MRF zone's axis (else z)."""
+    z = data["mrf"][0] if data["mrf"] else {"origin": np.zeros(3), "axis": np.array([0, 0, 1.0])}
+    ax_ = z["axis"]
+    e1 = np.array([1.0, 0, 0]) if abs(ax_[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = e1 - (e1 @ ax_) * ax_
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(ax_, e1)
+    rel = (np.atleast_2d(X) - z["origin"]) / SCALE
+    s = rel @ ax_
+    rr = rel - s[:, None] * ax_
+    return np.linalg.norm(rr, axis=1), s, np.degrees(np.arctan2(rr @ e2, rr @ e1))
+
+
+def stayers(field: Field, data: dict, sub: dict, targets: list) -> dict:
+    """Per target, the bubbles in it at the end: where (x, y, z mm; r, axial from the zone's origin, angle about its
+    axis in the frozen impeller's frame), whether held at a wall (and which, how far) or free in the liquid."""
+    out = {}
+    for t_ in targets:
+        nm = t_.get("name")
+        q = (sub.get("targets") or {}).get(nm)
+        if q is None:
+            continue
+        idx = np.flatnonzero(q["in_at_end"])
+        if not len(idx):
+            continue
+        X = np.asarray(sub["X"])[idx]
+        r, a, th = _cyl(data, X)
+        wn, wd = field.nearest_wall(X)
+        held = np.asarray(sub["fate"])[idx] == "wall"
+        pts = [{"xyz_mm": [round(float(v) / SCALE, 1) for v in X[i]], "r_mm": round(float(r[i]), 1),
+                "axial_mm": round(float(a[i]), 1), "angle_deg": round(float(th[i]), 1),
+                "held": bool(held[i]), "nearest_wall": str(wn[i]), "wall_mm": round(float(wd[i]) / SCALE, 2)}
+               for i in range(len(idx))]
+        walls = {}
+        for w_, h_ in zip(wn, held):
+            if h_:
+                walls[str(w_)] = walls.get(str(w_), 0) + 1
+        out[nm] = {"n": int(len(idx)), "held": int(held.sum()), "free": int((~held).sum()),
+                   "held_by_wall": walls, "r_mm": {"min": round(float(r.min()), 1), "max": round(float(r.max()), 1)},
+                   "axial_mm": {"min": round(float(a.min()), 1), "max": round(float(a.max()), 1)},
+                   "points": pts[:40]}
+    return out
+
+
+def ends(sub: dict, bins: list, field: Field, data: dict) -> dict:
+    """Where the paths ended (tracers: where the liquid came from or goes): the share in each bin region, by fate,
+    and a sample of end points."""
+    X = np.asarray(sub["X"])
+    n = len(X)
+    out = {"by_fate": {f: round(float(np.count_nonzero(np.asarray(sub["fate"]) == f)) / n, 4)
+                       for f in sorted(set(np.asarray(sub["fate"]).tolist()))}}
+    if bins:
+        out["in_bins"] = {b_.get("name"): round(float(np.count_nonzero(region_mask(b_, X))) / n, 4) for b_ in bins}
+        anyb = np.zeros(n, bool)
+        for b_ in bins:
+            anyb |= region_mask(b_, X)
+        out["in_bins"]["elsewhere"] = round(float(np.count_nonzero(~anyb)) / n, 4)
+    r, a, th = _cyl(data, X)
+    out["centroid_mm"] = [round(float(v), 1) for v in (X.mean(axis=0) / SCALE)]
+    out["r_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(r, [25, 50, 75])]
+    out["axial_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(a, [25, 50, 75])]
+    out["points_mm"] = [[round(float(v) / SCALE, 1) for v in q] for q in X[:30]]
+    return out
+
+
+def draw_stayers(stay_all: dict, field: Field, data: dict, targets: list, folder: Path) -> dict:
+    """Per release, where the bubbles still in a target at the end sit: r against axial (meridional) and the angle
+    about the axis against r, every size, held (filled) or free (open)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    out = {}
+    cols = {0.1: "tab:blue", 0.3: "tab:green", 1.0: "tab:orange", 2.0: "tab:red"}
+    for rn, by_d in stay_all.items():
+        fig, axs = plt.subplots(1, 2, figsize=(11, 4.5))
+        for dmm, st_ in by_d.items():
+            for tn, q in st_.items():
+                P = q["points"]
+                mk = "o" if tn == (targets[0].get("name") if targets else "") else "s"
+                for held_ in (True, False):
+                    pp = [p_ for p_ in P if p_["held"] == held_]
+                    if not pp:
+                        continue
+                    kw = dict(c=cols.get(dmm, "k")) if held_ else dict(facecolors="none", edgecolors=cols.get(dmm, "k"))
+                    axs[0].scatter([p_["r_mm"] for p_ in pp], [p_["axial_mm"] for p_ in pp], marker=mk, s=18, **kw,
+                                   label=f"{dmm:g} mm, {tn}, {'held' if held_ else 'free'}")
+                    axs[1].scatter([p_["angle_deg"] for p_ in pp], [p_["r_mm"] for p_ in pp], marker=mk, s=18, **kw)
+        axs[0].set_xlabel("r (mm)")
+        axs[0].set_ylabel("axial from the zone origin (mm)")
+        axs[1].set_xlabel("angle about the axis (deg, frozen impeller frame)")
+        axs[1].set_ylabel("r (mm)")
+        axs[0].legend(fontsize=6)
+        axs[0].set_title(f"{rn}: bubbles in a target at the end")
+        fig.tight_layout()
+        p_ = folder / f"stayers_{rn}.png"
+        fig.savefig(p_, dpi=110)
+        plt.close(fig)
+        out[f"stayers_{rn}"] = {"path": str(p_)}
+    return out
 
 
 def draw(paths_all: dict, field: Field, data: dict, target, folder: Path) -> dict:

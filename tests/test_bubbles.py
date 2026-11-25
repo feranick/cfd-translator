@@ -174,6 +174,12 @@ def test_study_end_to_end(tmp_path):
     d = r3["results"]["bubbles"]["dry_run"]
     assert d["bottom"]["cells"] == 6 * 6 * 3 and d["nowhere"]["cells"] == 0 and d["target:top"]["cells"] > 0
     assert any("nowhere" in w for w in r3["warnings"])
+    st4 = {"bubbles": dict(st2["bubbles"], tracer="backward", t_max_s=0.1, bins=["mid", "top"]),
+           "regions": st2["regions"]}
+    r4 = run_study("trc", st4, tmp_path / "out" / "trc")
+    assert r4["ok"], r4
+    e4 = r4["results"]["bubbles"]["releases"]["bottom"]["0.1"]["ends"]
+    assert e4["in_bins"]["elsewhere"] == 1.0 and e4["by_fate"] == {"flow": 1.0}     # still liquid: tracers stay put
 
 
 def test_bubble_slides_up_an_inclined_ceiling():
@@ -205,3 +211,31 @@ def test_held_under_a_flat_ceiling_is_reported_with_its_place():
     assert r["fate"][0] == "wall" and r["X"][0, 2] > 0.018
     s = bubbles.summarize(r, None)
     assert s["stuck_at_wall"] == 1.0 and s["held_at_mm"]["centroid"][2] > 18 and s["finished"] == 1.0
+
+
+def test_backward_tracer_and_stayers_at_a_ceiling():
+    # a liquid tracer traced back in a uniform stream ends upstream
+    C, V = _grid((0, 0.1), (0, 0.01), (0, 0.01), 0.001)
+    U = np.tile([0.1, 0.0, 0.0], (len(C), 1))
+    f = bubbles.Field(C, V, U, np.zeros(len(C)))
+    r = bubbles.track(f, [[0.06, 0.005, 0.005]], 1e-4, NU, 0.2, g=(0, 0, 0), tracer=-1)
+    assert r["X"][0, 0] == pytest.approx(0.04, abs=2e-4)
+    # bubbles held under a closed top inside a target count as staying there, at the wall named
+    C, V = _grid((0, 0.01), (0, 0.01), (0, 0.02), 0.001)
+    top, _ = _grid((0, 0.01), (0, 0.01), (0, 0.001), 0.001)
+    top[:, 2] = 0.02
+    f = bubbles.Field(C, V, np.zeros_like(C), np.zeros(len(C)), faces={"walls": top})
+    tgt = {"name": "top", "box": {"min": [0, 0, 15], "max": [10, 10, 21]}}
+    r = bubbles.track(f, [[0.005, 0.005, 0.005]] * 3, 1e-3, NU, 1.0, g=(0, 0, -9.80665), target=[tgt])
+    assert (r["fate"] == "wall").all() and r["targets"]["top"]["in_at_end"].all()
+    assert r["targets"]["top"]["t_in"][0] > 0.5                  # counted to the end, not to the moment it was held
+    data = {"mrf": []}
+    st = bubbles.stayers(f, data, {"X": r["X"], "fate": r["fate"], "targets": r["targets"]}, [tgt])
+    assert st["top"]["n"] == 3 and st["top"]["held"] == 3 and st["top"]["held_by_wall"] == {"walls": 3}
+    assert st["top"]["points"][0]["wall_mm"] < 1.0
+
+
+def test_region_mask_annulus():
+    r = {"cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 10, "inner_radius": 5, "span": [0, 1]}}
+    X = np.array([[0.003, 0, 0.0005], [0.007, 0, 0.0005], [0.012, 0, 0.0005]])
+    assert bubbles.region_mask(r, X).tolist() == [False, True, False]

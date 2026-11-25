@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.25.6
+Version: 2026.11.26.1
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -163,7 +163,9 @@ GUIDES = {
             "(same machine: run.host), releases [{name, box {min, max} | cylinder | points [[x, y, z]], n}] (mm; "
             "random fluid cells inside), diameters_mm [0.1, 0.3, 1, 2], gravity (S50: [0, -9.81, 0]; default "
             "[0, 0, -9.81]), revolutions (20) or t_max_s, target (a region or a name in regions; default 'eye') or "
-            "targets [several, reported side by side], dry_run (count each region's fluid cells first), keep "
+            "targets [several, side by side; stayers: where those in a target at the end sit], dry_run (count each "
+            "region's fluid cells first), tracer backward|forward (liquid tracers: where the liquid comes from) with "
+            "bins [regions where paths end], keep "
             "(trajectories drawn per release and size, 30), added_mass 0.5, dt_max_s.",
             "Physics: massless bubbles with Schiller-Naumann drag, the liquid's acceleration (-grad p: pressure "
             "gradient and buoyancy) and added mass; in the MRF zone in the rotating frame, outside in the absolute "
