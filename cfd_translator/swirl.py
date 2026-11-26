@@ -1,6 +1,6 @@
 """Swirl in named regions: the mean tangential velocity and the angular momentum about a rotating zone's axis.
 
-Version: 2026.11.25.6
+Version: 2026.11.26.5
 
 The S50 zero-air gate (pump chat, 20 Nov 2026) compares the swirl of a two-fluid run at zero air with a single-phase
 run on the same mesh, in the eye, the pocket in front of the wear plate and the reservoir: a spurious swirl gain drives
@@ -97,13 +97,15 @@ def _scalars(path: Path, n: int) -> np.ndarray | None:
 SNAPSHOTS = 10            # field snapshots over a steady run's averaging window (gate: mean and its standard error)
 
 
-def snapshot_fo(objects: list, start: int, every: int) -> str:
-    """A writeObjects function object: the named fields every `every` iterations from `start` (the averaging window),
-    so the regions' swirl has a mean and a standard error over the same window as head and torque."""
-    return ("    cfdtSwirlSnap\n    {\n        type            writeObjects;\n"
+def snapshot_fo(objects: list, start: int, every: int, end: int | None = None, name: str = "cfdtSwirlSnap") -> str:
+    """A writeObjects function object: the named fields every `every` iterations from `start` (the averaging window;
+    to `end` when given), so the regions' swirl has a mean and a standard error over the same window as head and
+    torque."""
+    return (f"    {name}\n    {{\n        type            writeObjects;\n"
             "        libs            (\"libutilityFunctionObjects.so\");\n"
             f"        objects         ({' '.join(objects)});\n        writeControl    timeStep;\n"
-            f"        writeInterval   {int(every)};\n        timeStart       {int(start)};\n    }}")
+            f"        writeInterval   {int(every)};\n        timeStart       {int(start)};\n"
+            + (f"        timeEnd         {int(end)};\n" if end is not None else "") + "    }")
 
 
 def snapshot_plan(iterations: int, window_iterations: int) -> dict:
@@ -171,7 +173,8 @@ def _roots_and_times(case: Path, ufield: str):
 
 
 def from_case(case: Path, regions: list, fr: dict, rho: float, ufield: str = "U.water", wfield: str | None = "alpha.water",
-              t_from: float | None = None, latest_only: bool = False, cleanup: bool = False) -> dict | None:
+              t_from: float | None = None, latest_only: bool = False, cleanup: bool = False,
+              t_to: float | None = None) -> dict | None:
     """Swirl from a finished case's written fields: the latest time (latest_only), else the mean over the written
     times at or after t_from, with each region's standard error over those snapshots (mean_stderr, as head and
     torque). Reads the reconstructed case, or every processor directory when the times are there. cleanup: remove the
@@ -184,7 +187,7 @@ def from_case(case: Path, regions: list, fr: dict, rho: float, ufield: str = "U.
     if latest_only or t_from is None:
         sel = [tl[-1]]
     else:
-        sel = [t for t in tl if t[0] >= t_from - 1e-9] or [tl[-1]]
+        sel = [t for t in tl if t[0] >= t_from - 1e-9 and (t_to is None or t[0] <= t_to + 1e-9)] or [tl[-1]]
     per_time = [None] * len(sel)
     for d in roots:
         mesh = _mesh(d, sel[-1][1])
@@ -268,20 +271,34 @@ def attach_window(case: Path, study: dict, plan: dict, res: dict, cleanup: bool 
     groups = {}
     for r in study["regions"]:
         groups.setdefault(r.get("zone"), []).append(r)
-    out = None
-    for zone, rs in groups.items():
-        fr = frame_of(plan, zone)
-        if fr is None:
-            continue
-        try:
-            s = from_case(case, rs, fr, float(plan["rho"]), "U", None, t_from=snap["start"], cleanup=cleanup)
-        except (OSError, ValueError, KeyError, IndexError):
-            s = None
-        if s is None:
-            continue
-        if out is None:
-            out = s
-        else:
-            out["regions"].update(s["regions"])
+    def window(t0, t1=None):
+        out_ = None
+        for zone, rs in groups.items():
+            fr = frame_of(plan, zone)
+            if fr is None:
+                continue
+            try:
+                s = from_case(case, rs, fr, float(plan["rho"]), "U", None, t_from=t0, t_to=t1)
+            except (OSError, ValueError, KeyError, IndexError):
+                s = None
+            if s is None:
+                continue
+            if out_ is None:
+                out_ = s
+            else:
+                out_["regions"].update(s["regions"])
+        return out_
+    out = window(snap["start"])
     if out:
         res["swirl"] = out
+    extra = []                                 # solve.average.snapshot_windows: the same over other windows
+    for w in plan.get("swirl_snap_windows") or []:
+        s = window(w["start"], w["end"])
+        if s:
+            extra.append(s)
+    if extra:
+        res["swirl_windows"] = extra
+    if cleanup:                                # every snapshot but the latest time
+        roots, tl = _roots_and_times(Path(case), "U")
+        if len(tl) > 1:
+            remove_snapshots(roots, tl[:-1], "U")

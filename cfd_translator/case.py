@@ -1,5 +1,5 @@
 """case.py — an OpenFOAM case (incompressibleFluid, steady SIMPLE) from a study and its mesh.
-Version: 2026.11.21.1
+Version: 2026.11.26.5
 
     write_case(study, mesh, patches, case_dir) -> plan
 
@@ -706,6 +706,14 @@ def write_case(study: dict, mesh, patches: list, case: Path) -> dict:
             sp = snapshot_plan(iters, w)
             funcs.append(snapshot_fo(["U"], sp["start"], sp["every"]))
             plan["swirl_snap"] = sp
+            av_ = (study.get("solve") or {}).get("average")
+            wins = []
+            for k_, (a_, b_) in enumerate((av_.get("snapshot_windows") or []) if isinstance(av_, dict) else []):
+                ev = max(1, (int(b_) - int(a_) + 1) // 10)       # ten snapshots per extra window
+                funcs.append(snapshot_fo(["U"], int(a_), ev, int(b_), name=f"cfdtSwirlSnap{k_ + 1}"))
+                wins.append({"start": int(a_), "end": int(b_), "every": ev})
+            if wins:
+                plan["swirl_snap_windows"] = wins
     sc = _scalar_parts(study, plan, patches, case, turb, nu, None)
     funcs += sc["funcs"]
     cd = (f"solver          incompressibleFluid;\n\nstartFrom       startTime;\n\nstartTime       0;\n\n"

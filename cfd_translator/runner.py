@@ -1,5 +1,5 @@
 """runner.py — one study end to end: mesh, patches, case, solve, results, checks.
-Version: 2026.11.25.2
+Version: 2026.11.26.5
 
     run_study(name, study, folder, solver="foam" | "ref", timeout) -> result dict (also <folder>/<name>.json)
     prepare(study, folder) -> (mesh, patches, selection, plan, warnings)   (no solve)
@@ -601,6 +601,12 @@ def _average_errors(av) -> list[str]:
     for k in ("drift", "scatter", "stderr"):
         if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
             errs.append(f"average.{k}: relative tolerance between 0 and 1")
+    sw = av.get("snapshot_windows")
+    if sw is not None and not (isinstance(sw, list) and all(
+            isinstance(w, list) and len(w) == 2 and all(isinstance(v, int) and v >= 1 for v in w) and w[0] < w[1]
+            for w in sw)):
+        errs.append("average.snapshot_windows: [[first, last], ...] iterations: the regions' swirl (mean, standard "
+                    "error) over each of these windows too (results.swirl_windows), e.g. to compare with a shorter run")
     if "keep_snapshots" in av and not isinstance(av["keep_snapshots"], bool):
         errs.append("average.keep_snapshots: true keeps the window's U snapshots in the case (a later field "
                     "sensitivity, e.g. bubble tracking against the window mean)")

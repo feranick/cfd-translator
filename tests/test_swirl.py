@@ -266,3 +266,43 @@ def test_single_phase_steady_case_writes_the_window_snapshots(tmp_path):
     st.pop("regions")
     mesh, patches, sel, plan, w = prepare(st, tmp_path / "b")
     assert "swirl_snap" not in plan and "cfdtSwirlSnap" not in (tmp_path / "b" / "case" / "system" / "controlDict").read_text()
+
+
+def test_extra_snapshot_windows_are_written_and_validated():
+    from cfd_translator.format import validate_study
+    from cfd_translator.swirl import snapshot_fo
+    fo = snapshot_fo(["U"], 1501, 100, 2500, name="cfdtSwirlSnap1")
+    assert "timeEnd         2500;" in fo and "cfdtSwirlSnap1" in fo and "timeStart       1501;" in fo
+    base = {"geometry": {"box": [10, 10, 10]}, "fluid": "water", "bcs": [
+        {"kind": "inlet", "faces": {"nx": -1}, "velocity": 1}, {"kind": "outlet", "faces": {"nx": 1}, "pressure": 0}]}
+    ok = dict(base, solve={"average": {"snapshot_windows": [[1501, 2500]]}})
+    assert validate_study(ok)["ok"], validate_study(ok)
+    bad = dict(base, solve={"average": {"snapshot_windows": [[2500, 1501]]}})
+    assert any("snapshot_windows" in e for e in validate_study(bad)["errors"])
+
+
+def test_extra_window_case_and_attach(tmp_path):
+    """solve.average.snapshot_windows: a second writeObjects over [1501, 2500], and results.swirl_windows from it
+    beside results.swirl over the main window; every snapshot removed afterwards."""
+    from cfd_translator.runner import prepare
+    st = {"geometry": {"box": [100, 100, 10]}, "2d": True, "fluid": {"rho": 1000, "mu": 0.01},
+          "rotating": [{"name": "rotor", "axis": [0, 0, 1], "center": [0, 0, 0], "rpm": 30, "radius": 30}],
+          "bcs": [{"kind": "wall", "name": "spin", "faces": {"ny": 1}, "rotation": {"axis": [0, 0, 1], "rpm": 30}}],
+          "mesh": {"cells": [10, 10, 1]}, "solve": {"iterations": 4000, "average": {"snapshot_windows": [[1501, 2500]]}},
+          "regions": [{"name": "core", "cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 20}}]}
+    mesh, patches, sel, plan, w = prepare(st, tmp_path)
+    case = tmp_path / "case"
+    cd = (case / "system" / "controlDict").read_text()
+    assert "cfdtSwirlSnap1" in cd and "timeEnd         2500" in cd
+    assert plan["swirl_snap_windows"] == [{"start": 1501, "end": 2500, "every": 100}]
+    g = mesh.geometry()
+    om = plan["zones"]["rotor"]["omega_rad_s"]
+    for i in range(10):
+        write_field(case / str(1600 + 100 * i) / "U", "vector", 0.5 * np.cross([0, 0, om], np.asarray(g["C"]) * 1e-3))
+        write_field(case / str(3100 + 100 * i) / "U", "vector", 0.9 * np.cross([0, 0, om], np.asarray(g["C"]) * 1e-3))
+    res = {}
+    swirl.attach_window(case, st, plan, res)
+    assert res["swirl"]["regions"]["core"]["swirl_ratio"] == pytest.approx(0.9, rel=1e-3)
+    assert res["swirl_windows"][0]["regions"]["core"]["swirl_ratio"] == pytest.approx(0.5, rel=1e-3)
+    assert res["swirl_windows"][0]["window"] == [1600.0, 2500.0]
+    assert sorted(p.name for p in case.iterdir() if p.name[0].isdigit() and p.name != "0") == ["4000"]

@@ -1,5 +1,5 @@
 """format.py — the study format: geometry, domain, fluid, model, boundary conditions, validation.
-Version: 2026.11.25.2
+Version: 2026.11.26.5
 
 A study file is {name: study}; a study is one steady incompressible flow:
 
@@ -196,7 +196,8 @@ MESH_KEYS = {"size", "refine", "cells", "grading", "extrude", "quads", "layers",
 LAYER_KEYS = {"n", "first", "y_plus", "growth", "on", "feature_angle", "at_openings"}
 SOLVE_KEYS = {"iterations", "residual", "relax", "procs", "transonic", "consistent", "start", "ramp", "average",
               "transient", "init_from", "init_fields", "backend"}
-AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr", "until", "keep_snapshots"}
+AVERAGE_KEYS = {"window", "min_iterations", "drift", "scatter", "stderr", "until", "keep_snapshots",
+                "snapshot_windows"}
 REF_KEYS = {"velocity", "area", "length", "cofr", "drag_dir", "lift_dir", "p", "T"}
 THERMAL_KEYS = ("T", "q", "power", "h", "T_inf")
 
@@ -886,6 +887,9 @@ def validate_study(st: dict) -> dict:
                 if k in av and (not _num(av[k]) or not 0 < av[k] < 1):
                     errs.append(f"solve.average.{k}: relative tolerance between 0 and 1 (default "
                                 f"{ {'drift': 0.01, 'scatter': 0.02, 'stderr': 0.005}[k]})")
+            if av.get("snapshot_windows") is not None:
+                from .runner import _average_errors
+                errs += ["solve." + e for e in _average_errors({"snapshot_windows": av["snapshot_windows"]})]
         elif not isinstance(av, bool):
             errs.append("solve.average: true, false or {window, min_iterations, drift, scatter, stderr}")
         if av and st.get("energy"):
