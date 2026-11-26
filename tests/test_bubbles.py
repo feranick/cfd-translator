@@ -85,6 +85,8 @@ def test_validation():
           "run": {"host": "spark1"}}
     assert validate_study(ok)["ok"], validate_study(ok)
     assert validate_study(dict(ok, solve={"procs": 1}))["ok"]          # the SLURM job adds solve.procs
+    assert validate_study({"bubbles": {"source": "r/s", "slices": [{"name": "a", "z": -52}]}})["ok"]   # no releases
+    assert not validate_study({"bubbles": {"source": "r/s", "slices": [{"name": "a"}]}})["ok"]
     bad = {"bubbles": {"releases": [{"name": "a"}], "diameters_mm": [50]}, "geometry": {"box": [1, 1, 1]}}
     e = validate_study(bad)["errors"]
     assert any("source" in x for x in e) and any("diameters" in x for x in e) and any("only bubbles" in x for x in e)
@@ -239,3 +241,23 @@ def test_region_mask_annulus():
     r = {"cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 10, "inner_radius": 5, "span": [0, 1]}}
     X = np.array([[0.003, 0, 0.0005], [0.007, 0, 0.0005], [0.012, 0, 0.0005]])
     assert bubbles.region_mask(r, X).tolist() == [False, True, False]
+
+
+def test_slices_and_path_speeds(tmp_path):
+    f = _cylinder(mrf=True)                             # solid body: p = omega^2 r^2 / 2, no axial flow
+    f.U[:, 2] = np.where(np.hypot(f.C[:, 0], f.C[:, 1]) < 0.01, 0.3, -0.1)     # a core flowing back along +z
+    f.F[:, 1:4] = f.U
+    data = {"mrf": f.mrf}
+    out = bubbles.slices(f, data, [{"name": "mid", "z": 2.0, "r_max": 40, "mark": [[0, 0, 2]]},
+                                   {"name": "mer", "meridional_deg": -60, "r_max": 40}], 998.2, tmp_path)
+    assert out["mid"]["backflow_share"] > 0 and out["mid"]["p_min_r_mm"] < 2.0
+    assert (tmp_path / "slice_mid.png").is_file() and out["mer"]["cells"] > 10
+    # liquid speed along kept paths against rise velocities
+    src = tmp_path / "req" / "trc"
+    src.mkdir(parents=True)
+    np.savez(src / "trajectories.npz", a=np.array([[0.0, 0.03, 0.002], [0.0, 0.031, 0.002]]))
+    st = {"regions": [{"name": "zone", "box": {"min": [-50, -50, 0], "max": [50, 50, 4]}}]}
+    r = bubbles.path_speeds(f, {"paths": str(src), "region": "zone", "direction": [0, 0, -1]}, st,
+                            {"diameters_mm": [0.1, 1]}, NU, [])
+    assert r["points"] == 2 and r["liquid_speed_m_s"]["median"] == pytest.approx(0.1, rel=1e-3)
+    assert r["share_of_path_points_where_liquid_beats_rise"] == {"0.1": 1.0, "1": 0.0}

@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.26.1
+Version: 2026.11.26.2
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
-        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins"}
+        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins", "slices", "path_speeds"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -61,7 +61,20 @@ def errors(st: dict) -> list[str]:
         e.append("bubbles.source: '<request>/<study>' of a finished single-phase run on this machine (its latest U "
                  "and p are the flow the bubbles move in)")
     rel = b.get("releases")
-    if not isinstance(rel, list) or not rel:
+    analysis_only = bool(b.get("slices") or b.get("path_speeds")) and not rel
+    for i, sl in enumerate(b.get("slices") or []):
+        if not (isinstance(sl, dict) and isinstance(sl.get("name"), str) and
+                (_num(sl.get("z")) or _num(sl.get("meridional_deg")))):
+            e.append(f"bubbles.slices[{i}]: {{name, z: mm (a plane across the axis) | meridional_deg: angle (a half "
+                     "plane through the axis), r_max, z_range, mark: [[x, y, z], ...]}: axial velocity and p there")
+    ps = b.get("path_speeds")
+    if ps is not None and not (isinstance(ps, dict) and isinstance(ps.get("paths"), str) and ps.get("region")):
+        e.append("bubbles.path_speeds: {paths: '<request>/<study>' (a tracer or bubble run's trajectories), region: "
+                 "a region or its name, direction: [dx, dy, dz] (default against gravity: down)}: the liquid's speed "
+                 "along those paths there, against each diameter's rise velocity")
+    if analysis_only:
+        pass
+    elif not isinstance(rel, list) or not rel:
         e.append("bubbles.releases: [{name, box: {min, max} | cylinder: {...} | points: [[x, y, z], ...], n}] (mm)")
     else:
         for i, r in enumerate(rel):
@@ -654,6 +667,18 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
         else:
             targets.append(r_)
     target = targets[0] if targets else None
+    if b.get("slices") or b.get("path_speeds"):  # field pictures and path statistics (no tracking unless releases)
+        extra, rho_ = {}, rho
+        if b.get("slices"):
+            extra["slices"] = slices(field, data, b["slices"], rho_, folder)
+        if b.get("path_speeds"):
+            extra["path_speeds"] = path_speeds(field, b["path_speeds"], study, b, nu, warns)
+        if not b.get("releases"):
+            return {"name": name, "ok": True, "results": {"bubbles": {"source": str(src), "source_time": data["time"],
+                    "cells": int(len(field.C)), **extra}}, "warnings": warns, "notes": notes, "reliable": True,
+                    "seconds": {"read": round(time.perf_counter() - t0, 3)}}
+    else:
+        extra = {}
     if b.get("dry_run"):                         # the cells each release and target holds, nothing tracked
         cnt = {}
         for rel in b["releases"]:
@@ -681,7 +706,8 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     res = {"source": str(src), "source_time": data["time"], "cells": int(len(field.C)), "t_max_s": T,
            "revolutions": round(T * omega / (2 * math.pi), 3) if omega else None, "gravity": g,
            "added_mass": float(b.get("added_mass", 0.5)), "target": target,
-           **({"targets": [t_.get("name") for t_ in targets]} if len(targets) > 1 else {}), "releases": {}}
+           **({"targets": [t_.get("name") for t_ in targets]} if len(targets) > 1 else {}), **extra,
+           "releases": {}}
     tracer = {"backward": -1, "forward": 1}.get(b.get("tracer"), 0)
     if tracer:
         res["tracer"] = b["tracer"]
@@ -808,6 +834,125 @@ def ends(sub: dict, bins: list, field: Field, data: dict) -> dict:
     out["axial_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(a, [25, 50, 75])]
     out["points_mm"] = [[round(float(v) / SCALE, 1) for v in q] for q in X[:30]]
     return out
+
+
+def slices(field: Field, data: dict, spec: list, rho: float, folder: Path) -> dict:
+    """Axial velocity (along the first zone's axis, + in the axis direction) and p (Pa) on a plane across the axis
+    (z, mm) or a half plane through it (meridional_deg), from the cells within about half a cell of it: a picture each,
+    with u_axial = 0 drawn, marked points and the pressure minimum; backflow_share = the share of those cells with
+    u_axial > 0."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.tri as mtri
+    z0 = data["mrf"][0] if data["mrf"] else {"origin": np.zeros(3), "axis": np.array([0, 0, 1.0])}
+    ax_ = z0["axis"]
+    r, a, th = _cyl(data, field.C)
+    hmm = field.h / SCALE
+    uax = field.U @ ax_
+    out = {}
+    for sl in spec:
+        r_max = float(sl.get("r_max", 30.0))
+        if _num(sl.get("z")):
+            a0 = float(sl["z"]) - float(z0["origin"] @ ax_) / SCALE
+            m = (np.abs(a - a0) <= 0.6 * hmm) & (r <= r_max)
+            X2 = np.column_stack([field.C[m] @ np.array([1.0, 0, 0]), field.C[m] @ np.array([0, 1.0, 0])]) / SCALE
+            labels = ("x (mm)", "y (mm)")
+        else:
+            th0 = float(sl["meridional_deg"])
+            dth = np.radians((th - th0 + 180.0) % 360.0 - 180.0)
+            zr = sl.get("z_range")
+            m = (np.abs(r * np.sin(dth)) <= 0.6 * hmm) & (np.cos(dth) > 0) & (r <= r_max)
+            if zr:
+                zz = field.C @ ax_ / SCALE
+                m &= (zz >= float(zr[0])) & (zz <= float(zr[1]))
+            X2 = np.column_stack([r[m], field.C[m] @ ax_ / SCALE])
+            labels = ("r (mm)", "z (mm)")
+        if m.sum() < 10:
+            out[sl["name"]] = {"cells": int(m.sum()), "note": "too few cells on this plane"}
+            continue
+        ua, pp = uax[m], field.p[m] * rho
+        i_min = int(np.argmin(pp))
+        res_ = {"cells": int(m.sum()), "u_axial_m_s": {"min": round(float(ua.min()), 3), "max": round(float(ua.max()), 3)},
+                "backflow_share": round(float(np.mean(ua > 0)), 3),
+                "p_min_Pa": round(float(pp[i_min]), 1), "p_min_at_mm": [round(float(v), 1) for v in field.C[m][i_min] / SCALE],
+                "p_min_r_mm": round(float(r[m][i_min]), 1), "p_min_angle_deg": round(float(th[m][i_min]), 1)}
+        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+        try:
+            tri = mtri.Triangulation(X2[:, 0], X2[:, 1])
+            ln = np.hypot(*(X2[tri.triangles[:, [1, 2, 0]]] - X2[tri.triangles]).transpose(2, 0, 1)).max(axis=1)
+            tri.set_mask(ln > 3.0 * np.median(ln))
+        except Exception:  # noqa: BLE001
+            tri = None
+        for k_, (val, ttl, cmap) in enumerate(((ua, "axial velocity (m/s; + along the axis)", "RdBu_r"),
+                                               (pp, "p (Pa, gauge)", "viridis"))):
+            axk = axs[k_]
+            lim = np.percentile(np.abs(val), 98) if k_ == 0 else None
+            if tri is not None:
+                cf = axk.tripcolor(tri, val, shading="gouraud", cmap=cmap,
+                                   **({"vmin": -lim, "vmax": lim} if lim else {}))
+                if k_ == 0:
+                    try:
+                        axk.tricontour(tri, val, levels=[0.0], colors="k", linewidths=0.8)
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                cf = axk.scatter(X2[:, 0], X2[:, 1], c=val, s=4, cmap=cmap)
+            fig.colorbar(cf, ax=axk, shrink=0.8)
+            for q in sl.get("mark") or []:
+                q = np.asarray(q, float)
+                if _num(sl.get("z")):
+                    axk.plot(q[0], q[1], "kx", ms=8)
+                else:
+                    rq, _, _ = _cyl(data, q * SCALE)
+                    axk.plot(rq[0], q[2], "kx", ms=8)
+            if k_ == 1:
+                axk.plot(X2[i_min, 0], X2[i_min, 1], "w*", ms=10, mec="k")
+            axk.set_aspect("equal")
+            axk.set_xlabel(labels[0])
+            axk.set_ylabel(labels[1])
+            axk.set_title(f"{sl['name']}: {ttl}", fontsize=9)
+        fig.tight_layout()
+        p_ = folder / f"slice_{sl['name']}.png"
+        fig.savefig(p_, dpi=120)
+        plt.close(fig)
+        res_["image"] = str(p_)
+        out[sl["name"]] = res_
+    return out
+
+
+def path_speeds(field: Field, spec: dict, study: dict, b: dict, nu: float, warns: list) -> dict:
+    """The liquid's speed along another run's kept paths inside a region, in a direction (default: down, against
+    gravity), against each diameter's rise velocity (Schiller-Naumann, still liquid)."""
+    from .transient import source_folder
+    from .twophase import slip_velocity
+    src = source_folder(spec["paths"])
+    f = src / "trajectories.npz"
+    if not f.is_file():
+        raise RuntimeError(f"bubbles.path_speeds: no trajectories.npz in {src}")
+    reg = spec["region"] if isinstance(spec["region"], dict) else _target(study, {"target": spec["region"]})
+    if reg is None:
+        raise RuntimeError(f"bubbles.path_speeds: no region {spec['region']!r}")
+    g = np.asarray(b.get("gravity") or G_DEFAULT, float)
+    dirn = np.asarray(spec.get("direction") or (g / np.linalg.norm(g)), float)
+    dirn = dirn / np.linalg.norm(dirn)
+    P = np.vstack([v for v in np.load(f).values() if len(v)])
+    P = P[region_mask(reg, P)]
+    if not len(P):
+        return {"points": 0, "note": "no path points inside the region"}
+    U = field.at(P)[0]
+    w = U @ dirn
+    q = np.percentile(w, [10, 50, 90])
+    rho_l = 998.2
+    gmag = float(np.linalg.norm(g))
+    rise = {f"{float(d):g}": round(slip_velocity(gmag, float(d) * SCALE, rho_l, 0.0, nu * rho_l)[0], 4)
+            for d in b.get("diameters_mm", [0.1, 0.3, 1, 2])}
+    share = {k: round(float(np.mean(w > v)), 3) for k, v in rise.items()}
+    return {"paths": str(src), "region": reg.get("name"), "points": int(len(P)),
+            "direction": [round(float(v), 3) for v in dirn],
+            "liquid_speed_m_s": {"p10": round(float(q[0]), 4), "median": round(float(q[1]), 4),
+                                 "p90": round(float(q[2]), 4)},
+            "rise_velocity_m_s": rise, "share_of_path_points_where_liquid_beats_rise": share}
 
 
 def draw_stayers(stay_all: dict, field: Field, data: dict, targets: list, folder: Path) -> dict:
