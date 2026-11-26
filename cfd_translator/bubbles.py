@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.26.2
+Version: 2026.11.26.3
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -49,7 +49,14 @@ def _num(x) -> bool:
 
 def _region_errors(r, where: str) -> list[str]:
     from .twophase import region_errors
-    return region_errors([r], where) if isinstance(r, dict) else [f"{where}: a region {{name, cylinder | box}}"]
+    if not isinstance(r, dict):
+        return [f"{where}: a region {{name, cylinder | box}}"]
+    e = region_errors([r], where)
+    ang = (r.get("cylinder") or {}).get("angles") if isinstance(r.get("cylinder"), dict) else None
+    if ang is not None and not (isinstance(ang, list) and len(ang) == 2 and all(_num(v) for v in ang)):
+        e.append(f"{where}.cylinder.angles: [a0, a1] degrees about the axis (a sector, counter-clockwise from a0; "
+                 "0 along x for an axis along z)")
+    return e
 
 
 def errors(st: dict) -> list[str]:
@@ -377,7 +384,17 @@ def region_mask(r: dict, X_m: np.ndarray) -> np.ndarray:
         s = rel @ a
         rad = np.linalg.norm(rel - s[:, None] * a, axis=1)
         lo, hi = c.get("span", [-1e30, 1e30])
-        return (rad <= float(c["radius"])) & (rad >= float(c.get("inner_radius", 0.0))) & (s >= lo) & (s <= hi)
+        m = (rad <= float(c["radius"])) & (rad >= float(c.get("inner_radius", 0.0))) & (s >= lo) & (s <= hi)
+        if c.get("angles") is not None:              # a sector: angles [a0, a1] deg about the axis, counter-clockwise
+            e1 = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+            e1 = e1 - (e1 @ a) * a
+            e1 /= np.linalg.norm(e1)
+            e2 = np.cross(a, e1)
+            radv = rel - s[:, None] * a
+            th = np.degrees(np.arctan2(radv @ e2, radv @ e1))
+            a0, a1 = (float(v) for v in c["angles"])
+            m &= ((th - a0) % 360.0) <= ((a1 - a0) % 360.0)
+        return m
     b = box6(r["box"])
     return np.all((X >= np.asarray(b[:3])) & (X <= np.asarray(b[3:])), axis=1)
 

@@ -261,3 +261,15 @@ def test_slices_and_path_speeds(tmp_path):
                             {"diameters_mm": [0.1, 1]}, NU, [])
     assert r["points"] == 2 and r["liquid_speed_m_s"]["median"] == pytest.approx(0.1, rel=1e-3)
     assert r["share_of_path_points_where_liquid_beats_rise"] == {"0.1": 1.0, "1": 0.0}
+
+
+def test_region_sector():
+    r = {"cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 30, "inner_radius": 20, "span": [0, 1],
+                      "angles": [170, -170]}}                     # across +-180
+    X = np.array([[-0.025, 0.001, 0.0005], [-0.025, -0.001, 0.0005], [0.025, 0, 0.0005], [0, -0.025, 0.0005]])
+    assert bubbles.region_mask(r, X).tolist() == [True, True, False, False]
+    r2 = {"cylinder": {"center": [0, 0, 0], "axis": [0, 0, 1], "radius": 30, "angles": [-72, -62]}}
+    X2 = np.array([[0.025 * np.cos(np.radians(-66)), 0.025 * np.sin(np.radians(-66)), 0]])
+    assert bubbles.region_mask(r2, X2).tolist() == [True]
+    assert validate_study({"bubbles": {"source": "r/s", "releases": [{"name": "s", "cylinder": dict(
+        r2["cylinder"], angles=[1])}]}})["errors"]
