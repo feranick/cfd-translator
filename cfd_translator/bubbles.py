@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.26.4
+Version: 2026.11.26.6
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -23,7 +23,15 @@ the bubble takes the liquid's velocity there (it slides along walls); next to an
 Results per release and diameter: the share that reaches the target region (bubbles.target, default the 'eye'
 region), the share leaving the rotating zone through its outer radius (impeller exit), the share in the target at the
 end, through the outlet or inlet, stuck at walls; residence in the target (s and revolutions) and the time to reach
-it; images of trajectories. One-way: the bubbles do not change the flow; no turbulent dispersion, no coalescence.
+it; images of trajectories. One-way: the bubbles do not change the flow; no coalescence or break-up.
+
+With k and omega in the source (k-omega SST): hinze_d_max_mm, Hinze's largest stable bubble 0.725 (sigma/rho)^0.6
+epsilon^-0.4 (epsilon = 0.09 k omega) where the bubbles are held or free at the end, and per stayer; probes give it
+(and U, p, k, omega) at named points. dispersion: true adds turbulent dispersion by a discrete random walk
+(Gosman-Ioannides: u' normal with variance 2k/3 per component, kept for the eddy lifetime 2 C_L k/epsilon or the
+shorter time to cross the eddy). Escape: outlet_time_s / _rev and escape (share out per revolution, by revolution).
+Stayers report their crossings of a rotating zone's face over the last half (a point that toggles across the face is
+an interface effect of the frozen rotor).
 """
 from __future__ import annotations
 
@@ -35,7 +43,8 @@ from pathlib import Path
 import numpy as np
 
 KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
-        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins", "slices", "path_speeds"}
+        "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins", "slices", "path_speeds",
+        "dispersion", "probes", "surface_tension"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -68,7 +77,18 @@ def errors(st: dict) -> list[str]:
         e.append("bubbles.source: '<request>/<study>' of a finished single-phase run on this machine (its latest U "
                  "and p are the flow the bubbles move in)")
     rel = b.get("releases")
-    analysis_only = bool(b.get("slices") or b.get("path_speeds")) and not rel
+    analysis_only = bool(b.get("slices") or b.get("path_speeds") or b.get("probes")) and not rel
+    pr = b.get("probes")
+    if pr is not None and not (isinstance(pr, list) and pr and all(
+            isinstance(q, dict) and isinstance(q.get("name"), str) and isinstance(q.get("at"), (list, tuple))
+            and len(q["at"]) == 3 and all(_num(v) for v in q["at"]) for q in pr)):
+        e.append("bubbles.probes: [{name, at: [x, y, z] mm}, ...]: U, p, k, omega, epsilon and Hinze's largest "
+                 "stable bubble there")
+    if "dispersion" in b and not isinstance(b["dispersion"], bool):
+        e.append("bubbles.dispersion: true adds turbulent dispersion (a discrete random walk from the source's k and "
+                 "omega)")
+    if "surface_tension" in b and not (_num(b["surface_tension"]) and 0 < b["surface_tension"] < 1):
+        e.append("bubbles.surface_tension: N/m (default 0.072, water) for Hinze's largest stable bubble")
     for i, sl in enumerate(b.get("slices") or []):
         if not (isinstance(sl, dict) and isinstance(sl.get("name"), str) and
                 (_num(sl.get("z")) or _num(sl.get("meridional_deg")))):
@@ -253,6 +273,12 @@ def cell_data(case: Path, run_step=None) -> dict:
     p = _scalars_fast(tdir / "p", n)
     if C is None or U is None or p is None:
         raise RuntimeError(f"could not read C, U or p ({n} cells) at time {t:g} of {case}")
+    turb = {}
+    for nm in ("k", "omega"):                     # turbulence (k-omega SST runs): dispersion and break-up size
+        if (tdir / nm).is_file():
+            a = _scalars_fast(tdir / nm, n)
+            if a is not None:
+                turb[nm] = a
     zones = _read_cell_zones(case / "constant" / "polyMesh")
     mrf = _mrf(case)
     zone_of = np.full(n, -1, np.int32)
@@ -262,7 +288,7 @@ def cell_data(case: Path, run_step=None) -> dict:
             raise RuntimeError(f"MRF zone {z['name']}: no cellZone {z['cellZone']!r} in the mesh")
         zone_of[cells] = i
     return {"time": t, "C": C, "V": V, "U": U, "p": p, "mrf": mrf, "zone_of": zone_of,
-            "faces": _boundary_vectors(cdir / "C")}
+            "faces": _boundary_vectors(cdir / "C"), "k": turb.get("k"), "omega": turb.get("omega")}
 
 
 def shadow_cell_data(case: Path, tdir: Path, work: Path, run_foam) -> Path:
@@ -292,8 +318,11 @@ def shadow_cell_data(case: Path, tdir: Path, work: Path, run_foam) -> Path:
 class Field:
     """U, p and grad p at points: weighted linear least squares over the k nearest cell centres."""
 
-    def __init__(self, C, V, U, p, zone_of=None, mrf=(), faces=None, open_patches=(), k: int = 12):
+    def __init__(self, C, V, U, p, zone_of=None, mrf=(), faces=None, open_patches=(), k: int = 12,
+                 tke=None, omega=None):
         from scipy.spatial import cKDTree
+        self.tke = None if tke is None else np.maximum(np.asarray(tke, float), 0.0)
+        self.om_t = None if omega is None else np.maximum(np.asarray(omega, float), 1e-12)
         self.C = np.asarray(C, float)
         self.h = np.cbrt(np.asarray(V, float))
         self.U = np.asarray(U, float)
@@ -344,6 +373,14 @@ class Field:
         outside = ~np.any(d <= 0.87 * self.h[idx], axis=1)
         return U, p, gp, near, outside, h
 
+    @property
+    def turbulent(self) -> bool:
+        return self.tke is not None and self.om_t is not None
+
+    def turb(self, near):
+        """(k m2/s2, omega 1/s) of the nearest cells."""
+        return self.tke[near], self.om_t[near]
+
     def wall_normal(self, X):
         """An outward wall normal estimate at points next to a wall: away from the centroid of the nearest centres
         (a wall's cells all lie on one side)."""
@@ -369,6 +406,47 @@ class Field:
         d, i = self.open_tree.query(np.atleast_2d(X))
         out = np.where(d <= 1.5 * h, self.open_names[i], "")
         return out.astype(object)
+
+
+# ---- turbulence: break-up size and dispersion -------------------------------------------------------------------
+C_MU = 0.09
+C_L = 0.15                                    # Lagrangian integral time T_L = C_L k / epsilon (Gosman-Ioannides)
+SIGMA_WATER = 0.072                           # N/m
+
+
+def epsilon(k, om):
+    """Dissipation rate (m2/s3) from k-omega: epsilon = C_mu k omega."""
+    return C_MU * np.asarray(k, float) * np.asarray(om, float)
+
+
+def hinze_dmax(k, om, rho: float, sigma: float = SIGMA_WATER):
+    """Hinze's largest stable bubble (m): 0.725 (sigma/rho)^0.6 epsilon^-0.4."""
+    eps = np.maximum(epsilon(k, om), 1e-30)
+    return 0.725 * (sigma / rho) ** 0.6 * eps ** -0.4
+
+
+def _stats_mm(a_m) -> dict | None:
+    a = np.asarray(a_m, float)
+    a = a[np.isfinite(a)]
+    if not len(a):
+        return None
+    q = np.percentile(a, [10, 50, 90]) / SCALE
+    return {"n": int(len(a)), "p10": float(f"{q[0]:.3g}"), "median": float(f"{q[1]:.3g}"), "p90": float(f"{q[2]:.3g}")}
+
+
+def eddy(k, om, slip, k_drag, rng):
+    """A new eddy for each bubble (discrete random walk): the fluctuation u' (n, 3; each component normal with variance
+    2k/3) and its interaction time: the eddy lifetime 2 T_L (T_L = C_L k/epsilon = C_L/(C_mu omega)) or, when shorter,
+    the time the bubble takes to cross the eddy (size L_e = C_mu^0.75 k^1.5/epsilon) at its slip speed."""
+    n = len(k)
+    up = rng.standard_normal((n, 3)) * np.sqrt(2.0 * k / 3.0)[:, None]
+    eps = np.maximum(epsilon(k, om), 1e-30)
+    life = 2.0 * C_L * k / eps
+    le = C_MU ** 0.75 * k ** 1.5 / eps
+    tau = 1.0 / np.maximum(k_drag, 1e-30)
+    arg = le / np.maximum(tau * slip, 1e-30)
+    cross = np.where(arg < 1.0, -tau * np.log(np.maximum(1.0 - arg, 1e-30)), np.inf)
+    return up, np.minimum(life, cross)
 
 
 # ---- regions ---------------------------------------------------------------------------------------------------
@@ -415,16 +493,28 @@ def release_points(field: Field, rel: dict, n: int, rng) -> np.ndarray:
 # ---- tracking --------------------------------------------------------------------------------------------------
 def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: float = 0.5,
           dt_max: float = 1e-3, target=None, keep=0, max_steps: int = MAX_STEPS, zone_r=None,
-          tracer: int = 0) -> dict:
+          tracer: int = 0, dispersion: bool = False, rng=None) -> dict:
     """Moves bubbles of diameter d_m (m; one value or one per bubble) from X0 (m) for t_max seconds, all in one loop
     (each with its own step). keep: how many (the first) or which bubbles' paths to record. target: a region dict
     (mm) or None. zone_r: per
     MRF zone, (outer radius m, span lo m, span hi m) for the impeller-exit count, or None. Returns per bubble: fate
     ('flow' | 'outlet' | 'inlet' | 'wall'), reached (target), t_first, t_in (seconds in the target), in_at_end,
     exited (left a zone through its outer radius), and kept trajectories. tracer +1 / -1: massless liquid tracers
-    moving with (+1) or against (-1, backwards in time) the liquid's velocity in their frame; no forces."""
+    moving with (+1) or against (-1, backwards in time) the liquid's velocity in their frame; no forces.
+    dispersion: turbulent dispersion by a discrete random walk (the liquid velocity a bubble sees is U + u', u' from k
+    and omega, renewed after each eddy interaction time); then a bubble held at a wall is not stopped (an eddy can take
+    it off again): it counts as held ('wall') only if it is held at the end. Also returned: t_end (when it left
+    through a patch), crossings and crossings_late (frame changes at a zone's edge, all and over the last half)."""
     X = np.array(X0, float)
     nb = len(X)
+    disp = bool(dispersion) and not tracer and field.turbulent
+    if disp and rng is None:
+        rng = np.random.default_rng(1)
+    up = np.zeros((nb, 3))
+    t_eddy = np.zeros(nb)
+    n_cross = np.zeros(nb, np.int32)
+    n_cross_late = np.zeros(nb, np.int32)
+    t_end = np.full(nb, np.nan)
     dall = np.broadcast_to(np.asarray(d_m, float), (nb,)).copy()
     g = np.asarray(g, float)
     U, p, gp, near, out0, h = field.at(X)
@@ -476,6 +566,8 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             org_new[m] = z["origin"]
         changed = np.any(om_new != om_old, axis=1)
         if changed.any():
+            n_cross[a[changed]] += 1
+            n_cross_late[a[changed & (t[a] >= 0.5 * t_max)]] += 1
             vabs = va + np.cross(om_old, Xa - org_old)
             va = np.where(changed[:, None], vabs - np.cross(om_new, Xa - org_new), va)
             if zone_r is not None:                  # left a zone through its outer radius: the impeller exit
@@ -500,6 +592,15 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             F_ = ((1.0 + c_a) * (-gp_) - g) / c_a - 2.0 * np.cross(om_new, vb) - \
                 np.cross(om_new, np.cross(om_new, r_rel))
             return F_, Kc_, u_f_
+        if disp:                                   # a new eddy where the last one's interaction time has run out
+            new = t_eddy[a] <= 0.0
+            if new.any():
+                u0 = U[new] - np.cross(om_new[new], Xa[new] - org_new[new])     # the mean liquid in its frame
+                slip = np.linalg.norm(u0 - va[new], axis=1)
+                K0 = 18.0 * nu / (da[new] ** 2) * (1.0 + 0.15 * (slip * da[new] / nu) ** 0.687) / c_a
+                kk, oo = field.turb(near[new])
+                up[a[new]], t_eddy[a[new]] = eddy(kk, oo, slip, K0, rng)
+            U = U + up[a]
         F1, K1, u_f = forcing(Xa, U, gp, va)
         if tracer:
             va = tracer * u_f
@@ -507,10 +608,14 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         dt = np.minimum.reduce([0.4 * h / speed, np.full(len(a), dt_max), t_max - t[a] + 1e-12,
                                 np.where(np.linalg.norm(om_new, axis=1) > 0,
                                          0.05 / np.maximum(np.linalg.norm(om_new, axis=1), 1e-30), np.inf)])
+        if disp:                                   # not past the eddy's end, but no less than a fifth of the step
+            dt = np.minimum(dt, np.maximum(t_eddy[a], 0.2 * dt))
         # Heun (second order; explicit Euler spirals outward on curved paths), drag implicit in both stages
         v1 = (va + dt[:, None] * (F1 + K1[:, None] * u_f)) / (1.0 + dt * K1)[:, None] if not tracer else va
         X1 = Xa + dt[:, None] * v1
         U2, _, gp2, _, _, _ = field.at(X1)
+        if disp:
+            U2 = U2 + up[a]
         F2, K2, u_f2 = forcing(X1, U2, gp2, v1)
         # corrector: v' = -K v + G(t), G linear over the step (exact exponential integration: stable for the stiff
         # drag of small bubbles, second order in the forcing)
@@ -534,6 +639,7 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                 if nm:
                     fate[a[j]] = "outlet" if "out" in nm else ("inlet" if "in" in nm else str(nm))
                     alive[a[j]] = False
+                    t_end[a[j]] = t[a[j]] + dt[j]
             stay = bad[ex == ""]
             if len(stay):
                 # at a wall: slide (the move less its part into the wall), else ride with the liquid, else wait
@@ -554,6 +660,8 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         X[a], v[a] = Xn, vn
         t_old = t[a].copy()
         t[a] = t[a] + dt
+        if disp:
+            t_eddy[a] -= dt
         for j, r_ in enumerate(tg):
             inside = region_mask(r_, Xn)
             was = in_k[j, a]
@@ -563,14 +671,17 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             reached_k[j, a] |= inside
             in_k[j, a] = inside
         stuck = wall_seen[a] & (t[a] - anchor_t[a] > HELD_S)
-        fate[a[stuck]] = "wall"
-        alive[a[stuck]] = False
+        if not disp:                               # held: stopped there (with dispersion an eddy may free it)
+            fate[a[stuck]] = "wall"
+            alive[a[stuck]] = False
         alive[a[t[a] >= t_max - 1e-12]] = False
         aset = set(a.tolist()) if tr_keep else ()
         for i in tr_keep:
             if i in aset and (t[i] - last_rec[i] >= rec_every or not alive[i]):
                 paths[i].append(X[i].copy())
                 last_rec[i] = t[i]
+    if disp:                                       # held at the end
+        fate[(fate == "flow") & wall_seen & (t - anchor_t > HELD_S)] = "wall"
     # a bubble held at a wall inside a target stays there: it counts as in the target at the end, its residence
     # running to t_max (it was not moved after being held)
     held = fate == "wall"
@@ -583,7 +694,9 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
                                               "in_at_end": in_k[j] & stay} for j, r_ in enumerate(tg)}
     return {"targets": per, "fate": fate, "reached": reached, "t_first": t_first, "t_in": t_in,
             "in_at_end": in_t & stay,
-            "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X, "paths": {i: np.asarray(p) for i, p in paths.items()}}
+            "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X,
+            "t_end": t_end, "crossings": n_cross, "crossings_late": n_cross_late, "dispersion": disp,
+            "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
 def summarize(r: dict, omega: float | None) -> dict:
@@ -608,6 +721,40 @@ def summarize(r: dict, omega: float | None) -> dict:
         P = np.asarray(r["X"])[r["fate"] == "wall"] / SCALE
         out["held_at_mm"] = {"centroid": [round(float(v), 1) for v in P.mean(axis=0)],
                              "points": [[round(float(v), 1) for v in q] for q in P[:12]]}
+    te = np.asarray(r["t_end"])[r["fate"] == "outlet"] if "t_end" in r else np.zeros(0)
+    te = te[np.isfinite(te)]
+    if len(te):                                  # escape through the outlet: when, and the rate per revolution
+        q = np.percentile(te, [10, 50, 90])
+        out["outlet_time_s"] = {"p10": float(f"{q[0]:.4g}"), "median": float(f"{q[1]:.4g}"),
+                                "p90": float(f"{q[2]:.4g}")}
+        if omega:
+            out["outlet_time_rev"] = {k: float(f"{rev(v):.4g}") for k, v in out["outlet_time_s"].items()}
+    if omega and "t_max" in r and n:
+        nrev = rev(r["t_max"])
+        f_out = float(np.count_nonzero(r["fate"] == "outlet")) / n
+        te_rev = np.sort(te * omega / (2 * math.pi))
+        marks = [m for m in (1, 2, 5, 10, 20, 50, 100, 200, 500) if m <= nrev + 1e-9]
+        out["escape"] = {"per_rev_mean": float(f"{f_out / nrev:.4g}"),
+                         "per_rev_hazard": float(f"{-math.log(max(1.0 - f_out, 1e-12)) / nrev:.4g}")
+                         if f_out < 1 else None,
+                         "out_by_rev": {str(m): round(float(np.searchsorted(te_rev, m, side='right')) / n, 4)
+                                        for m in marks}}
+    if "dmax" in r:                              # Hinze's largest stable size where they are at the end
+        dm = np.asarray(r["dmax"])
+        dd = {"held": _stats_mm(dm[r["fate"] == "wall"]), "free_at_end": _stats_mm(dm[r["fate"] == "flow"])}
+        d_b = r.get("d")
+        if d_b is not None:
+            for k_, m_ in (("held", r["fate"] == "wall"), ("free_at_end", r["fate"] == "flow")):
+                if dd[k_]:
+                    dd[k_]["share_below_d"] = round(float(np.count_nonzero(dm[m_] < d_b)) / max(int(m_.sum()), 1), 4)
+        out["hinze_d_max_mm"] = {k: v for k, v in dd.items() if v}
+    if "crossings_late" in r:
+        cl = np.asarray(r["crossings_late"])
+        stay_ = (r["fate"] == "flow")
+        if stay_.any():
+            out["zone_crossings_late_free"] = {"median": float(np.median(cl[stay_])), "max": int(cl[stay_].max()),
+                                               "share_ge_10": round(float(np.count_nonzero(cl[stay_] >= 10))
+                                                                    / int(stay_.sum()), 4)}
     if len(tf):
         out["time_to_target_s"] = {"median": float(f"{np.median(tf):.4g}"), "min": float(f"{tf.min():.4g}")}
     if len(tin):
@@ -661,7 +808,11 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
              if isinstance(bc, dict) and bc.get("kind") in ("inlet", "outlet", "opening") and bc.get("name")]
     if not opens:
         opens = [k for k in data["faces"] if "inlet" in k or "outlet" in k]
-    field = Field(data["C"], data["V"], data["U"], data["p"], data["zone_of"], data["mrf"], data["faces"], opens)
+    field = Field(data["C"], data["V"], data["U"], data["p"], data["zone_of"], data["mrf"], data["faces"], opens,
+                  tke=data.get("k"), omega=data.get("omega"))
+    sigma = float(b.get("surface_tension", SIGMA_WATER))
+    if b.get("dispersion") and not field.turbulent:
+        warns.append("bubbles.dispersion: the source has no k and omega (not a k-omega run): no dispersion")
     zone_r = []
     rot = {z.get("name"): z for z in src_study.get("rotating") or [] if isinstance(z, dict)}
     for z in data["mrf"]:
@@ -684,12 +835,14 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
         else:
             targets.append(r_)
     target = targets[0] if targets else None
-    if b.get("slices") or b.get("path_speeds"):  # field pictures and path statistics (no tracking unless releases)
+    if b.get("slices") or b.get("path_speeds") or b.get("probes"):  # field pictures, path statistics, point values
         extra, rho_ = {}, rho
         if b.get("slices"):
             extra["slices"] = slices(field, data, b["slices"], rho_, folder)
         if b.get("path_speeds"):
             extra["path_speeds"] = path_speeds(field, b["path_speeds"], study, b, nu, warns)
+        if b.get("probes"):
+            extra["probes"] = probes(field, data, b["probes"], rho, sigma)
         if not b.get("releases"):
             return {"name": name, "ok": True, "results": {"bubbles": {"source": str(src), "source_time": data["time"],
                     "cells": int(len(field.C)), **extra}}, "warnings": warns, "notes": notes, "reliable": True,
@@ -750,16 +903,25 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     X0, dd = np.vstack(X0), np.concatenate(dd)
     kidx = [int(i) for _, _, ix in groups for i in ix[:keep]]
     r = track(field, X0, dd, nu, T, g, float(b.get("added_mass", 0.5)), float(b.get("dt_max_s", 1e-3)), targets,
-              kidx, int(b.get("max_steps", MAX_STEPS)), zone_r, tracer)
+              kidx, int(b.get("max_steps", MAX_STEPS)), zone_r, tracer, bool(b.get("dispersion")), rng)
     res["steps"] = int(r["steps"])
+    if r["dispersion"]:
+        res["dispersion"] = {"model": "discrete random walk", "C_L": C_L, "C_mu": C_MU}
+    if field.turbulent and not tracer:            # Hinze's largest stable size where each bubble is at the end
+        near_end = field.tree.query(r["X"])[1]
+        r["dmax"] = hinze_dmax(*field.turb(near_end), rho, sigma)
+        r["dmax"][np.isin(r["fate"], ["outlet", "inlet"])] = np.nan
+        res["surface_tension_N_m"] = sigma
     if r["steps"] >= int(b.get("max_steps", MAX_STEPS)):
         warns.append("bubbles: stopped at max_steps before every bubble reached t_max (raise bubbles.max_steps)")
     paths_all, stay_all = {}, {}
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
-               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X")}
+               for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X",
+                         "t_end", "crossings", "crossings_late", "dmax") if k in r}
         sub["targets"] = {nm: {k: v[ix] for k, v in q.items()} for nm, q in r["targets"].items()}
         sub["t_max"] = T
+        sub["d"] = dmm * SCALE
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
         if bins or tracer:
             res["releases"][rn][f"{dmm:g}"]["ends"] = ends(sub, bins, field, data)
@@ -781,8 +943,10 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     except Exception as exc:  # noqa: BLE001 (pictures never fail a run)
         warns.append(f"bubbles: no pictures ({type(exc).__name__}: {exc})")
     notes.append("one-way: the bubbles do not change the flow; liquid acceleration from -grad p (viscous stress "
-                 "neglected); no turbulent dispersion or coalescence; a frozen-rotor field: the bubbles see the impeller "
-                 "at one position")
+                 "neglected); " + ("turbulent dispersion by a discrete random walk; " if r["dispersion"] else
+                                   "no turbulent dispersion; ") +
+                 "no break-up (hinze_d_max_mm: the largest stable size where they end) or coalescence; a frozen-rotor "
+                 "field: the bubbles see the impeller at one position")
     return {"name": name, "ok": True, "results": {"bubbles": res}, "warnings": warns, "notes": notes,
             "reliable": True, "seconds": {"track": round(time.perf_counter() - t0, 3)}}
 
@@ -817,9 +981,13 @@ def stayers(field: Field, data: dict, sub: dict, targets: list) -> dict:
         r, a, th = _cyl(data, X)
         wn, wd = field.nearest_wall(X)
         held = np.asarray(sub["fate"])[idx] == "wall"
+        cl = np.asarray(sub["crossings_late"])[idx] if "crossings_late" in sub else None
+        dm = np.asarray(sub["dmax"])[idx] if "dmax" in sub else None
         pts = [{"xyz_mm": [round(float(v) / SCALE, 1) for v in X[i]], "r_mm": round(float(r[i]), 1),
                 "axial_mm": round(float(a[i]), 1), "angle_deg": round(float(th[i]), 1),
-                "held": bool(held[i]), "nearest_wall": str(wn[i]), "wall_mm": round(float(wd[i]) / SCALE, 2)}
+                "held": bool(held[i]), "nearest_wall": str(wn[i]), "wall_mm": round(float(wd[i]) / SCALE, 2),
+                **({"zone_crossings_late": int(cl[i])} if cl is not None else {}),
+                **({"d_max_mm": float(f"{dm[i] / SCALE:.3g}")} if dm is not None and np.isfinite(dm[i]) else {})}
                for i in range(len(idx))]
         walls = {}
         for w_, h_ in zip(wn, held):
@@ -829,6 +997,11 @@ def stayers(field: Field, data: dict, sub: dict, targets: list) -> dict:
                    "held_by_wall": walls, "r_mm": {"min": round(float(r.min()), 1), "max": round(float(r.max()), 1)},
                    "axial_mm": {"min": round(float(a.min()), 1), "max": round(float(a.max()), 1)},
                    "points": pts[:40]}
+        if cl is not None:                        # back and forth across a zone's face over the last half
+            out[nm]["zone_crossings_late"] = {"median": float(np.median(cl)), "max": int(cl.max()),
+                                              "share_ge_10": round(float(np.count_nonzero(cl >= 10)) / len(cl), 4)}
+        if dm is not None and _stats_mm(dm):
+            out[nm]["hinze_d_max_mm"] = _stats_mm(dm)
     return out
 
 
@@ -850,6 +1023,30 @@ def ends(sub: dict, bins: list, field: Field, data: dict) -> dict:
     out["r_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(r, [25, 50, 75])]
     out["axial_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(a, [25, 50, 75])]
     out["points_mm"] = [[round(float(v) / SCALE, 1) for v in q] for q in X[:30]]
+    return out
+
+
+def probes(field: Field, data: dict, spec: list, rho: float, sigma: float = SIGMA_WATER) -> dict:
+    """The flow at named points (mm): U (m/s), p (Pa), k, omega, epsilon (m2/s3) and Hinze's largest stable bubble
+    (mm), whether in the fluid and in a rotating zone; with r, axial and angle about the first zone's axis."""
+    out = {}
+    if not spec:
+        return out
+    X = np.asarray([q["at"] for q in spec], float) * SCALE
+    U, p, _, near, outside, h = field.at(X)
+    r, a, th = _cyl(data, X)
+    for i, q in enumerate(spec):
+        d = {"at_mm": [float(v) for v in q["at"]], "r_mm": round(float(r[i]), 2), "axial_mm": round(float(a[i]), 2),
+             "angle_deg": round(float(th[i]), 1), "in_fluid": bool(not outside[i]),
+             "zone": (field.mrf[field.zone_of[near[i]]]["name"] if field.zone_of[near[i]] >= 0 else None),
+             "U_m_s": [round(float(v), 3) for v in U[i]], "U_mag_m_s": round(float(np.linalg.norm(U[i])), 3),
+             "p_Pa": round(float(p[i]) * rho, 1), "cell_mm": round(float(h[i]) / SCALE, 3)}
+        if field.turbulent:
+            k_, o_ = field.turb(near[i:i + 1])
+            d.update(k_m2_s2=float(f"{k_[0]:.4g}"), omega_1_s=float(f"{o_[0]:.4g}"),
+                     epsilon_m2_s3=float(f"{epsilon(k_, o_)[0]:.4g}"),
+                     hinze_d_max_mm=float(f"{hinze_dmax(k_, o_, rho, sigma)[0] / SCALE:.3g}"))
+        out[q["name"]] = d
     return out
 
 

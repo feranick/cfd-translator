@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.26.1
+Version: 2026.11.26.6
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -169,8 +169,14 @@ GUIDES = {
             "(trajectories drawn per release and size, 30), added_mass 0.5, dt_max_s.",
             "Physics: massless bubbles with Schiller-Naumann drag, the liquid's acceleration (-grad p: pressure "
             "gradient and buoyancy) and added mass; in the MRF zone in the rotating frame, outside in the absolute "
-            "frame. One-way (the air does not change the flow), no turbulent dispersion, no coalescence: valid at low "
+            "frame. One-way (the air does not change the flow), no coalescence or break-up: valid at low "
             "air fractions. The field is one frozen-rotor position: say so with the results.",
+            "Turbulence (a k-omega source): dispersion true adds a discrete random walk (eddies from k and omega; a "
+            "held bubble can be freed again); hinze_d_max_mm gives Hinze's largest stable bubble where they end (held, "
+            "free, per stayer; share_below_d: where the tracked size would break up); probes [{name, at}] give U, p, "
+            "k, omega, epsilon and d_max at points (alone, without releases, too). escape: share out by revolution and "
+            "per revolution; outlet_time_s/_rev. Stayers' zone_crossings_late: many crossings of a zone's face over the "
+            "last half mark an interface effect, not a real attractor.",
             "Results bubbles.releases.<name>.<d mm>: reached_target, in_target_at_end, impeller_exit (left the zone "
             "through its outer radius), outlet, inlet, stuck_at_wall, still_in_flow (shares), time_to_target_s, "
             "residence_in_target_s and _rev; images per release and size (plan and meridional views, red = reached "
