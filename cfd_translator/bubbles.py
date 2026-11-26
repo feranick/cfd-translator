@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.26.3
+Version: 2026.11.26.4
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -898,7 +898,8 @@ def slices(field: Field, data: dict, spec: list, rho: float, folder: Path) -> di
         try:
             tri = mtri.Triangulation(X2[:, 0], X2[:, 1])
             ln = np.hypot(*(X2[tri.triangles[:, [1, 2, 0]]] - X2[tri.triangles]).transpose(2, 0, 1)).max(axis=1)
-            tri.set_mask(ln > 3.0 * np.median(ln))
+            hm = hmm[m][tri.triangles].max(axis=1)        # against the local cell size: coarse cells are not gaps
+            tri.set_mask(ln > 2.5 * hm)
         except Exception:  # noqa: BLE001
             tri = None
         for k_, (val, ttl, cmap) in enumerate(((ua, "axial velocity (m/s; + along the axis)", "RdBu_r"),
