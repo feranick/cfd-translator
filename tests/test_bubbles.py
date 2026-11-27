@@ -175,6 +175,7 @@ def test_study_end_to_end(tmp_path):
     r3 = run_study("dry", st3, tmp_path / "out" / "dry")
     d = r3["results"]["bubbles"]["dry_run"]
     assert d["bottom"]["cells"] == 6 * 6 * 3 and d["nowhere"]["cells"] == 0 and d["target:top"]["cells"] > 0
+    assert d["bottom"]["volume_mm3"] == pytest.approx(108.0) and d["target:top"]["volume_mm3"] == pytest.approx(1000.0)
     assert any("nowhere" in w for w in r3["warnings"])
     st4 = {"bubbles": dict(st2["bubbles"], tracer="backward", t_max_s=0.1, bins=["mid", "top"]),
            "regions": st2["regions"]}

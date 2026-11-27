@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.27.1
+Version: 2026.11.27.2
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -882,9 +882,20 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
                     c = field.C[m] / SCALE
                     cnt[rel["name"]].update(centroid_mm=[round(float(v), 2) for v in c.mean(axis=0)],
                                             cell_size_mm=round(float(np.median(field.h[m])) / SCALE, 3))
+        vol = np.asarray(data["V"], float)
+        for k_, v_ in cnt.items():                # fluid volume of each region (mm3), from the cells inside it
+            if "cells" in v_ and not ("points" in v_):
+                rel_ = next(r_ for r_ in b["releases"] if r_["name"] == k_)
+                m = region_mask({kk: rel_[kk] for kk in ("box", "cylinder") if kk in rel_}, field.C)
+                v_["volume_mm3"] = round(float(vol[m].sum()) / SCALE ** 3, 1)
         for t_ in targets:
             m = region_mask(t_, field.C)
-            cnt[f"target:{t_.get('name')}"] = {"cells": int(np.count_nonzero(m))}
+            cnt[f"target:{t_.get('name')}"] = {"cells": int(np.count_nonzero(m)),
+                                               "volume_mm3": round(float(vol[m].sum()) / SCALE ** 3, 1)}
+        for i, z in enumerate(data["mrf"]):       # each rotating zone's fluid volume
+            m = data["zone_of"] == i
+            cnt[f"zone:{z['name']}"] = {"cells": int(np.count_nonzero(m)),
+                                        "volume_mm3": round(float(vol[m].sum()) / SCALE ** 3, 1)}
         bad = [k for k, v in cnt.items() if not v.get("cells", v.get("in_fluid", 0))]
         if bad:
             warns.append(f"bubbles: no fluid cells in {bad}: move those regions")
