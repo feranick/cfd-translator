@@ -286,7 +286,13 @@ Routes (after the above):
   upstream with the version check.
 
 Decision: a settled S50 pass from C keeps air-in-pump CFD on OpenFOAM 14 steady (`two_phase`); otherwise A and B carry
-it. Commercial codes are out of scope (a cross-check if a licence turns up). Order: items 1-3 now, 4 when spark1
+it.
+
+**27 Nov 2026 (pump chat): OpenFOAM 14 two-fluid is set aside for the S50.** At zero gas against single phase on the
+same mesh and iterations: head 0.73x (2 m3/h, 810 vs 795) and 0.75x (20 m3/h, 812 vs 811), torque 0.96x / 1.10x, eye
+swirl of the opposite sign at 20 m3/h. 3393/3394 (plugged 20 m3/h pair) cancelled; item 4 (settled retest, "2.4")
+dropped. The S50 evidence is in the bug report draft (`priming/mrf_hold/bug_report_draft.md`; the user files it).
+Air-in-pump work continues with one-way bubble tracking (break-up size, dispersion, escape rates: 2026.11.26.6). Commercial codes are out of scope (a cross-check if a licence turns up). Order: items 1-3 now, 4 when spark1
 frees, then A (if the tracking supports the slot explanation and the onset with air fraction is needed), then B, with
 C alongside. No S50 legacy-ESI machine-days until its MRF bubble slip and reference are done and OpenFOAM 14 has failed
 a settled gate.

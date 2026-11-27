@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.26.6
+Version: 2026.11.27.1
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -748,6 +748,23 @@ def summarize(r: dict, omega: float | None) -> dict:
                 if dd[k_]:
                     dd[k_]["share_below_d"] = round(float(np.count_nonzero(dm[m_] < d_b)) / max(int(m_.sum()), 1), 4)
         out["hinze_d_max_mm"] = {k: v for k, v in dd.items() if v}
+    if "p_end" in r:                             # static pressure where the bubbles are at the end (Pa, gauge)
+        pe = np.asarray(r["p_end"], float)
+        pin = r.get("p_inlet")
+        pp = {}
+        for k_, m_ in (("held", r["fate"] == "wall"), ("free_at_end", r["fate"] == "flow"),
+                       ("retained", np.isin(r["fate"], ["wall", "flow"]))):
+            a = pe[m_]
+            a = a[np.isfinite(a)]
+            if len(a):
+                q = np.percentile(a, [10, 50, 90])
+                d_ = {"n": int(len(a)), "mean": round(float(a.mean()), 1), "p10": round(float(q[0]), 1),
+                      "median": round(float(q[1]), 1), "p90": round(float(q[2]), 1)}
+                if pin is not None:
+                    d_["mean_minus_inlet"] = round(float(a.mean() - pin), 1)
+                pp[k_] = d_
+        if pp:
+            out["p_end_Pa"] = pp
     if "crossings_late" in r:
         cl = np.asarray(r["crossings_late"])
         stay_ = (r["fate"] == "flow")
@@ -828,7 +845,7 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
                                                     if omega else 1.0)
     g = b.get("gravity") or src_study.get("gravity") or list(G_DEFAULT)
     targets = []
-    for t_ in (b.get("targets") or [b.get("target", "eye")]):
+    for t_ in (b.get("targets") or ([b.get("target", "eye")] if b.get("releases") else [])):
         r_ = _target(study, {"target": t_})
         if r_ is None:
             warns.append(f"bubbles target {t_!r}: no such region: not counted")
@@ -843,6 +860,9 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
             extra["path_speeds"] = path_speeds(field, b["path_speeds"], study, b, nu, warns)
         if b.get("probes"):
             extra["probes"] = probes(field, data, b["probes"], rho, sigma)
+            p_in = inlet_pressure(field, data, src_study, rho)
+            if p_in is not None:
+                extra["p_inlet_Pa"] = round(p_in, 1)
         if not b.get("releases"):
             return {"name": name, "ok": True, "results": {"bubbles": {"source": str(src), "source_time": data["time"],
                     "cells": int(len(field.C)), **extra}}, "warnings": warns, "notes": notes, "reliable": True,
@@ -912,13 +932,20 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
         r["dmax"] = hinze_dmax(*field.turb(near_end), rho, sigma)
         r["dmax"][np.isin(r["fate"], ["outlet", "inlet"])] = np.nan
         res["surface_tension_N_m"] = sigma
+    if not tracer:                                # static pressure where each bubble is at the end, and at the inlet
+        r["p_end"] = rho * field.p[field.tree.query(r["X"])[1]]
+        r["p_end"][np.isin(r["fate"], ["outlet", "inlet"])] = np.nan
+        p_in = inlet_pressure(field, data, src_study, rho)
+        if p_in is not None:
+            r["p_inlet"] = p_in
+            res["p_inlet_Pa"] = round(p_in, 1)
     if r["steps"] >= int(b.get("max_steps", MAX_STEPS)):
         warns.append("bubbles: stopped at max_steps before every bubble reached t_max (raise bubbles.max_steps)")
     paths_all, stay_all = {}, {}
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
                for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X",
-                         "t_end", "crossings", "crossings_late", "dmax") if k in r}
+                         "t_end", "crossings", "crossings_late", "dmax", "p_end", "p_inlet") if k in r}
         sub["targets"] = {nm: {k: v[ix] for k, v in q.items()} for nm, q in r["targets"].items()}
         sub["t_max"] = T
         sub["d"] = dmm * SCALE
@@ -1024,6 +1051,19 @@ def ends(sub: dict, bins: list, field: Field, data: dict) -> dict:
     out["axial_mm_quartiles"] = [round(float(v), 1) for v in np.percentile(a, [25, 50, 75])]
     out["points_mm"] = [[round(float(v) / SCALE, 1) for v in q] for q in X[:30]]
     return out
+
+
+def inlet_pressure(field: Field, data: dict, src_study: dict, rho: float) -> float | None:
+    """The mean static pressure (Pa, gauge) of the cells next to the source's inlet patches (by their face centres)."""
+    names = [bc.get("name") for bc in src_study.get("bcs") or []
+             if isinstance(bc, dict) and bc.get("kind") == "inlet" and bc.get("name")]
+    if not names:
+        names = [k for k in (data.get("faces") or {}) if "inlet" in k]
+    pts = [data["faces"][k] for k in names if k in (data.get("faces") or {})]
+    if not pts:
+        return None
+    idx = field.tree.query(np.vstack(pts))[1]
+    return float(rho * field.p[idx].mean())
 
 
 def probes(field: Field, data: dict, spec: list, rho: float, sigma: float = SIGMA_WATER) -> dict:

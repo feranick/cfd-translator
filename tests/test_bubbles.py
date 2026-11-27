@@ -388,3 +388,24 @@ def test_turbulent_study_hinze_probes_and_escape(tmp_path):
     assert rd["results"]["bubbles"]["dispersion"]["model"] == "discrete random walk"
     errs = validate_study({"bubbles": dict(st["bubbles"], dispersion="yes", probes=[{"at": [1, 2]}])})["errors"]
     assert any("dispersion" in e for e in errs) and any("probes" in e for e in errs)
+
+
+def test_end_pressure_and_inlet_pressure():
+    """Static pressure where bubbles end (held, free, retained) and its mean against the inlet's (2026.11.27.1)."""
+    C, V = _grid((0, 0.01), (0, 0.01), (0, 0.02), 0.001)
+    p = 100.0 * C[:, 2]                                          # kinematic, rises with z
+    f = bubbles.Field(C, V, np.zeros_like(C), p)
+    top, _ = _grid((0, 0.01), (0, 0.01), (0, 0.001), 0.001)
+    top[:, 2] = 0.0
+    data = {"faces": {"inlet": top}}
+    pin = bubbles.inlet_pressure(f, data, {"bcs": [{"kind": "inlet", "name": "inlet"}]}, 1000.0)
+    assert pin == pytest.approx(1000.0 * 100.0 * 0.0005)
+    assert bubbles.inlet_pressure(f, {"faces": {}}, {}, 1000.0) is None
+    n = 4
+    r = {"fate": np.array(["wall", "flow", "flow", "outlet"], dtype=object), "reached": np.zeros(n, bool),
+         "t_first": np.full(n, np.nan), "t_in": np.zeros(n), "in_at_end": np.zeros(n, bool),
+         "exited": np.zeros(n, bool), "t": np.ones(n), "t_max": 1.0,
+         "p_end": np.array([100.0, 200.0, 400.0, np.nan]), "p_inlet": 50.0}
+    s = bubbles.summarize(r, None)["p_end_Pa"]
+    assert s["held"]["mean"] == 100.0 and s["free_at_end"]["mean"] == 300.0
+    assert s["retained"]["n"] == 3 and s["retained"]["mean_minus_inlet"] == pytest.approx(700.0 / 3 - 50.0, abs=0.1)
