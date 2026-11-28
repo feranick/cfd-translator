@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.28.1
+Version: 2026.11.28.2
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -44,7 +44,7 @@ import numpy as np
 
 KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
         "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins", "slices", "path_speeds",
-        "dispersion", "probes", "surface_tension", "entries"}
+        "dispersion", "probes", "surface_tension", "entries", "face_flux"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -77,7 +77,8 @@ def errors(st: dict) -> list[str]:
         e.append("bubbles.source: '<request>/<study>' of a finished single-phase run on this machine (its latest U "
                  "and p are the flow the bubbles move in)")
     rel = b.get("releases")
-    analysis_only = bool(b.get("slices") or b.get("path_speeds") or b.get("probes")) and not rel
+    analysis_only = bool(b.get("slices") or b.get("path_speeds") or b.get("probes") or b.get("face_flux")) and not rel
+    e += _face_flux_errors(b.get("face_flux"))
     pr = b.get("probes")
     if pr is not None and not (isinstance(pr, list) and pr and all(
             isinstance(q, dict) and isinstance(q.get("name"), str) and isinstance(q.get("at"), (list, tuple))
@@ -875,7 +876,7 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
         else:
             targets.append(r_)
     target = targets[0] if targets else None
-    if b.get("slices") or b.get("path_speeds") or b.get("probes"):  # field pictures, path statistics, point values
+    if b.get("slices") or b.get("path_speeds") or b.get("probes") or b.get("face_flux"):  # field-only analyses
         extra, rho_ = {}, rho
         if b.get("slices"):
             extra["slices"] = slices(field, data, b["slices"], rho_, folder)
@@ -886,6 +887,9 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
             p_in = inlet_pressure(field, data, src_study, rho)
             if p_in is not None:
                 extra["p_inlet_Pa"] = round(p_in, 1)
+        if b.get("face_flux"):
+            extra["face_flux"] = face_flux(field, b["face_flux"], study, nu, g,
+                                           np.random.default_rng(int(b.get("seed", 1))))
         if not b.get("releases"):
             return {"name": name, "ok": True, "results": {"bubbles": {"source": str(src), "source_time": data["time"],
                     "cells": int(len(field.C)), **extra}}, "warnings": warns, "notes": notes, "reliable": True,
@@ -1159,6 +1163,112 @@ def inlet_pressure(field: Field, data: dict, src_study: dict, rho: float) -> flo
         return None
     idx = field.tree.query(np.vstack(pts))[1]
     return float(rho * field.p[idx].mean())
+
+
+def _face_flux_errors(ff) -> list[str]:
+    if ff is None:
+        return []
+    msg = ("bubbles.face_flux: {faces: [{name, center: [x, y, z] mm, axis, disc: {r: [r0, r1]} | band: {radius, "
+           "span: [s0, s1]}, angles: [a0, a1], inflow: '+axis' | '-axis' (disc) | 'inward' | 'outward' (band)}], "
+           "from: [regions or names], t_back_s (1), n (600 per face)}: the liquid flow into each face and the share "
+           "of it that passed through each 'from' region within t_back_s before (backward tracers)")
+    if not isinstance(ff, dict) or not isinstance(ff.get("faces"), list) or not ff["faces"]:
+        return [msg]
+    e = []
+    for i, f in enumerate(ff["faces"]):
+        ok = (isinstance(f, dict) and isinstance(f.get("name"), str) and isinstance(f.get("center"), list)
+              and len(f["center"]) == 3 and all(_num(v) for v in f["center"]) and (("disc" in f) ^ ("band" in f)))
+        if ok and "disc" in f:
+            r = (f["disc"] or {}).get("r")
+            ok = (isinstance(r, list) and len(r) == 2 and all(_num(v) for v in r) and 0 <= r[0] < r[1]
+                  and f.get("inflow") in ("+axis", "-axis"))
+        elif ok:
+            bd = f["band"] or {}
+            sp = bd.get("span")
+            ok = (_num(bd.get("radius")) and bd["radius"] > 0 and isinstance(sp, list) and len(sp) == 2
+                  and all(_num(v) for v in sp) and sp[0] < sp[1] and f.get("inflow") in ("inward", "outward"))
+        if ok and f.get("angles") is not None:
+            ok = isinstance(f["angles"], list) and len(f["angles"]) == 2 and all(_num(v) for v in f["angles"])
+        if not ok:
+            e.append(f"bubbles.face_flux.faces[{i}]: " + msg)
+    for k, lo, hi in (("n", 10, 100000),):
+        if k in ff and not (isinstance(ff[k], int) and lo <= ff[k] <= hi):
+            e.append(f"bubbles.face_flux.{k}: an integer {lo}-{hi}")
+    if "t_back_s" in ff and not (_num(ff["t_back_s"]) and ff["t_back_s"] > 0):
+        e.append("bubbles.face_flux.t_back_s: a positive number (s)")
+    return e
+
+
+def face_points(f: dict, n: int, rng):
+    """n points (m) spread uniformly over a face (a disc or annulus across an axis, or a band of a cylinder, either
+    optionally a sector), their inflow unit normals, and the face's area (m2)."""
+    c = np.asarray(f["center"], float) * SCALE
+    ax = np.asarray(f.get("axis", [0, 0, 1]), float)
+    ax = ax / np.linalg.norm(ax)
+    e1 = np.array([1.0, 0, 0]) if abs(ax[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = e1 - (e1 @ ax) * ax
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(ax, e1)
+    a0, a1 = (float(v) for v in f.get("angles") or [0.0, 360.0])
+    span = ((a1 - a0) % 360.0) or 360.0
+    th = np.radians(a0 + span * rng.random(n))
+    dth = math.radians(span)
+    radial = np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2
+    if "disc" in f:
+        r0, r1 = (float(v) * SCALE for v in f["disc"]["r"])
+        r = np.sqrt(r0 * r0 + rng.random(n) * (r1 * r1 - r0 * r0))
+        P = c + r[:, None] * radial
+        nrm = np.broadcast_to(ax * (1.0 if f["inflow"] == "+axis" else -1.0), P.shape).copy()
+        area = 0.5 * dth * (r1 * r1 - r0 * r0)
+    else:
+        R = float(f["band"]["radius"]) * SCALE
+        s0, s1 = (float(v) * SCALE for v in f["band"]["span"])
+        sv = s0 + (s1 - s0) * rng.random(n)
+        P = c + sv[:, None] * ax + R * radial
+        nrm = radial * (-1.0 if f["inflow"] == "inward" else 1.0)
+        area = dth * R * (s1 - s0)
+    return P, nrm, area
+
+
+def face_flux(field: Field, spec: dict, study: dict, nu: float, g, rng) -> dict:
+    """The liquid flow into and out of faces (m3/h; uniform samples of U . n over each face, solid points counting
+    zero) and, for the inflow, the share (weighted by the local inflow) whose path passed through each 'from'
+    region within t_back_s before reaching the face (backward liquid tracers). Faces normal to a rotating zone's
+    axis or round it see the same normal velocity in either frame."""
+    t_back = float(spec.get("t_back_s", 1.0))
+    n = int(spec.get("n", 600))
+    froms = []
+    for r_ in spec.get("from") or []:
+        rr = _target(study, {"target": r_})
+        if rr is not None:
+            froms.append(rr)
+    out, tot_in, tot_out = {}, 0.0, 0.0
+    for f in spec["faces"]:
+        P, nrm, area = face_points(f, n, rng)
+        U, _, _, _, outside, _ = field.at(P)
+        un = (U * nrm).sum(axis=1)
+        un[outside] = 0.0
+        q_in = area * float(np.clip(un, 0, None).mean())
+        q_out = area * float(np.clip(-un, 0, None).mean())
+        tot_in += q_in
+        tot_out += q_out
+        d = {"area_mm2": round(area / SCALE ** 2, 1), "fluid_share": round(float((~outside).mean()), 3),
+             "inflow_m3h": round(q_in * 3600, 4), "outflow_m3h": round(q_out * 3600, 4)}
+        idx = np.flatnonzero(un > 0)
+        if froms and len(idx):
+            r = track(field, P[idx], 1e-4, nu, t_back, g, target=froms, tracer=-1, dt_max=1e-3)
+            w = un[idx]
+            d["from"] = {}
+            for rr in froms:
+                q = r["targets"][rr.get("name") or "target0"]
+                share = float((w * q["reached"]).sum() / w.sum())
+                tf = q["t_first"][np.isfinite(q["t_first"])]
+                d["from"][rr.get("name")] = {"share": round(share, 4), "flow_m3h": round(q_in * share * 3600, 4),
+                                            **({"t_back_median_s": float(f"{np.median(tf):.3g}")} if len(tf) else {})}
+            d["tracers"] = int(len(idx))
+        out[f["name"]] = d
+    return {"t_back_s": t_back, "n_per_face": n, "faces": out,
+            "total_inflow_m3h": round(tot_in * 3600, 4), "total_outflow_m3h": round(tot_out * 3600, 4)}
 
 
 def probes(field: Field, data: dict, spec: list, rho: float, sigma: float = SIGMA_WATER) -> dict:

@@ -1,6 +1,6 @@
 """guides.py — how-to guides for kinds of study, longer than study_format can hold (it stays under 12k characters
 for local models). study_format's conventions point to them; the MCP tool `guide(topic)` returns one.
-Version: 2026.11.28.1
+Version: 2026.11.28.2
 
 The vehicle-aero guide condenses the Ahmed-body and Nissan Rogue studies on mochi (cfdt 2026.10.22-25,
 OpenFOAM 14; examples/cfdt_dev_prompt_vehicle_aero.md and README's versions table).
@@ -176,7 +176,7 @@ GUIDES = {
             "free, per stayer; share_below_d: where the tracked size would break up); probes [{name, at}] give U, p, "
             "k, omega, epsilon and d_max at points (alone, without releases, too). escape: share out by revolution and "
             "per revolution; outlet_time_s/_rev. Stayers' zone_crossings_late: many crossings of a zone's face over the "
-            "last half mark an interface effect, not a real attractor. entries {regions, targets}: where the bubbles ending in the targets came into the rotating zone (by region, else rim / front / back face).",
+            "last half mark an interface effect, not a real attractor. entries {regions, targets}: where the bubbles ending in the targets came into the rotating zone (by region, else rim / front / back face). face_flux {faces, from, t_back_s}: liquid flow into faces (m3/h) and the share of it that came from given regions (backward tracers).",
             "Results bubbles.releases.<name>.<d mm>: reached_target, in_target_at_end, impeller_exit (left the zone "
             "through its outer radius), outlet, inlet, stuck_at_wall, still_in_flow (shares), time_to_target_s, "
             "residence_in_target_s and _rev; images per release and size (plan and meridional views, red = reached "

@@ -443,3 +443,33 @@ def test_zone_entry_is_recorded_and_classified():
                                            "entries": {"regions": [disc, "eye"], "targets": ["eye"]}}})["errors"]
     assert validate_study({"bubbles": {"source": "x", "releases": [{"name": "a", "points": [[0, 0, 0]]}],
                                        "entries": {"bad": 1}}})["errors"]
+
+
+def test_face_flux_and_backward_sources():
+    """Uniform flow along z through a box: the flow into a disc across it is its area times the speed; backward
+    tracers from it pass the upstream region, not one off to the side; a band round the axis sees no inflow
+    (2026.11.28.2)."""
+    C, V = _grid((-0.01, 0.01), (-0.01, 0.01), (0, 0.04), 0.001)
+    U = np.zeros_like(C)
+    U[:, 2] = 0.5
+    f = bubbles.Field(C, V, U, np.zeros(len(C)))
+    spec = {"faces": [{"name": "disc", "center": [0, 0, 30], "axis": [0, 0, 1], "disc": {"r": [0, 5]},
+                       "inflow": "+axis"},
+                      {"name": "half", "center": [0, 0, 30], "axis": [0, 0, 1], "disc": {"r": [0, 5]},
+                       "angles": [0, 180], "inflow": "-axis"},
+                      {"name": "band", "center": [0, 0, 20], "axis": [0, 0, 1], "band": {"radius": 5, "span": [0, 5]},
+                       "inflow": "inward"}],
+            "from": [{"name": "up", "box": {"min": [-10, -10, 0], "max": [10, 10, 20]}},
+                     {"name": "side", "box": {"min": [8, 8, 35], "max": [10, 10, 40]}}],
+            "t_back_s": 0.05, "n": 200}
+    assert not bubbles._face_flux_errors(spec)
+    r = bubbles.face_flux(f, spec, {}, NU, (0, 0, 0), np.random.default_rng(1))
+    d = r["faces"]["disc"]
+    area = math.pi * 0.005 ** 2
+    assert d["area_mm2"] == pytest.approx(area * 1e6, abs=0.1)
+    assert d["inflow_m3h"] == pytest.approx(area * 0.5 * 3600, rel=0.01) and d["outflow_m3h"] == 0
+    assert d["from"]["up"]["share"] == 1.0 and d["from"]["side"]["share"] == 0.0
+    assert r["faces"]["half"]["inflow_m3h"] == 0 and r["faces"]["half"]["outflow_m3h"] == pytest.approx(
+        area / 2 * 0.5 * 3600, rel=0.01)
+    assert r["faces"]["band"]["inflow_m3h"] == 0 and r["faces"]["band"]["outflow_m3h"] == 0
+    assert bubbles._face_flux_errors({"faces": [{"name": "x", "center": [0, 0, 0], "disc": {"r": [0, 1]}}]})
