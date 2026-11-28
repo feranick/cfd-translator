@@ -410,3 +410,36 @@ def test_end_pressure_and_inlet_pressure():
     s = bubbles.summarize(r, None)["p_end_Pa"]
     assert s["held"]["mean"] == 100.0 and s["free_at_end"]["mean"] == 300.0
     assert s["retained"]["n"] == 3 and s["retained"]["mean_minus_inlet"] == pytest.approx(700.0 / 3 - 50.0, abs=0.1)
+
+
+def test_zone_entry_is_recorded_and_classified():
+    """A bubble rising into a rotating zone from below enters through the zone's back face; an entry region named
+    there takes precedence; the summary gives the shares (2026.11.28.1)."""
+    R, H, h, om = 0.01, 0.02, 0.001, 10.0
+    C, V = _grid((-R, R), (-R, R), (0, H), h)
+    keep = np.hypot(C[:, 0], C[:, 1]) < R
+    C, V = C[keep], V[keep]
+    U = np.column_stack([-om * C[:, 1], om * C[:, 0], np.zeros(len(C))])
+    p = 0.5 * om ** 2 * (C[:, 0] ** 2 + C[:, 1] ** 2)
+    zone = np.where(C[:, 2] >= 0.01, 0, -1).astype(np.int32)
+    m = [{"name": "rot", "cellZone": "rot", "origin": np.zeros(3), "axis": np.array([0, 0, 1.0]), "omega": om}]
+    f = bubbles.Field(C, V, U, p, zone, m)
+    X0 = [[0.002, 0.0, 0.004], [0.0, 0.002, 0.015]]               # below the zone; inside it
+    r = bubbles.track(f, X0, 0.3e-3, NU, 0.25, g=(0, 0, -9.81), dt_max=1e-3)
+    assert r["n_entries"][0] == 1 and r["n_entries"][1] == 0 and r["start_zone"][1] == 0
+    assert 0.0095 < r["entry_last_X"][0, 2] < 0.0115
+    data = {"mrf": m}
+    zr = [(R, 0.0105, 0.0195)]                                   # cell centres' axial range in the zone
+    assert bubbles.entry_class(r["entry_last_X"][:1], [], data, zr)[0] == "back"
+    disc = {"name": "bottom_disc", "cylinder": {"center": [0, 0, 9], "axis": [0, 0, 1], "radius": 5, "span": [0, 3]}}
+    assert bubbles.entry_class(r["entry_last_X"][:1], [disc], data, zr)[0] == "bottom_disc"
+    top = {"name": "top", "box": {"min": [-10, -10, 0], "max": [10, 10, 20]}}
+    sub = {"fate": r["fate"], "targets": {"top": {"in_at_end": np.array([True, True])}},
+           "n_entries": r["n_entries"], "start_zone": r["start_zone"], "entry_first_X": r["entry_first_X"],
+           "entry_last_X": r["entry_last_X"]}
+    e = bubbles.entries(sub, {"regions": [disc]}, {}, [top], data, zr)
+    assert e["n"] == 2 and e["last"] == {"bottom_disc": 0.5, "started_inside": 0.5} and e["first"] == e["last"]
+    assert not validate_study({"bubbles": {"source": "x", "releases": [{"name": "a", "points": [[0, 0, 0]]}],
+                                           "entries": {"regions": [disc, "eye"], "targets": ["eye"]}}})["errors"]
+    assert validate_study({"bubbles": {"source": "x", "releases": [{"name": "a", "points": [[0, 0, 0]]}],
+                                       "entries": {"bad": 1}}})["errors"]

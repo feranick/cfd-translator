@@ -1,5 +1,5 @@
 """bubbles.py — one-way bubble tracking through a finished single-phase run's fields (frozen rotor).
-Version: 2026.11.27.2
+Version: 2026.11.28.1
 
 A study {"bubbles": {...}} with no geometry: bubbles.source names a finished single-phase run ('<request>/<study>' or
 an absolute folder) whose latest U and p (kinematic) are read with its mesh's cell centres and volumes. Each bubble
@@ -44,7 +44,7 @@ import numpy as np
 
 KEYS = {"source", "releases", "diameters_mm", "n", "t_max_s", "revolutions", "target", "targets", "gravity",
         "added_mass", "dt_max_s", "seed", "keep", "max_steps", "dry_run", "tracer", "bins", "slices", "path_speeds",
-        "dispersion", "probes", "surface_tension"}
+        "dispersion", "probes", "surface_tension", "entries"}
 G_DEFAULT = (0.0, 0.0, -9.80665)
 SCALE = 1e-3                                  # mm -> m
 MAX_STEPS = 8_000_000                         # loop passes (each bubble its own step: the fastest region sets them)
@@ -84,6 +84,16 @@ def errors(st: dict) -> list[str]:
             and len(q["at"]) == 3 and all(_num(v) for v in q["at"]) for q in pr)):
         e.append("bubbles.probes: [{name, at: [x, y, z] mm}, ...]: U, p, k, omega, epsilon and Hinze's largest "
                  "stable bubble there")
+    en = b.get("entries")
+    if en is not None and not (isinstance(en, dict) and set(en) <= {"regions", "targets"} and
+                               all(isinstance(x, (str, dict)) for x in en.get("regions") or []) and
+                               all(isinstance(x, str) for x in en.get("targets") or [])):
+        e.append("bubbles.entries: {regions: [regions or names in regions], targets: [target names]}: how the bubbles "
+                 "ending in those targets (default all) came into the rotating zone (the region they entered it in, "
+                 "else its face: rim, front, back)")
+    for i, r_ in enumerate((en or {}).get("regions") or [] if isinstance(en, dict) else []):
+        if isinstance(r_, dict):
+            e += _region_errors(r_, f"bubbles.entries.regions[{i}]")
     if "dispersion" in b and not isinstance(b["dispersion"], bool):
         e.append("bubbles.dispersion: true adds turbulent dispersion (a discrete random walk from the source's k and "
                  "omega)")
@@ -526,6 +536,10 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         om[m] = z["omega"] * z["axis"]
         org[m] = z["origin"]
     v = U - np.cross(om, X - org)                  # start with the liquid (relative velocity inside a zone)
+    start_zone = zid.copy()
+    entry_first_X = np.full((nb, 3), np.nan)
+    entry_last_X = np.full((nb, 3), np.nan)
+    n_entries = np.zeros(nb, np.int32)
     t = np.zeros(nb)
     alive = np.ones(nb, bool)
     fate = np.array(["flow"] * nb, dtype=object)
@@ -568,6 +582,13 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
         if changed.any():
             n_cross[a[changed]] += 1
             n_cross_late[a[changed & (t[a] >= 0.5 * t_max)]] += 1
+            ent = changed & (zid[a] < 0) & (zid_new >= 0)       # into a rotating zone from outside: where
+            if ent.any():
+                ie = a[ent]
+                fst = n_entries[ie] == 0
+                entry_first_X[ie[fst]] = Xa[ent][fst]
+                entry_last_X[ie] = Xa[ent]
+                n_entries[ie] += 1
             vabs = va + np.cross(om_old, Xa - org_old)
             va = np.where(changed[:, None], vabs - np.cross(om_new, Xa - org_new), va)
             if zone_r is not None:                  # left a zone through its outer radius: the impeller exit
@@ -696,6 +717,8 @@ def track(field: Field, X0, d_m, nu: float, t_max: float, g=G_DEFAULT, c_a: floa
             "in_at_end": in_t & stay,
             "exited": exited, "touched_wall": touched, "t": t, "t_max": t_max, "steps": steps, "X": X,
             "t_end": t_end, "crossings": n_cross, "crossings_late": n_cross_late, "dispersion": disp,
+            "start_zone": start_zone, "entry_first_X": entry_first_X, "entry_last_X": entry_last_X,
+            "n_entries": n_entries,
             "paths": {i: np.asarray(p) for i, p in paths.items()}}
 
 
@@ -956,13 +979,16 @@ def run(name: str, study: dict, folder: Path, run_foam=None) -> dict:
     for rn, dmm, ix in groups:
         sub = {k: (r[k][ix] if isinstance(r[k], np.ndarray) and r[k].shape[:1] == (len(dd),) else r[k])
                for k in ("fate", "reached", "t_first", "t_in", "in_at_end", "exited", "touched_wall", "t", "X",
-                         "t_end", "crossings", "crossings_late", "dmax", "p_end", "p_inlet") if k in r}
+                         "t_end", "crossings", "crossings_late", "dmax", "p_end", "p_inlet", "start_zone",
+                         "entry_first_X", "entry_last_X", "n_entries") if k in r}
         sub["targets"] = {nm: {k: v[ix] for k, v in q.items()} for nm, q in r["targets"].items()}
         sub["t_max"] = T
         sub["d"] = dmm * SCALE
         res["releases"].setdefault(rn, {})[f"{dmm:g}"] = summarize(sub, omega)
         if bins or tracer:
             res["releases"][rn][f"{dmm:g}"]["ends"] = ends(sub, bins, field, data)
+        if b.get("entries") is not None and targets and not tracer and data["mrf"]:
+            res["releases"][rn][f"{dmm:g}"]["entry"] = entries(sub, b["entries"], study, targets, data, zone_r)
         if targets and not tracer:
             st_ = stayers(field, data, sub, targets)
             if st_:
@@ -1001,6 +1027,64 @@ def _cyl(data: dict, X):
     s = rel @ ax_
     rr = rel - s[:, None] * ax_
     return np.linalg.norm(rr, axis=1), s, np.degrees(np.arctan2(rr @ e2, rr @ e1))
+
+
+def entry_class(X_m: np.ndarray, regions: list, data: dict, zone_r) -> np.ndarray:
+    """Where points (m) entering the first rotating zone lie: the first entry region holding them, else the zone's
+    face they are next to: 'rim' (the outer radius), 'front' (the end at the larger axial position), 'back', or
+    'inner'."""
+    X_m = np.atleast_2d(X_m)
+    out = np.full(len(X_m), "", dtype=object)
+    for r_ in regions:
+        m = (out == "") & region_mask(r_, X_m)
+        out[m] = r_.get("name")
+    z = data["mrf"][0]
+    R, lo, hi = zone_r[0]
+    rel = X_m - z["origin"]
+    s = rel @ z["axis"]
+    rad = np.linalg.norm(rel - s[:, None] * z["axis"], axis=1)
+    tol = 0.03 * max(hi - lo, 1e-12)
+    rest = out == ""
+    out[rest & (rad >= 0.97 * R)] = "rim"
+    out[(out == "") & (s >= hi - tol)] = "front"
+    out[(out == "") & (s <= lo + tol)] = "back"
+    out[out == ""] = "inner"
+    return out
+
+
+def entries(sub: dict, spec: dict, study: dict, targets: list, data: dict, zone_r) -> dict:
+    """How the bubbles that end in the entry targets (default: every target) came into the rotating zone: shares by
+    the region (spec.regions, else the zone's face) where they last and first entered it; started_inside: released in
+    the zone and never left; outside_zone: ending in a target but never in the zone."""
+    regs = []
+    for r_ in spec.get("regions") or []:
+        rr = _target(study, {"target": r_})
+        if rr is not None:
+            regs.append(rr)
+    names = spec.get("targets") or [t_.get("name") for t_ in targets]
+    m = np.zeros(len(sub["fate"]), bool)
+    for nm in names:
+        q = (sub.get("targets") or {}).get(nm)
+        if q is not None:
+            m |= np.asarray(q["in_at_end"], bool)
+    n = int(m.sum())
+    out = {"targets": names, "n": n}
+    if not n:
+        return out
+    ne = np.asarray(sub["n_entries"])[m]
+    sz = np.asarray(sub["start_zone"])[m]
+    res = {}
+    for key, Xk in (("last", "entry_last_X"), ("first", "entry_first_X")):
+        cls = np.full(n, "", dtype=object)
+        has = ne > 0
+        if has.any():
+            cls[has] = entry_class(np.asarray(sub[Xk])[m][has], regs, data, zone_r)
+        cls[~has & (sz >= 0)] = "started_inside"
+        cls[~has & (sz < 0)] = "outside_zone"
+        res[key] = {c: round(float(np.count_nonzero(cls == c)) / n, 4) for c in sorted(set(cls.tolist()))}
+    out.update(res)
+    out["entries_mean"] = round(float(ne.mean()), 2)
+    return out
 
 
 def stayers(field: Field, data: dict, sub: dict, targets: list) -> dict:
